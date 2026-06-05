@@ -116,9 +116,17 @@ type OutboundTLSOptions struct {
 	RecordFragment             bool                                `json:"record_fragment,omitempty"`
 	KernelTx                   bool                                `json:"kernel_tx,omitempty"`
 	KernelRx                   bool                                `json:"kernel_rx,omitempty"`
-	ECH                        *OutboundECHOptions                 `json:"ech,omitempty"`
-	UTLS                       *OutboundUTLSOptions                `json:"utls,omitempty"`
-	Reality                    *OutboundRealityOptions             `json:"reality,omitempty"`
+	// CertDomain: домен для верификации сертификата (отдельно от SNI).
+	// Если задан, SNI в ClientHello = server_name, а cert проверяется по cert_domain.
+	// Решает проблему когда сервер шлёт cert для одного домена, а SNI другой.
+	CertDomain string `json:"cert_domain,omitempty"`
+	// ClientRandomPrefix: hex-строка (до 32 байт) для фиксации начала TLS ClientHello.Random.
+	// Формат: "aabbcc..." или "aabbcc.../ffff00..." (data/mask, как в TrustTunnel config).
+	// Маска: ff = фиксированный бит, 00 = случайный. Без маски — все байты prefix фиксированы.
+	ClientRandomPrefix string `json:"client_random_prefix,omitempty"`
+	ECH                *OutboundECHOptions    `json:"ech,omitempty"`
+	UTLS               *OutboundUTLSOptions   `json:"utls,omitempty"`
+	Reality            *OutboundRealityOptions `json:"reality,omitempty"`
 }
 
 type OutboundTLSOptionsContainer struct {

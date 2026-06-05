@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"math/rand"
 	"net"
 	"os"
@@ -32,6 +33,12 @@ type UTLSClientConfig struct {
 	fragment              bool
 	fragmentFallbackDelay time.Duration
 	recordFragment        bool
+	// certDomain: если задан, cert верифицируется по этому домену вместо server_name.
+	// SNI в ClientHello остаётся = config.ServerName.
+	certDomain string
+	// clientRandomPrefix/clientRandomMask: байты для патча TLS ClientHello.Random
+	clientRandomPrefix []byte
+	clientRandomMask   []byte
 }
 
 func (c *UTLSClientConfig) ServerName() string {
@@ -61,7 +68,38 @@ func (c *UTLSClientConfig) Client(conn net.Conn) (Conn, error) {
 	if c.recordFragment {
 		conn = tf.NewConn(conn, c.ctx, c.fragment, c.recordFragment, c.fragmentFallbackDelay)
 	}
-	return &utlsALPNWrapper{utlsConnWrapper{utls.UClient(conn, c.config.Clone(), c.id)}, c.config.NextProtos}, nil
+	cfg := c.config.Clone()
+	// Если certDomain задан — отключаем стандартную проверку hostname и делаем свою
+	if c.certDomain != "" {
+		cfg.InsecureSkipVerify = true
+		certDomain := c.certDomain
+		rootCAs := cfg.RootCAs
+		timeFn := cfg.Time
+		cfg.VerifyConnection = func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return E.New("tls: no peer certificates")
+			}
+			opts := x509.VerifyOptions{
+				DNSName:       certDomain,
+				Roots:         rootCAs,
+				Intermediates: x509.NewCertPool(),
+			}
+			for _, cert := range state.PeerCertificates[1:] {
+				opts.Intermediates.AddCert(cert)
+			}
+			if timeFn != nil {
+				opts.CurrentTime = timeFn()
+			}
+			_, err := state.PeerCertificates[0].Verify(opts)
+			return err
+		}
+	}
+	return &utlsALPNWrapper{
+		utlsConnWrapper:    utlsConnWrapper{utls.UClient(conn, cfg, c.id)},
+		nextProtocols:      cfg.NextProtos,
+		clientRandomPrefix: c.clientRandomPrefix,
+		clientRandomMask:   c.clientRandomMask,
+	}, nil
 }
 
 func (c *UTLSClientConfig) SetSessionIDGenerator(generator func(clientHello []byte, sessionID []byte) error) {
@@ -70,7 +108,15 @@ func (c *UTLSClientConfig) SetSessionIDGenerator(generator func(clientHello []by
 
 func (c *UTLSClientConfig) Clone() Config {
 	return &UTLSClientConfig{
-		c.ctx, c.config.Clone(), c.id, c.fragment, c.fragmentFallbackDelay, c.recordFragment,
+		ctx:                   c.ctx,
+		config:                c.config.Clone(),
+		id:                    c.id,
+		fragment:              c.fragment,
+		fragmentFallbackDelay: c.fragmentFallbackDelay,
+		recordFragment:        c.recordFragment,
+		certDomain:            c.certDomain,
+		clientRandomPrefix:    c.clientRandomPrefix,
+		clientRandomMask:      c.clientRandomMask,
 	}
 }
 
@@ -119,23 +165,46 @@ func (c *utlsConnWrapper) WriterReplaceable() bool {
 
 type utlsALPNWrapper struct {
 	utlsConnWrapper
-	nextProtocols []string
+	nextProtocols      []string
+	clientRandomPrefix []byte
+	clientRandomMask   []byte
 }
 
 func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
-	if len(c.nextProtocols) > 0 {
+	if len(c.nextProtocols) > 0 || len(c.clientRandomPrefix) > 0 {
 		err := c.BuildHandshakeState()
 		if err != nil {
 			return err
 		}
-		for _, extension := range c.Extensions {
-			if alpnExtension, isALPN := extension.(*utls.ALPNExtension); isALPN {
-				alpnExtension.AlpnProtocols = c.nextProtocols
-				err = c.BuildHandshakeState()
-				if err != nil {
-					return err
+		// Патч ALPN extension
+		if len(c.nextProtocols) > 0 {
+			for _, extension := range c.Extensions {
+				if alpnExtension, isALPN := extension.(*utls.ALPNExtension); isALPN {
+					alpnExtension.AlpnProtocols = c.nextProtocols
+					err = c.BuildHandshakeState()
+					if err != nil {
+						return err
+					}
+					break
 				}
-				break
+			}
+		}
+		// Патч ClientHello.Random — применяем prefix с маской
+		// Логика идентична TrustTunnel C++: result[i] = (prefix[i] & mask[i]) | (random[i] & ~mask[i])
+		if len(c.clientRandomPrefix) > 0 {
+			hello := c.HandshakeState.Hello
+			if hello != nil && len(hello.Random) == 32 {
+				prefixLen := len(c.clientRandomPrefix)
+				if prefixLen > 32 {
+					prefixLen = 32
+				}
+				for i := 0; i < prefixLen; i++ {
+					var mask byte = 0xff
+					if i < len(c.clientRandomMask) {
+						mask = c.clientRandomMask[i]
+					}
+					hello.Random[i] = (c.clientRandomPrefix[i] & mask) | (hello.Random[i] & ^mask)
+				}
 			}
 		}
 	}
@@ -255,7 +324,38 @@ func NewUTLSClient(ctx context.Context, logger logger.ContextLogger, serverAddre
 	if err != nil {
 		return nil, err
 	}
-	var config Config = &UTLSClientConfig{ctx, &tlsConfig, id, options.Fragment, time.Duration(options.FragmentFallbackDelay), options.RecordFragment}
+	// Парсим client_random_prefix: формат "hex" или "hex/mask_hex" (как в TrustTunnel)
+	var clientRandomPrefix, clientRandomMask []byte
+	if options.ClientRandomPrefix != "" {
+		parts := strings.SplitN(options.ClientRandomPrefix, "/", 2)
+		clientRandomPrefix, err = hex.DecodeString(parts[0])
+		if err != nil {
+			return nil, E.Cause(err, "parse client_random_prefix: invalid hex")
+		}
+		if len(clientRandomPrefix) > 32 {
+			return nil, E.New("client_random_prefix: too long (max 32 bytes)")
+		}
+		if len(parts) == 2 {
+			clientRandomMask, err = hex.DecodeString(parts[1])
+			if err != nil {
+				return nil, E.Cause(err, "parse client_random_prefix mask: invalid hex")
+			}
+			if len(clientRandomMask) != len(clientRandomPrefix) {
+				return nil, E.New("client_random_prefix: mask length must equal prefix length")
+			}
+		}
+	}
+	var config Config = &UTLSClientConfig{
+		ctx:                   ctx,
+		config:                &tlsConfig,
+		id:                    id,
+		fragment:              options.Fragment,
+		fragmentFallbackDelay: time.Duration(options.FragmentFallbackDelay),
+		recordFragment:        options.RecordFragment,
+		certDomain:            options.CertDomain,
+		clientRandomPrefix:    clientRandomPrefix,
+		clientRandomMask:      clientRandomMask,
+	}
 	if options.ECH != nil && options.ECH.Enabled {
 		if options.Reality != nil && options.Reality.Enabled {
 			return nil, E.New("Reality is conflict with ECH")

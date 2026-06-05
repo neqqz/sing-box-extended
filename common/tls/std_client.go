@@ -110,6 +110,29 @@ func NewSTDClient(ctx context.Context, logger logger.ContextLogger, serverAddres
 			_, err := state.PeerCertificates[0].Verify(verifyOptions)
 			return err
 		}
+	} else if options.CertDomain != "" {
+		// cert_domain: SNI шлём server_name, cert верифицируем по cert_domain.
+		// Нужно когда сервер отдаёт сертификат для одного домена, а SNI другой.
+		certDomain := options.CertDomain
+		tlsConfig.InsecureSkipVerify = true
+		tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return E.New("tls: no peer certificates")
+			}
+			verifyOptions := x509.VerifyOptions{
+				Roots:         tlsConfig.RootCAs,
+				DNSName:       certDomain,
+				Intermediates: x509.NewCertPool(),
+			}
+			for _, cert := range state.PeerCertificates[1:] {
+				verifyOptions.Intermediates.AddCert(cert)
+			}
+			if tlsConfig.Time != nil {
+				verifyOptions.CurrentTime = tlsConfig.Time()
+			}
+			_, err := state.PeerCertificates[0].Verify(verifyOptions)
+			return err
+		}
 	}
 	if len(options.CertificatePublicKeySHA256) > 0 {
 		if len(options.Certificate) > 0 || options.CertificatePath != "" {
