@@ -1,0 +1,3 @@
+[submodule "clients/android"]
+    path = clients/android
+    url = https://github.com/0dinsky/sing-box-for-android.git
