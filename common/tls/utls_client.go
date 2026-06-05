@@ -205,6 +205,16 @@ func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
 					}
 					hello.Random[i] = (c.clientRandomPrefix[i] & mask) | (hello.Random[i] & ^mask)
 				}
+				// CRITICAL: uTLS отправляет hello.Raw (сериализованный буфер), а не поля структуры.
+				// BuildHandshakeState() заполнил Raw ДО нашего патча, поэтому синхронизируем вручную.
+				// Структура ClientHello в Raw (без record header):
+				//   [0]:    HandshakeType = 0x01
+				//   [1..3]: Length (3 bytes)
+				//   [4..5]: ProtocolVersion
+				//   [6..37]: Random (32 bytes)  <-- патчим здесь
+				if len(hello.Raw) >= 38 {
+					copy(hello.Raw[6:38], hello.Random)
+				}
 			}
 		}
 	}
