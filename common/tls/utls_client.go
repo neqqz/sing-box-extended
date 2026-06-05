@@ -75,7 +75,7 @@ func (c *UTLSClientConfig) Client(conn net.Conn) (Conn, error) {
 		certDomain := c.certDomain
 		rootCAs := cfg.RootCAs
 		timeFn := cfg.Time
-		cfg.VerifyConnection = func(state tls.ConnectionState) error {
+		cfg.VerifyConnection = func(state utls.ConnectionState) error {
 			if len(state.PeerCertificates) == 0 {
 				return E.New("tls: no peer certificates")
 			}
