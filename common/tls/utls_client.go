@@ -209,12 +209,7 @@ func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
 				if len(hello.Raw) >= 38 {
 					copy(hello.Raw[6:38], hello.Random)
 				}
-				// DEBUG: log first 8 bytes of Random after patch
-				if len(hello.Random) >= 8 {
-					c.logger.DebugContext(ctx, "client_random_prefix patched, Random[0:8]=",
-						hex.EncodeToString(hello.Random[:8]),
-						" Raw[6:14]=", hex.EncodeToString(hello.Raw[6:14]))
-				}
+
 			}
 		}
 	}
