@@ -147,19 +147,31 @@ func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
 	}
 }
 
+// quicConfigWithRandom возвращает копию quic.Config с ClientRandomPrefix/Mask.
+func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
+	if len(c.clientRandomPrefix) == 0 {
+		return cfg
+	}
+	cloned := cfg.Clone()
+	cloned.ClientRandomPrefix = c.clientRandomPrefix
+	cloned.ClientRandomMask = c.clientRandomMask
+	return cloned
+}
+
 func (c *UTLSClientConfig) Dial(ctx context.Context, conn net.PacketConn, addr net.Addr, quicConfig *quic.Config) (*quic.Conn, error) {
-	return quic.Dial(ctx, conn, addr, c.stdTLSConfig(), quicConfig)
+	return quic.Dial(ctx, conn, addr, c.stdTLSConfig(), c.quicConfigWithRandom(quicConfig))
 }
 
 func (c *UTLSClientConfig) DialEarly(ctx context.Context, conn net.PacketConn, addr net.Addr, quicConfig *quic.Config) (*quic.Conn, error) {
-	return quic.DialEarly(ctx, conn, addr, c.stdTLSConfig(), quicConfig)
+	return quic.DialEarly(ctx, conn, addr, c.stdTLSConfig(), c.quicConfigWithRandom(quicConfig))
 }
 
 func (c *UTLSClientConfig) CreateTransport(conn net.PacketConn, quicConnPtr **quic.Conn, serverAddr M.Socksaddr, quicConfig *quic.Config) http.RoundTripper {
+	cfg := c.quicConfigWithRandom(quicConfig)
 	return &http3.Transport{
 		TLSClientConfig: c.stdTLSConfig(),
-		QUICConfig:      quicConfig,
-		Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+		QUICConfig:      cfg,
+		Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, dialCfg *quic.Config) (*quic.Conn, error) {
 			return quic.DialEarly(ctx, conn, serverAddr.UDPAddr(), tlsCfg, cfg)
 		},
 	}
