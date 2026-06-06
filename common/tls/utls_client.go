@@ -24,6 +24,11 @@ import (
 
 	utls "github.com/metacubex/utls"
 	"golang.org/x/net/http2"
+
+	"github.com/sagernet/quic-go"
+	"github.com/sagernet/quic-go/http3"
+	M "github.com/sagernet/sing/common/metadata"
+	"net/http"
 )
 
 type UTLSClientConfig struct {
@@ -126,6 +131,38 @@ func (c *UTLSClientConfig) ECHConfigList() []byte {
 
 func (c *UTLSClientConfig) SetECHConfigList(EncryptedClientHelloConfigList []byte) {
 	c.config.EncryptedClientHelloConfigList = EncryptedClientHelloConfigList
+}
+
+// Dial, DialEarly, CreateTransport implement the qtls.Config interface
+// so that QUIC transport can use UTLSClientConfig directly without
+// calling STDConfig() which is unsupported for uTLS.
+func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
+	return &tls.Config{
+		ServerName:         c.config.ServerName,
+		RootCAs:            c.config.RootCAs,
+		NextProtos:         c.config.NextProtos,
+		InsecureSkipVerify: c.config.InsecureSkipVerify,
+		MinVersion:         c.config.MinVersion,
+		MaxVersion:         c.config.MaxVersion,
+	}
+}
+
+func (c *UTLSClientConfig) Dial(ctx context.Context, conn net.PacketConn, addr net.Addr, quicConfig *quic.Config) (*quic.Conn, error) {
+	return quic.Dial(ctx, conn, addr, c.stdTLSConfig(), quicConfig)
+}
+
+func (c *UTLSClientConfig) DialEarly(ctx context.Context, conn net.PacketConn, addr net.Addr, quicConfig *quic.Config) (*quic.Conn, error) {
+	return quic.DialEarly(ctx, conn, addr, c.stdTLSConfig(), quicConfig)
+}
+
+func (c *UTLSClientConfig) CreateTransport(conn net.PacketConn, quicConnPtr **quic.Conn, serverAddr M.Socksaddr, quicConfig *quic.Config) http.RoundTripper {
+	return &http3.Transport{
+		TLSClientConfig: c.stdTLSConfig(),
+		QUICConfig:      quicConfig,
+		Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (*quic.Conn, error) {
+			return quic.DialEarly(ctx, conn, serverAddr.UDPAddr(), tlsCfg, cfg)
+		},
+	}
 }
 
 type utlsConnWrapper struct {
