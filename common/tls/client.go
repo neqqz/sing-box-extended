@@ -63,7 +63,10 @@ func NewClientWithOptions(options ClientOptions) (Config, error) {
 	}
 	if options.Options.Reality != nil && options.Options.Reality.Enabled {
 		return NewRealityClient(options.Context, options.Logger, options.ServerAddress, options.Options)
-	} else if options.Options.UTLS != nil && options.Options.UTLS.Enabled {
+	} else if (options.Options.UTLS != nil && options.Options.UTLS.Enabled) || options.Options.ClientRandomPrefix != "" {
+		if options.Options.UTLS == nil {
+			options.Options.UTLS = &option.OutboundUTLSOptions{Enabled: true, Fingerprint: "chrome"}
+		}
 		return NewUTLSClient(options.Context, options.Logger, options.ServerAddress, options.Options)
 	}
 	return NewSTDClient(options.Context, options.Logger, options.ServerAddress, options.Options)
