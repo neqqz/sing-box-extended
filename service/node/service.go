@@ -33,7 +33,7 @@ type Service struct {
 	rateManager       constant.RateLimiterManager
 	options           option.NodeServiceOptions
 
-	nodeManager    CM.NodeManager
+	nodeManager CM.NodeManager
 
 	mtx sync.Mutex
 }
@@ -79,6 +79,7 @@ func (s *Service) Start(stage adapter.StartStage) error {
 		"tuic":        inbound.NewTUICManager(),
 		"vless":       inbound.NewVLESSManager(),
 		"vmess":       inbound.NewVMessManager(),
+		"ssh":         inbound.NewSSHManager(),
 	}
 	s.connectionManager = limiter.NewConnectionLimiterManager(s.ctx, nodeManager, s.logger)
 	s.bandwidthManager = limiter.NewBandwidthLimiterManager(s.ctx, nodeManager, s.logger)

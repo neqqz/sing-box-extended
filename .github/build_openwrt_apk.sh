@@ -27,10 +27,7 @@ fi
 PROJECT=$(cd "$(dirname "$0")/.."; pwd)
 
 # Convert version to APK format:
-#   1.13.0-beta.8  -> 1.13.0_beta8-r0
-#   1.13.0-rc.3    -> 1.13.0_rc3-r0
-#   1.13.0         -> 1.13.0-r0
-APK_VERSION=$(echo "$VERSION" | sed -E 's/-([a-z]+)\.([0-9]+)/_\1\2/')
+APK_VERSION=$(echo "$VERSION" | sed -E 's/-([a-z]+)\.([0-9]+)/_\1\2/' | sed -E 's/-[a-z]+-/./g')
 APK_VERSION="${APK_VERSION}-r0"
 
 ROOT_DIR=$(mktemp -d)
@@ -78,15 +75,16 @@ done < "$PACKAGES_DIR/.conffiles" > "$PACKAGES_DIR/.conffiles_static"
 
 # Build APK
 apk --root "$APK_ROOT_DIR" mkpkg \
-  --info "name:sing-box" \
+  --info "name:sing-box-extended" \
   --info "version:${APK_VERSION}" \
-  --info "description:The universal proxy platform." \
+  --info "description:The universal proxy platform (extended)." \
   --info "arch:${ARCHITECTURE}" \
   --info "license:GPL-3.0-or-later" \
-  --info "origin:sing-box" \
+  --info "origin:sing-box-extended" \
   --info "url:https://sing-box.sagernet.org/" \
   --info "maintainer:nekohasekai <contact-git@sekai.icu>" \
   --info "depends:ca-bundle kmod-inet-diag kmod-tun firewall4 kmod-nft-queue" \
+  --info "provides:sing-box" \
   --info "provider-priority:100" \
   --script "pre-deinstall:${PROJECT}/release/config/openwrt.prerm" \
   --files "$ROOT_DIR" \

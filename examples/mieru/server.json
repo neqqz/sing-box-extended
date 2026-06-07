@@ -7,6 +7,9 @@
       "type": "mieru",
       "tag": "mieru-in",
       "listen_port": 27017,
+      "listen_ports": [
+        "27017-27019"
+      ],
       "transport": "TCP",
       "users": [
         {

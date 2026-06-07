@@ -11,10 +11,10 @@ const (
 )
 
 type DataChannel struct {
-	cipher  DataCipher
-	keyID   uint8
-	peerID  uint32
-	compLZO bool
+	cipher       DataCipher
+	keyID        uint8
+	peerID       uint32
+	compLZO      bool
 	mu           sync.Mutex
 	sendPacketID uint32
 }

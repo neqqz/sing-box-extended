@@ -63,7 +63,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		Secrets:                     secrets,
 		Concurrency:                 options.GetConcurrency(),
 		DomainFrontingPort:          options.GetDomainFrontingPort(),
-		DomainFrontingIP:            options.DomainFrontingIP,
+		DomainFrontingHost:          options.DomainFrontingHost,
 		DomainFrontingProxyProtocol: options.DomainFrontingProxyProtocol,
 		PreferIP:                    options.GetPreferIP(),
 		AutoUpdate:                  options.AutoUpdate,

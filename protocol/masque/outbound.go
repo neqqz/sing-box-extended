@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing-box/adapter/outbound"
 	"github.com/sagernet/sing-box/common/cloudflare"
 	"github.com/sagernet/sing-box/common/dialer"
@@ -18,6 +17,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/transport/masque"
+	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
@@ -136,11 +136,19 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			ctx,
 			logger,
 			masque.TunnelOptions{
+				System: options.System,
+				Name:   options.Name,
+				CreateDialer: func(interfaceName string) N.Dialer {
+					return common.Must1(dialer.NewDefault(ctx, option.DialerOptions{
+						BindInterface: interfaceName,
+					}))
+				},
 				Dialer: outboundDialer,
 				Address: []netip.Prefix{
 					netip.MustParsePrefix(appConfig.IPv4 + "/32"),
 					netip.MustParsePrefix(appConfig.IPv6 + "/128"),
 				},
+				AllowedAddress:       options.AllowedIPs,
 				Endpoint:             endpoint,
 				TLSConfig:            tlsConfig,
 				UseHTTP2:             options.UseHTTP2,

@@ -25,6 +25,7 @@ const USER_TYPES: { value: UserType; label: string }[] = [
   { value: "mtproxy", label: "MTProxy" },
   { value: "naive", label: "Naive" },
   { value: "socks", label: "SOCKS" },
+  { value: "ssh", label: "SSH" },
   { value: "trojan", label: "Trojan" },
   { value: "trusttunnel", label: "TrustTunnel" },
   { value: "tuic", label: "TUIC" },
@@ -44,8 +45,9 @@ const FLOW_OPTIONS: { value: string; label: string }[] = [
 // same rule up-front (required fields invisible for the current type
 // are filtered out before validateRequired runs).
 const SHOW_UUID = new Set<UserType>(["vless", "vmess", "tuic"]);
-const SHOW_PASSWORD = new Set<UserType>(["anytls", "http", "hysteria", "hysteria2", "mixed", "naive", "socks", "trojan", "trusttunnel", "tuic"]);
+const SHOW_PASSWORD = new Set<UserType>(["anytls", "http", "hysteria", "hysteria2", "mixed", "naive", "socks", "ssh", "trojan", "trusttunnel", "tuic"]);
 const SHOW_SECRET = new Set<UserType>(["mtproxy"]);
+const SHOW_AUTHORIZED_KEYS = new Set<UserType>(["ssh"]);
 const SHOW_FLOW = new Set<UserType>(["vless"]);
 const SHOW_ALTER_ID = new Set<UserType>(["vmess"]);
 
@@ -103,7 +105,7 @@ export function UsersPage() {
         options: USER_TYPES,
         // Switching the user type wipes every credential field so the form
         // matches the legacy admin's behaviour of starting fresh.
-        clears: ["uuid", "password", "secret", "flow", "alter_id"],
+        clears: ["uuid", "password", "secret", "authorized_keys", "flow", "alter_id"],
       },
       // Credential fields: the Go struct validator reports "required" for
       // whichever of these is missing once the type is chosen, so each one
@@ -111,8 +113,9 @@ export function UsersPage() {
       // are filtered out before validateRequired runs, so e.g. Password is
       // only enforced for hysteria/hysteria2/trojan/tuic and not for vless.
       { name: "uuid", label: "UUID", type: "uuid", required: true, visibleWhen: showFor(SHOW_UUID) },
-      { name: "password", label: "Password", type: "text", required: true, visibleWhen: showFor(SHOW_PASSWORD) },
+      { name: "password", label: "Password", type: "text", visibleWhen: showFor(SHOW_PASSWORD) },
       { name: "secret", label: "Secret", type: "text", required: true, visibleWhen: showFor(SHOW_SECRET) },
+      { name: "authorized_keys", label: "Authorized Keys", type: "string-list", visibleWhen: showFor(SHOW_AUTHORIZED_KEYS) },
       {
         name: "flow",
         label: "Flow",
@@ -135,6 +138,7 @@ export function UsersPage() {
       uuid: u.uuid,
       password: u.password,
       secret: u.secret,
+      authorized_keys: u.authorized_keys ?? [],
       flow: u.flow,
       alter_id: u.alter_id,
     }),
@@ -146,6 +150,7 @@ export function UsersPage() {
       uuid: f.uuid ? String(f.uuid).trim() : undefined,
       password: f.password ? String(f.password) : undefined,
       secret: f.secret ? String(f.secret) : undefined,
+      authorized_keys: Array.isArray(f.authorized_keys) ? (f.authorized_keys as string[]).filter(Boolean) : undefined,
       flow: f.flow ? String(f.flow) : undefined,
       alter_id: f.alter_id !== undefined && f.alter_id !== "" ? Number(f.alter_id) : undefined,
     }),
@@ -154,6 +159,7 @@ export function UsersPage() {
       if (f.uuid && String(f.uuid).trim() !== "") out.uuid = String(f.uuid).trim();
       if (f.password !== undefined && f.password !== "") out.password = String(f.password);
       if (f.secret !== undefined && f.secret !== "") out.secret = String(f.secret);
+      if (Array.isArray(f.authorized_keys) && (f.authorized_keys as string[]).filter(Boolean).length > 0) out.authorized_keys = (f.authorized_keys as string[]).filter(Boolean);
       if (f.flow !== undefined && f.flow !== "") out.flow = String(f.flow);
       if (f.alter_id !== undefined && f.alter_id !== "") out.alter_id = Number(f.alter_id);
       return out;

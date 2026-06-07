@@ -5,15 +5,17 @@ import (
 	"net/netip"
 	"time"
 
-	tun "github.com/sagernet/sing-tun"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/tls"
 )
 
 type TunnelOptions struct {
-	Handler              tun.Handler
+	System               bool
+	Name                 string
+	CreateDialer         func(interfaceName string) N.Dialer
 	Dialer               N.Dialer
 	Address              []netip.Prefix
+	AllowedAddress       []netip.Prefix
 	Endpoint             net.Addr
 	TLSConfig            tls.Config
 	UseHTTP2             bool

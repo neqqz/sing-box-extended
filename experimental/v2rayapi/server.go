@@ -56,7 +56,7 @@ func (s *Server) Start(stage adapter.StartStage) error {
 	if err != nil {
 		return err
 	}
-	s.logger.Info("grpc server started at ", listener.Addr())
+	s.logger.Notice("grpc server started at ", listener.Addr())
 	s.tcpListener = listener
 	go func() {
 		err = s.grpcServer.Serve(listener)

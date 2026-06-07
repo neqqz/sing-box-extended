@@ -6,8 +6,8 @@ import (
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
-	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/common/onclose"
+	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/route"
@@ -172,8 +172,6 @@ func (h *Outbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn,
 func (h *Outbound) GetStrategy() ConnectionStrategy {
 	return h.strategy
 }
-
-
 
 func connChecker(ctx context.Context, closeFunc func() error) {
 	<-ctx.Done()

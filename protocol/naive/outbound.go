@@ -227,7 +227,7 @@ func (h *Outbound) Start(stage adapter.StartStage) error {
 	if err != nil {
 		return err
 	}
-	h.logger.Info("NaiveProxy started, version: ", h.client.Engine().Version())
+	h.logger.Notice("NaiveProxy started, version: ", h.client.Engine().Version())
 	return nil
 }
 

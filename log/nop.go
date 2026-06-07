@@ -47,6 +47,9 @@ func (f *nopFactory) Debug(args ...any) {
 func (f *nopFactory) Info(args ...any) {
 }
 
+func (f *nopFactory) Notice(args ...any) {
+}
+
 func (f *nopFactory) Warn(args ...any) {
 }
 
@@ -66,6 +69,9 @@ func (f *nopFactory) DebugContext(ctx context.Context, args ...any) {
 }
 
 func (f *nopFactory) InfoContext(ctx context.Context, args ...any) {
+}
+
+func (f *nopFactory) NoticeContext(ctx context.Context, args ...any) {
 }
 
 func (f *nopFactory) WarnContext(ctx context.Context, args ...any) {

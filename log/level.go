@@ -11,6 +11,7 @@ const (
 	LevelFatal
 	LevelError
 	LevelWarn
+	LevelNotice
 	LevelInfo
 	LevelDebug
 	LevelTrace
@@ -24,6 +25,8 @@ func FormatLevel(level Level) string {
 		return "debug"
 	case LevelInfo:
 		return "info"
+	case LevelNotice:
+		return "notice"
 	case LevelWarn:
 		return "warn"
 	case LevelError:
@@ -45,6 +48,8 @@ func ParseLevel(level string) (Level, error) {
 		return LevelDebug, nil
 	case "info":
 		return LevelInfo, nil
+	case "notice":
+		return LevelNotice, nil
 	case "warn", "warning":
 		return LevelWarn, nil
 	case "error":

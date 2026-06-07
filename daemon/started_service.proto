@@ -59,9 +59,10 @@ enum LogLevel {
   FATAL = 1;
   ERROR = 2;
   WARN = 3;
-  INFO = 4;
-  DEBUG = 5;
-  TRACE = 6;
+  NOTICE = 4;
+  INFO = 5;
+  DEBUG = 6;
+  TRACE = 7;
 }
 
 message Log {

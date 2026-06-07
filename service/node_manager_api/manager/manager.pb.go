@@ -151,18 +151,19 @@ func (x *Node) GetUuid() string {
 }
 
 type User struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Username      string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
-	Inbound       string                 `protobuf:"bytes,3,opt,name=inbound,proto3" json:"inbound,omitempty"`
-	Type          string                 `protobuf:"bytes,4,opt,name=type,proto3" json:"type,omitempty"`
-	Uuid          string                 `protobuf:"bytes,5,opt,name=uuid,proto3" json:"uuid,omitempty"`
-	Password      string                 `protobuf:"bytes,6,opt,name=password,proto3" json:"password,omitempty"`
-	Secret        string                 `protobuf:"bytes,7,opt,name=secret,proto3" json:"secret,omitempty"`
-	Flow          string                 `protobuf:"bytes,8,opt,name=flow,proto3" json:"flow,omitempty"`
-	AlterId       int32                  `protobuf:"varint,9,opt,name=alter_id,json=alterId,proto3" json:"alter_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Id             int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	Username       string                 `protobuf:"bytes,2,opt,name=username,proto3" json:"username,omitempty"`
+	Inbound        string                 `protobuf:"bytes,3,opt,name=inbound,proto3" json:"inbound,omitempty"`
+	Type           string                 `protobuf:"bytes,4,opt,name=type,proto3" json:"type,omitempty"`
+	Uuid           string                 `protobuf:"bytes,5,opt,name=uuid,proto3" json:"uuid,omitempty"`
+	Password       string                 `protobuf:"bytes,6,opt,name=password,proto3" json:"password,omitempty"`
+	Secret         string                 `protobuf:"bytes,7,opt,name=secret,proto3" json:"secret,omitempty"`
+	Flow           string                 `protobuf:"bytes,8,opt,name=flow,proto3" json:"flow,omitempty"`
+	AlterId        int32                  `protobuf:"varint,9,opt,name=alter_id,json=alterId,proto3" json:"alter_id,omitempty"`
+	AuthorizedKeys []string               `protobuf:"bytes,10,rep,name=authorized_keys,json=authorizedKeys,proto3" json:"authorized_keys,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *User) Reset() {
@@ -256,6 +257,13 @@ func (x *User) GetAlterId() int32 {
 		return x.AlterId
 	}
 	return 0
+}
+
+func (x *User) GetAuthorizedKeys() []string {
+	if x != nil {
+		return x.AuthorizedKeys
+	}
+	return nil
 }
 
 type UserList struct {
@@ -1338,7 +1346,7 @@ const file_service_node_manager_api_manager_manager_proto_rawDesc = "" +
 	"\n" +
 	".service/node_manager_api/manager/manager.proto\x12\x13node_manager_api.v1\"\x1a\n" +
 	"\x04Node\x12\x12\n" +
-	"\x04uuid\x18\x01 \x01(\tR\x04uuid\"\xd7\x01\n" +
+	"\x04uuid\x18\x01 \x01(\tR\x04uuid\"\x80\x02\n" +
 	"\x04User\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x05R\x02id\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x18\n" +
@@ -1348,7 +1356,9 @@ const file_service_node_manager_api_manager_manager_proto_rawDesc = "" +
 	"\bpassword\x18\x06 \x01(\tR\bpassword\x12\x16\n" +
 	"\x06secret\x18\a \x01(\tR\x06secret\x12\x12\n" +
 	"\x04flow\x18\b \x01(\tR\x04flow\x12\x19\n" +
-	"\balter_id\x18\t \x01(\x05R\aalterId\"=\n" +
+	"\balter_id\x18\t \x01(\x05R\aalterId\x12'\n" +
+	"\x0fauthorized_keys\x18\n" +
+	" \x03(\tR\x0eauthorizedKeys\"=\n" +
 	"\bUserList\x121\n" +
 	"\x06values\x18\x01 \x03(\v2\x19.node_manager_api.v1.UserR\x06values\"\x83\x02\n" +
 	"\x10BandwidthLimiter\x12\x0e\n" +

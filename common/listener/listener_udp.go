@@ -54,7 +54,7 @@ func (l *Listener) ListenUDP() (net.PacketConn, error) {
 	}
 	l.udpConn = udpConn.(*net.UDPConn)
 	l.udpAddr = bindAddr
-	l.logger.Info("udp server started at ", udpConn.LocalAddr())
+	l.logger.Notice("udp server started at ", udpConn.LocalAddr())
 	return udpConn, err
 }
 

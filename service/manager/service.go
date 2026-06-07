@@ -32,10 +32,10 @@ func RegisterService(registry *boxService.Registry) {
 
 type Service struct {
 	boxService.Adapter
-	ctx             context.Context
-	logger          log.ContextLogger
-	repository      constant.Repository
-	nodes           map[string]constant.ConnectedNode
+	ctx        context.Context
+	logger     log.ContextLogger
+	repository constant.Repository
+	nodes      map[string]constant.ConnectedNode
 
 	limiterLocks map[int]map[string]*cache.Cache[string, struct{}]
 	trafficUsage map[int]*TrafficUsage
@@ -92,6 +92,10 @@ func NewService(ctx context.Context, logger log.ContextLogger, tag string, optio
 			}
 			if user.Password == "" {
 				sl.ReportError(user.Password, "password", "Password", "required", "")
+			}
+		case "ssh":
+			if user.Password == "" && len(user.AuthorizedKeys) == 0 {
+				sl.ReportError(user.Password, "password", "Password", "required_without", "")
 			}
 		case "mtproxy":
 			if user.Secret == "" {

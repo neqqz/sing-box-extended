@@ -38,8 +38,8 @@ type ControlChannel struct {
 
 func NewControlChannel(io PacketIO, crypt ControlCrypt, local SessionID) *ControlChannel {
 	ch := &ControlChannel{
-		io:      io,
-		
+		io: io,
+
 		clock:   time.Now,
 		local:   local,
 		pending: make(map[uint32]*ControlPacket),

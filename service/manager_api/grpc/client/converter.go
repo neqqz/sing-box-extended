@@ -59,18 +59,19 @@ func convertNode(v *pb.Node) CM.Node {
 
 func convertUser(v *pb.User) CM.User {
 	return CM.User{
-		ID:        int(v.GetId()),
-		SquadIDs:  toIntSlice(v.GetSquadIds()),
-		Username:  v.GetUsername(),
-		Inbound:   v.GetInbound(),
-		Type:      v.GetType(),
-		UUID:      v.GetUuid(),
-		Password:  v.GetPassword(),
-		Secret:    v.GetSecret(),
-		Flow:      v.GetFlow(),
-		AlterID:   int(v.GetAlterId()),
-		CreatedAt: timeFromNano(v.GetCreatedAt()),
-		UpdatedAt: timeFromNano(v.GetUpdatedAt()),
+		ID:             int(v.GetId()),
+		SquadIDs:       toIntSlice(v.GetSquadIds()),
+		Username:       v.GetUsername(),
+		Inbound:        v.GetInbound(),
+		Type:           v.GetType(),
+		UUID:           v.GetUuid(),
+		Password:       v.GetPassword(),
+		Secret:         v.GetSecret(),
+		AuthorizedKeys: v.GetAuthorizedKeys(),
+		Flow:           v.GetFlow(),
+		AlterID:        int(v.GetAlterId()),
+		CreatedAt:      timeFromNano(v.GetCreatedAt()),
+		UpdatedAt:      timeFromNano(v.GetUpdatedAt()),
 	}
 }
 
@@ -83,7 +84,7 @@ func convertBandwidthLimiter(v *pb.BandwidthLimiter) CM.BandwidthLimiter {
 		Strategy:       v.GetStrategy(),
 		ConnectionType: v.GetConnectionType(),
 		Mode:           v.GetMode(),
-		FlowKeys:      v.GetFlowKeys(),
+		FlowKeys:       v.GetFlowKeys(),
 		Speed:          v.GetSpeed(),
 		RawSpeed:       v.GetRawSpeed(),
 		CreatedAt:      timeFromNano(v.GetCreatedAt()),

@@ -53,7 +53,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if err := c.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start mieru client: %w", err)
 	}
-	logger.InfoContext(ctx, "mieru client is started")
+	logger.NoticeContext(ctx, "mieru client is started")
 
 	return &Outbound{
 		Adapter: outbound.NewAdapterWithDialerOptions(C.TypeMieru, tag, []string{N.NetworkTCP, N.NetworkUDP}, options.DialerOptions),

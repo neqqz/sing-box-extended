@@ -10,7 +10,6 @@ import (
 	"net/netip"
 	"sync"
 	"time"
-
 )
 
 const (

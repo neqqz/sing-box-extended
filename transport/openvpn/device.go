@@ -18,16 +18,23 @@ type Device interface {
 }
 
 type DeviceOptions struct {
-	Context      context.Context
-	Logger       logger.ContextLogger
-	Handler      tun.Handler
-	UDPTimeout   time.Duration
-	CreateDialer func(interfaceName string) N.Dialer
-	Name         string
-	MTU          uint32
-	Address      []netip.Prefix
+	Context        context.Context
+	Logger         logger.ContextLogger
+	System         bool
+	UDPTimeout     time.Duration
+	CreateDialer   func(interfaceName string) N.Dialer
+	Name           string
+	MTU            uint32
+	Address        []netip.Prefix
+	AllowedAddress []netip.Prefix
 }
 
 func NewDevice(options DeviceOptions) (Device, error) {
-	return newStackDevice(options)
+	if !options.System {
+		return newStackDevice(options)
+	} else if !tun.WithGVisor {
+		return newSystemDevice(options)
+	} else {
+		return newSystemStackDevice(options)
+	}
 }

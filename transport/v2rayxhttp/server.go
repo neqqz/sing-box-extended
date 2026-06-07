@@ -197,7 +197,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 				Reader: httpSC,
 			})
 			if err != nil {
-				s.logger.InfoContext(request.Context(), err, "failed to upload (PushReader)")
+				s.logger.DebugContext(request.Context(), err, "failed to upload (PushReader)")
 				writer.WriteHeader(http.StatusConflict)
 			} else {
 				writer.Header().Set("X-Accel-Buffering", "no")
@@ -242,7 +242,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			headerPayloadEncoded := strings.Join(headerPayloadChunks, "")
 			headerPayload, err = base64.RawURLEncoding.DecodeString(headerPayloadEncoded)
 			if err != nil {
-				s.logger.InfoContext(request.Context(), err, "Invalid base64 in header's payload")
+				s.logger.DebugContext(request.Context(), err, "Invalid base64 in header's payload")
 				writer.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -261,7 +261,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			cookiePayloadEncoded := strings.Join(cookiePayloadChunks, "")
 			cookiePayload, err = base64.RawURLEncoding.DecodeString(cookiePayloadEncoded)
 			if err != nil {
-				s.logger.InfoContext(request.Context(), err, "Invalid base64 in cookies' payload")
+				s.logger.DebugContext(request.Context(), err, "Invalid base64 in cookies' payload")
 				writer.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -281,7 +281,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 				bodyPayload, readErr = buf.ReadAllToBytes(io.LimitReader(request.Body, int64(scMaxEachPostBytes)+1))
 			}
 			if readErr != nil {
-				s.logger.InfoContext(request.Context(), readErr, "failed to read body payload")
+				s.logger.DebugContext(request.Context(), readErr, "failed to read body payload")
 				writer.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -304,7 +304,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		seq, err := strconv.ParseUint(seqStr, 10, 64)
 		if err != nil {
-			s.logger.InfoContext(request.Context(), err, "failed to upload (ParseUint)")
+			s.logger.DebugContext(request.Context(), err, "failed to upload (ParseUint)")
 			writer.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -313,7 +313,7 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			Seq:     seq,
 		})
 		if err != nil {
-			s.logger.InfoContext(request.Context(), err, "failed to upload (PushPayload)")
+			s.logger.DebugContext(request.Context(), err, "failed to upload (PushPayload)")
 			writer.WriteHeader(http.StatusInternalServerError)
 			return
 		}

@@ -22,7 +22,7 @@ func NewBondedConn(conns []net.Conn, downloadRatios, uploadRatios []uint8) *bond
 		conns:          conns,
 		downloadRatios: downloadRatios,
 		uploadRatios:   uploadRatios,
-		readBuffer:     bytes.NewBuffer(make([]byte, 0, 65536)),
+		readBuffer:     bytes.NewBuffer(make([]byte, 0, 4096)),
 	}
 }
 

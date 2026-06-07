@@ -6,6 +6,6 @@ type ManagerServiceDatabase struct {
 }
 
 type ManagerServiceOptions struct {
-	Inbounds []string              `json:"inbounds"`
+	Inbounds []string               `json:"inbounds"`
 	Database ManagerServiceDatabase `json:"database"`
 }

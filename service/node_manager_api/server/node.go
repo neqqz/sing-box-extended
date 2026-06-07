@@ -239,15 +239,16 @@ func (s *RemoteNode) close(err error) {
 
 func (s *RemoteNode) convertUser(user CS.User) *pb.User {
 	return &pb.User{
-		Id:       int32(user.ID),
-		Username: user.Username,
-		Inbound:  user.Inbound,
-		Type:     user.Type,
-		Uuid:     user.UUID,
-		Password: user.Password,
-		Secret:   user.Secret,
-		Flow:     user.Flow,
-		AlterId:  int32(user.AlterID),
+		Id:             int32(user.ID),
+		Username:       user.Username,
+		Inbound:        user.Inbound,
+		Type:           user.Type,
+		Uuid:           user.UUID,
+		Password:       user.Password,
+		Secret:         user.Secret,
+		AuthorizedKeys: user.AuthorizedKeys,
+		Flow:           user.Flow,
+		AlterId:        int32(user.AlterID),
 	}
 }
 

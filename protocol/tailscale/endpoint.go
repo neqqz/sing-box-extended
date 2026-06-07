@@ -435,7 +435,7 @@ func (t *Endpoint) watchState() {
 		}
 		authURL := localBackend.StatusWithoutPeers().AuthURL
 		if authURL != "" {
-			t.logger.Info("Waiting for authentication: ", authURL)
+			t.logger.Notice("Waiting for authentication: ", authURL)
 			if t.platformInterface != nil {
 				err := t.platformInterface.SendNotification(&adapter.Notification{
 					Identifier: "tailscale-authentication",

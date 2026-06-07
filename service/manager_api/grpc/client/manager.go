@@ -188,15 +188,16 @@ func (s *Client) CreateUser(in CM.UserCreate) (CM.User, error) {
 		return CM.User{}, err
 	}
 	reply, err := c.CreateUser(s.callContext(), &pb.UserCreate{
-		SquadIds: toInt32Slice(in.SquadIDs),
-		Username: in.Username,
-		Inbound:  in.Inbound,
-		Type:     in.Type,
-		Uuid:     in.UUID,
-		Password: in.Password,
-		Secret:   in.Secret,
-		Flow:     in.Flow,
-		AlterId:  int32(in.AlterID),
+		SquadIds:       toInt32Slice(in.SquadIDs),
+		Username:       in.Username,
+		Inbound:        in.Inbound,
+		Type:           in.Type,
+		Uuid:           in.UUID,
+		Password:       in.Password,
+		Secret:         in.Secret,
+		AuthorizedKeys: in.AuthorizedKeys,
+		Flow:           in.Flow,
+		AlterId:        int32(in.AlterID),
 	})
 	if err != nil {
 		return CM.User{}, mapError(err)
@@ -252,11 +253,12 @@ func (s *Client) UpdateUser(id int, in CM.UserUpdate) (CM.User, error) {
 	reply, err := c.UpdateUser(s.callContext(), &pb.UserUpdateRequest{
 		Id: int32(id),
 		Update: &pb.UserUpdate{
-			Uuid:     in.UUID,
-			Password: in.Password,
-			Secret:   in.Secret,
-			Flow:     in.Flow,
-			AlterId:  int32(in.AlterID),
+			Uuid:           in.UUID,
+			Password:       in.Password,
+			Secret:         in.Secret,
+			AuthorizedKeys: in.AuthorizedKeys,
+			Flow:           in.Flow,
+			AlterId:        int32(in.AlterID),
 		},
 	})
 	if err != nil {
@@ -289,7 +291,7 @@ func (s *Client) CreateBandwidthLimiter(in CM.BandwidthLimiterCreate) (CM.Bandwi
 		Strategy:       in.Strategy,
 		ConnectionType: in.ConnectionType,
 		Mode:           in.Mode,
-		FlowKeys:      in.FlowKeys,
+		FlowKeys:       in.FlowKeys,
 		Speed:          in.Speed,
 	})
 	if err != nil {
@@ -351,7 +353,7 @@ func (s *Client) UpdateBandwidthLimiter(id int, in CM.BandwidthLimiterUpdate) (C
 			Strategy:       in.Strategy,
 			ConnectionType: in.ConnectionType,
 			Mode:           in.Mode,
-			FlowKeys:      in.FlowKeys,
+			FlowKeys:       in.FlowKeys,
 			Speed:          in.Speed,
 		},
 	})

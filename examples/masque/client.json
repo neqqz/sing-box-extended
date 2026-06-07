@@ -25,6 +25,8 @@
     {
       "type": "masque",
       "tag": "masque-out",
+      "system": false,
+      "name": "masque0",
       "use_http2": false,
       "use_ipv6": false,
       "profile": {

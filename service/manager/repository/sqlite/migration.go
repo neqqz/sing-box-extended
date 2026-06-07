@@ -213,6 +213,12 @@ var migrations = map[string]string{
         DROP TABLE IF EXISTS nodes;
         DROP TABLE IF EXISTS squads;
     `,
+	"2_add_authorized_keys.up.sql": `
+        ALTER TABLE users ADD COLUMN authorized_keys TEXT NOT NULL DEFAULT '[]';
+    `,
+	"2_add_authorized_keys.down.sql": `
+        ALTER TABLE users DROP COLUMN authorized_keys;
+    `,
 }
 
 func Migrate(db *sql.DB) error {

@@ -164,7 +164,7 @@ func (c *STDServerConfig) certificateUpdated(path string) error {
 		config.Certificates = []tls.Certificate{keyPair}
 		c.config = config
 		c.access.Unlock()
-		c.logger.Info("reloaded TLS certificate")
+		c.logger.Notice("reloaded TLS certificate")
 	} else if common.Contains(c.clientCertificatePath, path) {
 		clientCertificateCA := x509.NewCertPool()
 		var reloaded bool
@@ -188,7 +188,7 @@ func (c *STDServerConfig) certificateUpdated(path string) error {
 		config.ClientCAs = clientCertificateCA
 		c.config = config
 		c.access.Unlock()
-		c.logger.Info("reloaded client certificates")
+		c.logger.Notice("reloaded client certificates")
 	} else if path == c.echKeyPath {
 		echKey, err := os.ReadFile(c.echKeyPath)
 		if err != nil {
@@ -198,7 +198,7 @@ func (c *STDServerConfig) certificateUpdated(path string) error {
 		if err != nil {
 			return err
 		}
-		c.logger.Info("reloaded ECH keys")
+		c.logger.Notice("reloaded ECH keys")
 	}
 	return nil
 }

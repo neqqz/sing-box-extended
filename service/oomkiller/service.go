@@ -98,12 +98,12 @@ func (s *Service) Start(stage adapter.StartStage) error {
 		s.adaptiveTimer = newAdaptiveTimer(s.logger, s.router, s.timerConfig)
 		s.adaptiveTimer.start(false)
 		if s.memoryLimit > 0 {
-			s.logger.Info("started memory monitor with limit: ", s.memoryLimit/(1024*1024), " MiB")
+			s.logger.Notice("started memory monitor with limit: ", s.memoryLimit/(1024*1024), " MiB")
 		} else {
-			s.logger.Info("started memory monitor with available memory detection")
+			s.logger.Notice("started memory monitor with available memory detection")
 		}
 	} else {
-		s.logger.Info("started memory pressure monitor")
+		s.logger.Notice("started memory pressure monitor")
 	}
 
 	globalAccess.Lock()

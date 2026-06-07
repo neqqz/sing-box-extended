@@ -26,9 +26,9 @@
       "concurrency": 8192,
       // domain_fronting_port is a port we use to connect to a fronting domain.
       "domain_fronting_port": 443,
-      // domain_fronting_ip is an IP address to use when connecting to the fronting
-      // domain instead of resolving the hostname from the secret via DNS.
-      "domain_fronting_ip": "",
+      // domain_fronting_host is the address (IP or hostname) to use when connecting
+      // to the fronting domain instead of resolving the hostname from the secret via DNS.
+      "domain_fronting_host": "",
       // domain_fronting_proxy_protocol is used if communication between upstream
       // endpoint and sing-box supports proxy protocol. 
       "domain_fronting_proxy_protocol": false,

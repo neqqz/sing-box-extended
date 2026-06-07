@@ -154,6 +154,10 @@ func (l *observableLogger) Info(args ...any) {
 	l.InfoContext(context.Background(), args...)
 }
 
+func (l *observableLogger) Notice(args ...any) {
+	l.NoticeContext(context.Background(), args...)
+}
+
 func (l *observableLogger) Warn(args ...any) {
 	l.WarnContext(context.Background(), args...)
 }
@@ -180,6 +184,10 @@ func (l *observableLogger) DebugContext(ctx context.Context, args ...any) {
 
 func (l *observableLogger) InfoContext(ctx context.Context, args ...any) {
 	l.Log(ctx, LevelInfo, args)
+}
+
+func (l *observableLogger) NoticeContext(ctx context.Context, args ...any) {
+	l.Log(ctx, LevelNotice, args)
 }
 
 func (l *observableLogger) WarnContext(ctx context.Context, args ...any) {

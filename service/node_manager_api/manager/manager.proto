@@ -48,6 +48,7 @@ message User {
   string secret = 7;
   string flow = 8;
   int32  alter_id = 9;
+  repeated string authorized_keys = 10;
 }
 
 message UserList {

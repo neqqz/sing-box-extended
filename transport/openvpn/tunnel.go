@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"time"
@@ -18,10 +19,14 @@ import (
 )
 
 type TunnelOptions struct {
+	System         bool
+	Name           string
+	CreateDialer   func(interfaceName string) N.Dialer
 	Dialer         N.Dialer
 	Servers        []option.ServerOptions
 	TLSConfig      tls.Config
 	Config         *ClientConfig
+	AllowedAddress []netip.Prefix
 	UDPTimeout     time.Duration
 	ReconnectDelay time.Duration
 	PingInterval   time.Duration
@@ -65,11 +70,15 @@ func (t *Tunnel) Start() error {
 			t.mtu = client.push.MTU
 		}
 		deviceOptions := DeviceOptions{
-			Context:    t.ctx,
-			Logger:     t.logger,
-			UDPTimeout: t.options.UDPTimeout,
-			MTU:        t.mtu,
-			Address:    client.push.Prefixes,
+			Context:        t.ctx,
+			Logger:         t.logger,
+			System:         t.options.System,
+			UDPTimeout:     t.options.UDPTimeout,
+			CreateDialer:   t.options.CreateDialer,
+			Name:           t.options.Name,
+			MTU:            t.mtu,
+			Address:        client.push.Prefixes,
+			AllowedAddress: t.options.AllowedAddress,
 		}
 		device, err := NewDevice(deviceOptions)
 		if err != nil {
@@ -214,7 +223,7 @@ func (t *Tunnel) getClient() (*Client, error) {
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
-		t.logger.InfoContext(t.ctx, "connecting to OpenVPN server")
+		t.logger.NoticeContext(t.ctx, "connecting to OpenVPN server")
 		client, err := t.connect()
 		if err != nil {
 			t.logger.ErrorContext(t.ctx, fmt.Errorf("connect failed: %v", err))
@@ -227,7 +236,7 @@ func (t *Tunnel) getClient() (*Client, error) {
 			continue
 		}
 		t.client = client
-		t.logger.InfoContext(t.ctx, "connected to OpenVPN server")
+		t.logger.NoticeContext(t.ctx, "connected to OpenVPN server")
 		return client, nil
 	}
 }

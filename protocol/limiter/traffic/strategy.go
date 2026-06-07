@@ -76,8 +76,6 @@ type connEntry struct {
 	conn net.Conn
 }
 
-
-
 type ManagerTrafficStrategy struct {
 	strategies map[string]TrafficStrategy
 	conns      map[string][]*connEntry

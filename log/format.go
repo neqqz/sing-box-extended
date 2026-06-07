@@ -28,6 +28,8 @@ func (f Formatter) Format(ctx context.Context, level Level, tag string, message 
 			levelString = aurora.White(levelString).String()
 		case LevelInfo:
 			levelString = aurora.Cyan(levelString).String()
+		case LevelNotice:
+			levelString = aurora.Green(levelString).String()
 		case LevelWarn:
 			levelString = aurora.Yellow(levelString).String()
 		case LevelError, LevelFatal, LevelPanic:
@@ -97,6 +99,8 @@ func (f Formatter) FormatWithSimple(ctx context.Context, level Level, tag string
 			levelString = aurora.White(levelString).String()
 		case LevelInfo:
 			levelString = aurora.Cyan(levelString).String()
+		case LevelNotice:
+			levelString = aurora.Green(levelString).String()
 		case LevelWarn:
 			levelString = aurora.Yellow(levelString).String()
 		case LevelError, LevelFatal, LevelPanic:

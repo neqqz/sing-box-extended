@@ -27,7 +27,6 @@ CRONET_GO_PATH ?= $(shell pwd)/cronet-go
 .PHONY: test release docs build
 
 build:
-	export GOTOOLCHAIN=local && \
 	go build $(MAIN_PARAMS) $(MAIN)
 
 build_admin_panel:
@@ -94,6 +93,8 @@ release: build_admin_panel build_naive
 	mkdir dist/release
 	mv dist/*.tar.gz \
 		dist/*.zip \
+		dist/*.ipk \
+		dist/*.apk \
 		dist/release
 	ghr --replace --draft --prerelease -p 5 "v${VERSION}" dist/release
 	./codeberg-release.sh --replace --draft --prerelease -p 5 "v${VERSION}" dist/release

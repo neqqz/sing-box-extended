@@ -218,7 +218,7 @@ func (s *ProviderRemote) fetch(ctx context.Context) error {
 				}
 			}
 		}
-		s.logger.Info("update outbound provider ", s.Tag(), ": not modified")
+		s.logger.Notice("update outbound provider ", s.Tag(), ": not modified")
 		return nil
 	default:
 		return E.New("unexpected status: ", resp.Status)
@@ -262,7 +262,7 @@ func (s *ProviderRemote) fetch(ctx context.Context) error {
 			s.logger.Error("save outbound provider cache file: ", err)
 		}
 	}
-	s.logger.Info("updated outbound provider ", s.Tag())
+	s.logger.Notice("updated outbound provider ", s.Tag())
 	return nil
 }
 

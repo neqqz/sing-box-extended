@@ -49,46 +49,50 @@ type BaseNode struct {
 }
 
 type User struct {
-	ID        int       `json:"id" validate:"required"`
-	SquadIDs  []int     `json:"squad_ids" validate:"required,min=1"`
-	Username  string    `json:"username" validate:"required"`
-	Inbound   string    `json:"inbound" validate:"required"`
-	Type      string    `json:"type" validate:"required"`
-	UUID      string    `json:"uuid" validate:"required"`
-	Password  string    `json:"password" validate:"required"`
-	Secret    string    `json:"secret" validate:"required"`
-	Flow      string    `json:"flow" validate:"required"`
-	AlterID   int       `json:"alter_id" validate:"required"`
-	CreatedAt time.Time `json:"created_at" validate:"required"`
-	UpdatedAt time.Time `json:"updated_at" validate:"required"`
+	ID             int       `json:"id" validate:"required"`
+	SquadIDs       []int     `json:"squad_ids" validate:"required,min=1"`
+	Username       string    `json:"username" validate:"required"`
+	Inbound        string    `json:"inbound" validate:"required"`
+	Type           string    `json:"type" validate:"required"`
+	UUID           string    `json:"uuid" validate:"required"`
+	Password       string    `json:"password" validate:"required"`
+	Secret         string    `json:"secret" validate:"required"`
+	AuthorizedKeys []string  `json:"authorized_keys" validate:"omitempty"`
+	Flow           string    `json:"flow" validate:"required"`
+	AlterID        int       `json:"alter_id" validate:"required"`
+	CreatedAt      time.Time `json:"created_at" validate:"required"`
+	UpdatedAt      time.Time `json:"updated_at" validate:"required"`
 }
 
 type UserCreate struct {
-	SquadIDs []int  `json:"squad_ids" validate:"required,min=1"`
-	Username string `json:"username" validate:"required"`
-	Inbound  string `json:"inbound" validate:"required"`
-	Type     string `json:"type" validate:"required,oneof=anytls http hysteria hysteria2 mixed mtproxy naive socks trojan trusttunnel tuic vless vmess"`
-	UUID     string `json:"uuid" validate:"omitempty,uuid4"`
-	Password string `json:"password" validate:"omitempty"`
-	Secret   string `json:"secret" validate:"omitempty"`
-	Flow     string `json:"flow" validate:"omitempty"`
-	AlterID  int    `json:"alter_id" validate:"omitempty"`
+	SquadIDs       []int    `json:"squad_ids" validate:"required,min=1"`
+	Username       string   `json:"username" validate:"required"`
+	Inbound        string   `json:"inbound" validate:"required"`
+	Type           string   `json:"type" validate:"required,oneof=anytls http hysteria hysteria2 mixed mtproxy naive socks ssh trojan trusttunnel tuic vless vmess"`
+	UUID           string   `json:"uuid" validate:"omitempty,uuid4"`
+	Password       string   `json:"password" validate:"omitempty"`
+	Secret         string   `json:"secret" validate:"omitempty"`
+	AuthorizedKeys []string `json:"authorized_keys" validate:"omitempty"`
+	Flow           string   `json:"flow" validate:"omitempty"`
+	AlterID        int      `json:"alter_id" validate:"omitempty"`
 }
 
 type UserUpdate struct {
-	UUID     string `json:"uuid" validate:"omitempty,uuid4"`
-	Password string `json:"password" validate:"omitempty"`
-	Secret   string `json:"secret" validate:"omitempty"`
-	Flow     string `json:"flow" validate:"omitempty"`
-	AlterID  int    `json:"alter_id" validate:"omitempty"`
+	UUID           string   `json:"uuid" validate:"omitempty,uuid4"`
+	Password       string   `json:"password" validate:"omitempty"`
+	Secret         string   `json:"secret" validate:"omitempty"`
+	AuthorizedKeys []string `json:"authorized_keys" validate:"omitempty"`
+	Flow           string   `json:"flow" validate:"omitempty"`
+	AlterID        int      `json:"alter_id" validate:"omitempty"`
 }
 
 type BaseUser struct {
-	UUID     string `json:"uuid" validate:"omitempty,uuid4"`
-	Password string `json:"password" validate:"omitempty"`
-	Secret   string `json:"secret" validate:"omitempty"`
-	Flow     string `json:"flow" validate:"omitempty"`
-	AlterID  int    `json:"alter_id" validate:"omitempty"`
+	UUID           string   `json:"uuid" validate:"omitempty,uuid4"`
+	Password       string   `json:"password" validate:"omitempty"`
+	Secret         string   `json:"secret" validate:"omitempty"`
+	AuthorizedKeys []string `json:"authorized_keys" validate:"omitempty"`
+	Flow           string   `json:"flow" validate:"omitempty"`
+	AlterID        int      `json:"alter_id" validate:"omitempty"`
 }
 
 type ConnectionLimiter struct {
@@ -261,5 +265,3 @@ type BaseRateLimiter struct {
 	Count          uint32 `json:"count" validate:"excluded_if=Strategy bypass,required_unless=Strategy bypass"`
 	Interval       string `json:"interval" validate:"excluded_if=Strategy bypass,required_unless=Strategy bypass"`
 }
-
-

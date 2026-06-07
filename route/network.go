@@ -300,7 +300,7 @@ func (r *NetworkManager) UpdateInterfaces() error {
 				oldInterface.Expensive == newInterface.Expensive &&
 				oldInterface.Constrained == newInterface.Constrained
 		}) {
-			r.logger.Info("updated available networks: ", strings.Join(common.Map(newInterfaces, func(it adapter.NetworkInterface) string {
+			r.logger.Notice("updated available networks: ", strings.Join(common.Map(newInterfaces, func(it adapter.NetworkInterface) string {
 				var options []string
 				options = append(options, F.ToString(it.Type))
 				if it.Expensive {
@@ -430,9 +430,9 @@ func (r *NetworkManager) onWIFIStateChanged(state adapter.WIFIState) {
 		r.wifiState = state
 		r.wifiStateMutex.Unlock()
 		if state.SSID != "" {
-			r.logger.Info("WIFI state changed: SSID=", state.SSID, ", BSSID=", state.BSSID)
+			r.logger.Notice("WIFI state changed: SSID=", state.SSID, ", BSSID=", state.BSSID)
 		} else {
-			r.logger.Info("WIFI disconnected")
+			r.logger.Notice("WIFI disconnected")
 		}
 	} else {
 		r.wifiStateMutex.Unlock()
@@ -512,7 +512,7 @@ func (r *NetworkManager) notifyInterfaceUpdate(defaultInterface *control.Interfa
 			options = append(options, "constrained")
 		}
 	}
-	r.logger.Info("updated default interface ", defaultInterface.Name, ", ", strings.Join(options, ", "))
+	r.logger.Notice("updated default interface ", defaultInterface.Name, ", ", strings.Join(options, ", "))
 	r.UpdateWIFIState()
 
 	if !r.started {
@@ -538,5 +538,5 @@ func (r *NetworkManager) notifyWindowsPowerEvent(event int) {
 }
 
 func (r *NetworkManager) OnPackagesUpdated(packages int, sharedUsers int) {
-	r.logger.Info("updated packages list: ", packages, " packages, ", sharedUsers, " shared users")
+	r.logger.Notice("updated packages list: ", packages, " packages, ", sharedUsers, " shared users")
 }

@@ -179,6 +179,7 @@ func run() error {
 		for {
 			osSignal := <-osSignals
 			if osSignal == syscall.SIGHUP {
+				log.Notice("received SIGHUP, reloading...")
 				err = check()
 				if err != nil {
 					log.Error(E.Cause(err, "reload service"))

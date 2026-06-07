@@ -217,7 +217,7 @@ func (m *TransportManager) Remove(tag string) error {
 				return E.New("default server cannot be fakeip")
 			}
 			m.defaultTransport = nextTransport
-			m.logger.Info("updated default server to ", m.defaultTransport.Tag())
+			m.logger.Notice("updated default server to ", m.defaultTransport.Tag())
 		} else {
 			m.defaultTransport = nil
 		}
@@ -287,7 +287,7 @@ func (m *TransportManager) Create(ctx context.Context, logger log.ContextLogger,
 		}
 		m.defaultTransport = transport
 		if m.started {
-			m.logger.Info("updated default server to ", transport.Tag())
+			m.logger.Notice("updated default server to ", transport.Tag())
 		}
 	}
 	if transport.Type() == C.DNSTypeFakeIP {

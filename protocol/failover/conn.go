@@ -37,13 +37,13 @@ type failoverConn struct {
 func NewFailoverConn(ctx context.Context, conn net.Conn, dial dial, onClose func()) *failoverConn {
 	var writeBuffers [BufferSize][]byte
 	for i := range BufferSize {
-		writeBuffers[i] = make([]byte, 0, 1000)
+		writeBuffers[i] = make([]byte, 0, 1024)
 	}
 	return &failoverConn{
 		Conn:         conn,
 		ctx:          ctx,
 		dial:         dial,
-		readBuffer:   bytes.NewBuffer(make([]byte, 0, 1000)),
+		readBuffer:   bytes.NewBuffer(make([]byte, 0, 1024)),
 		writeBuffers: writeBuffers,
 		onClose:      onClose,
 	}

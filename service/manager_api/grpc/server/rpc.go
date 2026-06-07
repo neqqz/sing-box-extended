@@ -125,15 +125,16 @@ func (s *Server) DeleteNode(_ context.Context, req *pb.UuidRequest) (*pb.Node, e
 
 func (s *Server) CreateUser(_ context.Context, req *pb.UserCreate) (*pb.User, error) {
 	v, err := s.manager.CreateUser(CM.UserCreate{
-		SquadIDs: toIntSlice(req.GetSquadIds()),
-		Username: req.GetUsername(),
-		Inbound:  req.GetInbound(),
-		Type:     req.GetType(),
-		UUID:     req.GetUuid(),
-		Password: req.GetPassword(),
-		Secret:   req.GetSecret(),
-		Flow:     req.GetFlow(),
-		AlterID:  int(req.GetAlterId()),
+		SquadIDs:       toIntSlice(req.GetSquadIds()),
+		Username:       req.GetUsername(),
+		Inbound:        req.GetInbound(),
+		Type:           req.GetType(),
+		UUID:           req.GetUuid(),
+		Password:       req.GetPassword(),
+		Secret:         req.GetSecret(),
+		AuthorizedKeys: req.GetAuthorizedKeys(),
+		Flow:           req.GetFlow(),
+		AlterID:        int(req.GetAlterId()),
 	})
 	if err != nil {
 		return nil, err
@@ -172,11 +173,12 @@ func (s *Server) GetUser(_ context.Context, req *pb.IdRequest) (*pb.User, error)
 func (s *Server) UpdateUser(_ context.Context, req *pb.UserUpdateRequest) (*pb.User, error) {
 	u := req.GetUpdate()
 	v, err := s.manager.UpdateUser(int(req.GetId()), CM.UserUpdate{
-		UUID:     u.GetUuid(),
-		Password: u.GetPassword(),
-		Secret:   u.GetSecret(),
-		Flow:     u.GetFlow(),
-		AlterID:  int(u.GetAlterId()),
+		UUID:           u.GetUuid(),
+		Password:       u.GetPassword(),
+		Secret:         u.GetSecret(),
+		AuthorizedKeys: u.GetAuthorizedKeys(),
+		Flow:           u.GetFlow(),
+		AlterID:        int(u.GetAlterId()),
 	})
 	if err != nil {
 		return nil, err
@@ -200,7 +202,7 @@ func (s *Server) CreateBandwidthLimiter(_ context.Context, req *pb.BandwidthLimi
 		Strategy:       req.GetStrategy(),
 		ConnectionType: req.GetConnectionType(),
 		Mode:           req.GetMode(),
-		FlowKeys:      req.GetFlowKeys(),
+		FlowKeys:       req.GetFlowKeys(),
 		Speed:          req.GetSpeed(),
 	})
 	if err != nil {
@@ -245,7 +247,7 @@ func (s *Server) UpdateBandwidthLimiter(_ context.Context, req *pb.BandwidthLimi
 		Strategy:       u.GetStrategy(),
 		ConnectionType: u.GetConnectionType(),
 		Mode:           u.GetMode(),
-		FlowKeys:      u.GetFlowKeys(),
+		FlowKeys:       u.GetFlowKeys(),
 		Speed:          u.GetSpeed(),
 	})
 	if err != nil {

@@ -5,7 +5,6 @@ import (
 	stdtls "crypto/tls"
 	"encoding/base64"
 	"net"
-	"reflect"
 	"strings"
 	"sync"
 
@@ -96,7 +95,10 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			return nil, E.New("unknown packet encoding: ", options.PacketEncoding)
 		}
 	}
-	// Parse encryption configuration
+	muxOpts := common.PtrValueOrDefault(options.Multiplex)
+	if muxOpts.Enabled {
+		options.Flow = ""
+	}
 	if options.Encryption != "" && options.Encryption != "none" {
 		encryptionConfig, err := parseClientEncryption(options.Encryption)
 		if err != nil {
@@ -109,10 +111,6 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		logger.Debug("encryption initialized: keys=", len(encryptionConfig.keys), " xorMode=", encryptionConfig.xorMode, " seconds=", encryptionConfig.seconds, " padding=", encryptionConfig.padding)
 	}
 
-	muxOpts := common.PtrValueOrDefault(options.Multiplex)
-	if muxOpts.Enabled {
-		options.Flow = ""
-	}
 	outbound.client, err = vless.NewClient(options.UUID, options.Flow, logger)
 	if err != nil {
 		return nil, err
@@ -191,7 +189,6 @@ func (h *vlessDialer) DialContext(ctx context.Context, network string, destinati
 		conn, err = h.transport.DialContext(ctx)
 		if err == nil && h.vision {
 			if baseConn == nil {
-				// Only set baseConn if the transport delivered a TLS-capable connection
 				if isVisionTLSConn(conn) {
 					h.logger.Warn("Vision enabled but hook was not called by transport, using fallback")
 					baseConn = conn
@@ -210,7 +207,6 @@ func (h *vlessDialer) DialContext(ctx context.Context, network string, destinati
 		return nil, err
 	}
 
-	// Apply encryption if configured
 	if h.encryption != nil {
 		conn, err = h.encryption.Handshake(conn)
 		if err != nil {
@@ -218,36 +214,12 @@ func (h *vlessDialer) DialContext(ctx context.Context, network string, destinati
 		}
 	}
 
-	// For Vision: wrap the connection to expose the TLS/encryption connection for vless client
-	var visionBaseConn net.Conn // The connection to pass to Vision (TLS or encryption layer)
+	var visionBaseConn net.Conn
 	var visionCanSplice bool
 	if h.vision {
-		isRAWTransport := h.transport == nil
-
-		if baseConn != nil && !isVisionTLSConn(baseConn) {
-			baseConn = nil
-		}
-		if baseConn != nil {
-			// Has TLS/Reality: use baseConn (TLS connection)
-			visionBaseConn = baseConn
-			visionCanSplice = isRAWTransport
-			conn = newVisionConnWrapper(conn, baseConn)
-		} else if h.encryption != nil {
-			// Only has encryption (no TLS/Reality): use encryption layer itself
-			encConn := findEncryptionLayer(conn)
-			if encConn != nil {
-				visionBaseConn = encConn
-				if h.encryption.IsFullRandomXorMode() {
-					visionCanSplice = false
-				} else {
-					visionCanSplice = isRAWTransport
-				}
-				conn = newVisionConnWrapper(conn, encConn)
-			} else {
-				return nil, E.New("Vision: failed to find encryption layer")
-			}
-		} else {
-			return nil, E.New("Vision requires either TLS/Reality or Encryption")
+		conn, visionBaseConn, visionCanSplice, err = h.setupVision(conn, baseConn)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -255,8 +227,6 @@ func (h *vlessDialer) DialContext(ctx context.Context, network string, destinati
 	case N.NetworkTCP:
 		h.logger.InfoContext(ctx, "outbound connection to ", destination)
 		if h.vision && visionBaseConn != nil {
-			// For Vision, we need to pass the base connection (TLS or encryption layer)
-			// to prepareConn so it can properly initialize VisionConn
 			return h.client.DialEarlyConnWithOptions(conn, visionBaseConn, destination, visionCanSplice)
 		}
 		return h.client.DialEarlyConn(conn, destination)
@@ -281,6 +251,29 @@ func (h *vlessDialer) DialContext(ctx context.Context, network string, destinati
 	}
 }
 
+func (h *vlessDialer) setupVision(conn net.Conn, baseConn net.Conn) (net.Conn, net.Conn, bool, error) {
+	isRAWTransport := h.transport == nil
+
+	if baseConn != nil && !isVisionTLSConn(baseConn) {
+		baseConn = nil
+	}
+
+	if baseConn != nil {
+		return newVisionConnWrapper(conn, baseConn), baseConn, isRAWTransport, nil
+	}
+
+	if h.encryption != nil {
+		encConn := findEncryptionLayer(conn)
+		if encConn == nil {
+			return nil, nil, false, E.New("Vision: failed to find encryption layer")
+		}
+		canSplice := isRAWTransport && !h.encryption.IsFullRandomXorMode()
+		return newVisionConnWrapper(conn, encConn), encConn, canSplice, nil
+	}
+
+	return nil, nil, false, E.New("Vision requires either TLS/Reality or Encryption")
+}
+
 func (h *vlessDialer) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
 	h.logger.InfoContext(ctx, "outbound packet connection to ", destination)
 	ctx, metadata := adapter.ExtendContext(ctx)
@@ -299,7 +292,6 @@ func (h *vlessDialer) ListenPacket(ctx context.Context, destination M.Socksaddr)
 		common.Close(conn)
 		return nil, err
 	}
-	// Apply encryption if configured
 	if h.encryption != nil {
 		conn, err = h.encryption.Handshake(conn)
 		if err != nil {
@@ -362,7 +354,6 @@ func (c *visionConnWrapper) WriterReplaceable() bool {
 	return true
 }
 
-// isVisionTLSConn returns true when the provided connection exposes TLS semantics Vision expects.
 func isVisionTLSConn(conn net.Conn) bool {
 	if conn == nil {
 		return false
@@ -372,16 +363,6 @@ func isVisionTLSConn(conn net.Conn) bool {
 	}
 	if _, ok := conn.(interface{ Handshake() error }); ok {
 		return true
-	}
-	connType := reflect.TypeOf(conn)
-	if connType == nil {
-		return false
-	}
-	if connType.Kind() == reflect.Ptr {
-		pkgPath := connType.Elem().PkgPath()
-		if pkgPath == "crypto/tls" || strings.Contains(pkgPath, "utls") || strings.Contains(pkgPath, "shadowtls") {
-			return true
-		}
 	}
 	return false
 }

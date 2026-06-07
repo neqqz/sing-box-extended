@@ -393,6 +393,49 @@ builds:
       - android_arm64
       - android_386
       - android_amd64
+  - id: openwrt
+    <<: *template
+    hooks:
+      post:
+        - cmd: bash .github/build_openwrt_packages.sh "{{ .Version }}" "{{ .Target }}" "{{ .Path }}"
+    targets:
+      - linux_amd64_v1
+      - linux_arm64
+      - linux_386
+      - linux_arm_7
+      - linux_arm_6
+      - linux_riscv64
+      - linux_loong64
+  - id: openwrt-mips
+    <<: *template
+    tags:
+      - with_gvisor
+      - with_quic
+      - with_dhcp
+      - with_wireguard
+      - with_utls
+      - with_acme
+      - with_clash_api
+      - with_tailscale
+      - with_masque
+      - with_mtproxy
+      - with_ccm
+      - with_ocm
+      - with_openvpn
+      - with_trusttunnel
+      - with_sudoku
+      - badlinkname
+      - tfogo_checklinkname0
+    hooks:
+      post:
+        - cmd: bash .github/build_openwrt_packages.sh "{{ .Version }}" "{{ .Target }}" "{{ .Path }}"
+    targets:
+      - linux_arm_5
+      - linux_mips_softfloat
+      - linux_mips64_softfloat
+      - linux_mipsle_softfloat
+      - linux_mipsle_hardfloat
+      - linux_mips64le
 upx:
   - enabled: true
     ids:
@@ -496,5 +539,5 @@ release:
     - archive-naive-purego-windows-amd64
     - archive-naive-purego-windows-arm64
     - archive-compressed
-    - package
+    - archive-openwrt
   skip_upload: true

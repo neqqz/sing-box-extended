@@ -24,7 +24,15 @@
       ],
       "transport": {
         "type": "mkcp",
-        "mtu": 1500
+        "mtu": 1350, // 576-1460
+        "tti": 50, // 10-100, ms
+        "uplink_capacity": 12, // MB/s
+        "downlink_capacity": 100, // MB/s
+        "congestion": false,
+        "read_buffer_size": 1, // MB
+        "write_buffer_size": 1, // MB
+        "header_type": "none", // none, srtp, utp, wechat-video, dtls, wireguard
+        "seed": "password"
       }
     }
   ],

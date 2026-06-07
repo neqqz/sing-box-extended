@@ -42,6 +42,7 @@ export type UserType =
   | "mtproxy"
   | "naive"
   | "socks"
+  | "ssh"
   | "trojan"
   | "trusttunnel"
   | "tuic"
@@ -57,6 +58,7 @@ export interface User {
   uuid: string;
   password: string;
   secret: string;
+  authorized_keys: string[];
   flow: string;
   alter_id: number;
   created_at: string;
@@ -70,6 +72,7 @@ export interface UserCreate {
   uuid?: string;
   password?: string;
   secret?: string;
+  authorized_keys?: string[];
   flow?: string;
   alter_id?: number;
 }
@@ -77,6 +80,7 @@ export interface UserUpdate {
   uuid?: string;
   password?: string;
   secret?: string;
+  authorized_keys?: string[];
   flow?: string;
   alter_id?: number;
 }

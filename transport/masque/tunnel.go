@@ -31,12 +31,15 @@ type Tunnel struct {
 
 func NewTunnel(ctx context.Context, logger logger.ContextLogger, options TunnelOptions) (*Tunnel, error) {
 	deviceOptions := DeviceOptions{
-		Context:    ctx,
-		Logger:     logger,
-		Handler:    options.Handler,
-		UDPTimeout: options.UDPTimeout,
-		MTU:        1280,
-		Address:    options.Address,
+		Context:        ctx,
+		Logger:         logger,
+		System:         options.System,
+		UDPTimeout:     options.UDPTimeout,
+		CreateDialer:   options.CreateDialer,
+		Name:           options.Name,
+		MTU:            1280,
+		Address:        options.Address,
+		AllowedAddress: options.AllowedAddress,
 	}
 	tunDevice, err := NewDevice(deviceOptions)
 	if err != nil {
@@ -102,11 +105,24 @@ func (e *Tunnel) maintainTunnel() {
 				e.logger.ErrorContext(e.ctx, fmt.Errorf("failed to read from TUN device: %v", err))
 				continue
 			}
+			packet := bufs[0][:sizes[0]]
+			if len(packet) > 0 {
+				switch packet[0] >> 4 {
+				case 4:
+					if len(packet) >= 9 && packet[8] <= 1 {
+						continue
+					}
+				case 6:
+					if len(packet) >= 8 && packet[7] <= 1 {
+						continue
+					}
+				}
+			}
 			ipConn, err := e.getIpConn()
 			if err != nil {
 				return
 			}
-			icmp, err := ipConn.WritePacket(bufs[0][:sizes[0]])
+			icmp, err := ipConn.WritePacket(packet)
 			if err != nil {
 				if errors.As(err, new(*connectip.CloseError)) {
 					if ok := e.closeIpConn(ipConn); ok {
@@ -163,11 +179,11 @@ func (e *Tunnel) getIpConn() (*connectip.Conn, error) {
 	if e.ipConn != nil {
 		return e.ipConn, nil
 	}
-	e.logger.InfoContext(e.ctx, "Establishing MASQUE connection to ", e.options.Endpoint)
+	e.logger.NoticeContext(e.ctx, "Establishing MASQUE connection to ", e.options.Endpoint)
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
-		e.logger.InfoContext(e.ctx, fmt.Errorf("Establishing MASQUE connection to %s", e.options.Endpoint))
+		e.logger.NoticeContext(e.ctx, fmt.Errorf("Establishing MASQUE connection to %s", e.options.Endpoint))
 		udpConn, tr, ipConn, rsp, err := ConnectTunnel(
 			e.ctx,
 			e.options.Dialer,
@@ -207,7 +223,7 @@ func (e *Tunnel) getIpConn() (*connectip.Conn, error) {
 		e.udpConn = udpConn
 		e.tr = tr
 		e.ipConn = ipConn
-		e.logger.InfoContext(e.ctx, "Connected to MASQUE server", e.options.Endpoint)
+		e.logger.NoticeContext(e.ctx, "Connected to MASQUE server ", e.options.Endpoint)
 		return ipConn, nil
 	}
 }

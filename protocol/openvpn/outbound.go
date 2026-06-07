@@ -4,9 +4,9 @@ package openvpn
 
 import (
 	"context"
+	"net"
 	"os"
 	"time"
-	"net"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
@@ -90,10 +90,18 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		logger:    logger,
 	}
 	tunnel, err := ovpn.NewTunnel(ctx, logger, ovpn.TunnelOptions{
+		System: options.System,
+		Name:   options.Name,
+		CreateDialer: func(interfaceName string) N.Dialer {
+			return common.Must1(dialer.NewDefault(ctx, option.DialerOptions{
+				BindInterface: interfaceName,
+			}))
+		},
 		Dialer:         outboundDialer,
 		Servers:        options.Servers,
 		TLSConfig:      tlsConfig,
 		Config:         clientConfig,
+		AllowedAddress: options.AllowedIPs,
 		ReconnectDelay: time.Duration(options.ReconnectDelay),
 		PingInterval:   time.Duration(options.PingInterval),
 	})

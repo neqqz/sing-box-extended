@@ -388,7 +388,7 @@ func (t *Inbound) Start(stage adapter.StartStage) error {
 			return err
 		}
 		t.tunStack = tunStack
-		t.logger.Info("started at ", t.tunOptions.Name)
+		t.logger.Notice("started at ", t.tunOptions.Name)
 	case adapter.StartStatePostStart:
 		monitor := taskmonitor.New(t.logger, C.StartTimeout)
 		monitor.Start("starting tun stack")

@@ -30,7 +30,7 @@ func updateExternalUI(server *Server) func(w http.ResponseWriter, r *http.Reques
 			render.JSON(w, r, newError(err.Error()))
 			return
 		}
-		server.logger.Info("updated external UI")
+		server.logger.Notice("updated external UI")
 		render.JSON(w, r, render.M{"status": "ok"})
 	}
 }

@@ -3,6 +3,7 @@
 [![license](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 [![go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](go.mod)
 [![codeberg](https://img.shields.io/badge/mirror-codeberg-2185D0.svg)](https://codeberg.org/shtorm-7/sing-box-extended)
+[![telegram](https://img.shields.io/badge/telegram-channel-26A5E4.svg)](https://t.me/sing_box_extended)
 
 Sing-box with extended features.
 
@@ -16,6 +17,7 @@ Sing-box with extended features.
 - **OpenVPN** — OpenVPN client with tls-auth, tls-crypt and tls-crypt-v2 support
 - **TrustTunnel** — AdGuard's obfuscated VPN protocol, indistinguishable from HTTPS traffic
 - **Sudoku** — Traffic obfuscation protocol based on 4×4 Sudoku puzzles with low-entropy fingerprints
+- **SSH** — SSH client and server with certificate authentication and upstream fallback
 - **VPN** — Routed tunnel over any TCP sing-box protocol
 - **Bond** — Link aggregation for increasing throughput
 - **Fallback** — Outbound group with priority-based switching

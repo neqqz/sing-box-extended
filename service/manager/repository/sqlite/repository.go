@@ -510,6 +510,11 @@ func (r *SQLiteRepository) CreateUser(user constant.UserCreate) (constant.User, 
 	}
 	defer tx.Rollback()
 	now := time.Now()
+	authorizedKeysJSON, err := marshalStringSlice(user.AuthorizedKeys)
+	if err != nil {
+		return u, err
+	}
+	var authorizedKeys stringSliceJSON
 	err = tx.QueryRowContext(
 		r.ctx, `
 		INSERT INTO users (
@@ -519,12 +524,13 @@ func (r *SQLiteRepository) CreateUser(user constant.UserCreate) (constant.User, 
 			uuid,
 			password,
 			secret,
+			authorized_keys,
 			flow,
 			alter_id,
 			created_at,
 			updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING 
 			id,
 			username,
@@ -533,6 +539,7 @@ func (r *SQLiteRepository) CreateUser(user constant.UserCreate) (constant.User, 
 			uuid,
 			password,
 			secret,
+			authorized_keys,
 			flow,
 			alter_id,
 			created_at,
@@ -544,6 +551,7 @@ func (r *SQLiteRepository) CreateUser(user constant.UserCreate) (constant.User, 
 		user.UUID,
 		user.Password,
 		user.Secret,
+		authorizedKeysJSON,
 		user.Flow,
 		user.AlterID,
 		now,
@@ -556,6 +564,7 @@ func (r *SQLiteRepository) CreateUser(user constant.UserCreate) (constant.User, 
 		&u.UUID,
 		&u.Password,
 		&u.Secret,
+		&authorizedKeys,
 		&u.Flow,
 		&u.AlterID,
 		&u.CreatedAt,
@@ -564,6 +573,7 @@ func (r *SQLiteRepository) CreateUser(user constant.UserCreate) (constant.User, 
 	if err != nil {
 		return u, err
 	}
+	u.AuthorizedKeys = []string(authorizedKeys)
 	stmt, err := tx.PrepareContext(r.ctx, `INSERT INTO user_to_squad (user_id, squad_id) VALUES (?, ?)`)
 	if err != nil {
 		return u, err
@@ -596,6 +606,7 @@ func (r *SQLiteRepository) GetUsers(filters map[string][]string) ([]constant.Use
 			"uuid",
 			"password",
 			"secret",
+			"authorized_keys",
 			"flow",
 			"alter_id",
 			"created_at",
@@ -619,6 +630,7 @@ func (r *SQLiteRepository) GetUsers(filters map[string][]string) ([]constant.Use
 	for rows.Next() {
 		var u constant.User
 		var squadIDs intSliceJSON
+		var authorizedKeys stringSliceJSON
 		if err := rows.Scan(
 			&u.ID,
 			&squadIDs,
@@ -628,6 +640,7 @@ func (r *SQLiteRepository) GetUsers(filters map[string][]string) ([]constant.Use
 			&u.UUID,
 			&u.Password,
 			&u.Secret,
+			&authorizedKeys,
 			&u.Flow,
 			&u.AlterID,
 			&u.CreatedAt,
@@ -636,6 +649,7 @@ func (r *SQLiteRepository) GetUsers(filters map[string][]string) ([]constant.Use
 			return nil, err
 		}
 		u.SquadIDs = []int(squadIDs)
+		u.AuthorizedKeys = []string(authorizedKeys)
 		result = append(result, u)
 	}
 	return result, rows.Err()
@@ -661,6 +675,7 @@ func (r *SQLiteRepository) GetUsersCount(filters map[string][]string) (int, erro
 func (r *SQLiteRepository) GetUser(id int) (constant.User, error) {
 	var u constant.User
 	var squadIDs intSliceJSON
+	var authorizedKeys stringSliceJSON
 	err := r.db.QueryRowContext(r.ctx, `
 		SELECT
 			id,
@@ -675,6 +690,7 @@ func (r *SQLiteRepository) GetUser(id int) (constant.User, error) {
 			uuid,
 			password,
 			secret,
+			authorized_keys,
 			flow,
 			alter_id,
 			created_at,
@@ -690,25 +706,33 @@ func (r *SQLiteRepository) GetUser(id int) (constant.User, error) {
 		&u.UUID,
 		&u.Password,
 		&u.Secret,
+		&authorizedKeys,
 		&u.Flow,
 		&u.AlterID,
 		&u.CreatedAt,
 		&u.UpdatedAt,
 	)
 	u.SquadIDs = []int(squadIDs)
+	u.AuthorizedKeys = []string(authorizedKeys)
 	return u, notFoundErr(err)
 }
 
 func (r *SQLiteRepository) UpdateUser(id int, user constant.UserUpdate) (constant.User, error) {
 	var u constant.User
 	var squadIDs intSliceJSON
-	err := r.db.QueryRowContext(
+	var authorizedKeys stringSliceJSON
+	authorizedKeysJSON, err := marshalStringSlice(user.AuthorizedKeys)
+	if err != nil {
+		return u, err
+	}
+	err = r.db.QueryRowContext(
 		r.ctx, `
 		UPDATE users
 		SET
 			uuid = ?,
 			password = ?,
 			secret = ?,
+			authorized_keys = ?,
 			flow = ?,
 			alter_id = ?,
 			updated_at = ?
@@ -726,6 +750,7 @@ func (r *SQLiteRepository) UpdateUser(id int, user constant.UserUpdate) (constan
 			uuid,
 			password,
 			secret,
+			authorized_keys,
 			flow,
 			alter_id,
 			created_at,
@@ -734,6 +759,7 @@ func (r *SQLiteRepository) UpdateUser(id int, user constant.UserUpdate) (constan
 		user.UUID,
 		user.Password,
 		user.Secret,
+		authorizedKeysJSON,
 		user.Flow,
 		user.AlterID,
 		time.Now(),
@@ -747,18 +773,21 @@ func (r *SQLiteRepository) UpdateUser(id int, user constant.UserUpdate) (constan
 		&u.UUID,
 		&u.Password,
 		&u.Secret,
+		&authorizedKeys,
 		&u.Flow,
 		&u.AlterID,
 		&u.CreatedAt,
 		&u.UpdatedAt,
 	)
 	u.SquadIDs = []int(squadIDs)
+	u.AuthorizedKeys = []string(authorizedKeys)
 	return u, err
 }
 
 func (r *SQLiteRepository) DeleteUser(id int) (constant.User, error) {
 	var u constant.User
 	var squadIDs intSliceJSON
+	var authorizedKeys stringSliceJSON
 	err := r.db.QueryRowContext(r.ctx, `
 		DELETE FROM users
 		WHERE id = ?
@@ -775,6 +804,7 @@ func (r *SQLiteRepository) DeleteUser(id int) (constant.User, error) {
 			uuid,
 			password,
 			secret,
+			authorized_keys,
 			flow,
 			alter_id,
 			created_at,
@@ -788,12 +818,14 @@ func (r *SQLiteRepository) DeleteUser(id int) (constant.User, error) {
 		&u.UUID,
 		&u.Password,
 		&u.Secret,
+		&authorizedKeys,
 		&u.Flow,
 		&u.AlterID,
 		&u.CreatedAt,
 		&u.UpdatedAt,
 	)
 	u.SquadIDs = []int(squadIDs)
+	u.AuthorizedKeys = []string(authorizedKeys)
 	return u, err
 }
 
@@ -2160,11 +2192,11 @@ func init() {
 		"updated_at_end":   LessThanFilter("updated_at"),
 		"sort_asc": ReplacedSortAscFilter(
 			map[string]string{"speed": "raw_speed"},
-			[]string{"id", "username", "outbound", "strategy", "mode", "raw_speed", "created_at", "updated_at"},
+			[]string{"id", "username", "outbound", "strategy", "connection_type", "mode", "raw_speed", "created_at", "updated_at"},
 		),
 		"sort_desc": ReplacedSortDescFilter(
 			map[string]string{"speed": "raw_speed"},
-			[]string{"id", "username", "outbound", "strategy", "mode", "raw_speed", "created_at", "updated_at"},
+			[]string{"id", "username", "outbound", "strategy", "connection_type", "mode", "raw_speed", "created_at", "updated_at"},
 		),
 		"offset": OffsetFilter(),
 		"limit":  LimitFilter(),

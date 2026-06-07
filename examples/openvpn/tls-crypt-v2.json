@@ -13,6 +13,8 @@
     {
       "type": "openvpn",
       "tag": "openvpn-out",
+      "system": false,
+      "name": "openvpn0",
       "servers": [
         {
           "server": "vpn.example.com",

@@ -87,7 +87,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		return fmt.Errorf("failed to start mieru server: %w", err)
 	}
 
-	h.logger.Info("mieru server is started")
+	h.logger.Notice("mieru server is started")
 	go h.acceptLoop()
 	return nil
 }
@@ -275,14 +275,21 @@ func buildMieruServerConfig(_ context.Context, options option.MieruInboundOption
 		transportProtocol = mierupb.TransportProtocol_UDP.Enum()
 	}
 
-	if options.ListenOptions.ListenPort == 0 {
-		return nil, nil, E.New("listen_port must be set")
+	if options.ListenOptions.ListenPort == 0 && len(options.ListenPorts) == 0 {
+		return nil, nil, E.New("either listen_port or listen_ports must be set")
 	}
-	portBindings := []*mierupb.PortBinding{
-		{
+	var portBindings []*mierupb.PortBinding
+	if options.ListenOptions.ListenPort != 0 {
+		portBindings = append(portBindings, &mierupb.PortBinding{
 			Port:     proto.Int32(int32(options.ListenOptions.ListenPort)),
 			Protocol: transportProtocol,
-		},
+		})
+	}
+	for _, pr := range options.ListenPorts {
+		portBindings = append(portBindings, &mierupb.PortBinding{
+			PortRange: proto.String(pr),
+			Protocol:  transportProtocol,
+		})
 	}
 
 	var users []*mierupb.User

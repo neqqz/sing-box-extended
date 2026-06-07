@@ -194,8 +194,6 @@ type bwConnEntry struct {
 	conn net.Conn
 }
 
-
-
 type ManagerBandwidthStrategy struct {
 	strategies map[string]BandwidthStrategy
 	conns      map[string][]*bwConnEntry

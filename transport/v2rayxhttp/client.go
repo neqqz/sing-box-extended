@@ -48,6 +48,9 @@ func NewClient(ctx context.Context, logger log.ContextLogger, dialer N.Dialer, s
 	if options.Mode == "" {
 		return nil, E.New("mode is not set")
 	}
+	if tlsConfig != nil && len(tlsConfig.NextProtos()) == 0 {
+		tlsConfig.SetNextProtos([]string{"h2"})
+	}
 	dest := serverAddr
 	baseRequestURL, err := getBaseRequestURL(&options.V2RayXHTTPBaseOptions, dest, tlsConfig)
 	if err != nil {
@@ -83,6 +86,9 @@ func NewClient(ctx context.Context, logger log.ContextLogger, dialer N.Dialer, s
 			if err != nil {
 				return nil, err
 			}
+		}
+		if tlsConfig2 != nil && len(tlsConfig2.NextProtos()) == 0 {
+			tlsConfig2.SetNextProtos([]string{"h2"})
 		}
 		baseRequestURL2, err = getBaseRequestURL(&options2.V2RayXHTTPBaseOptions, dest2, tlsConfig2)
 		if err != nil {

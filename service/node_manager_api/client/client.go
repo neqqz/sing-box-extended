@@ -281,15 +281,16 @@ func (s *APIClient) handler(node CM.ConnectedNode, stream grpc.ServerStreamingCl
 
 func (s *APIClient) convertUser(user *pb.User) CM.User {
 	return CM.User{
-		ID:       int(user.Id),
-		Username: user.Username,
-		Inbound:  user.Inbound,
-		Type:     user.Type,
-		UUID:     user.Uuid,
-		Password: user.Password,
-		Secret:   user.Secret,
-		Flow:     user.Flow,
-		AlterID:  int(user.AlterId),
+		ID:             int(user.Id),
+		Username:       user.Username,
+		Inbound:        user.Inbound,
+		Type:           user.Type,
+		UUID:           user.Uuid,
+		Password:       user.Password,
+		Secret:         user.Secret,
+		AuthorizedKeys: user.AuthorizedKeys,
+		Flow:           user.Flow,
+		AlterID:        int(user.AlterId),
 	}
 }
 
@@ -301,7 +302,7 @@ func (s *APIClient) convertBandwidthLimiter(limiter *pb.BandwidthLimiter) CM.Ban
 		Strategy:       limiter.Strategy,
 		ConnectionType: limiter.ConnectionType,
 		Mode:           limiter.Mode,
-		FlowKeys:      limiter.FlowKeys,
+		FlowKeys:       limiter.FlowKeys,
 		Speed:          limiter.Speed,
 		RawSpeed:       limiter.RawSpeed,
 	}

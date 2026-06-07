@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sync"
 
 	"github.com/sagernet/gvisor/pkg/buffer"
 	"github.com/sagernet/gvisor/pkg/tcpip"
@@ -15,9 +16,6 @@ import (
 	"github.com/sagernet/gvisor/pkg/tcpip/network/ipv4"
 	"github.com/sagernet/gvisor/pkg/tcpip/network/ipv6"
 	"github.com/sagernet/gvisor/pkg/tcpip/stack"
-	"github.com/sagernet/gvisor/pkg/tcpip/transport/icmp"
-	"github.com/sagernet/gvisor/pkg/tcpip/transport/tcp"
-	"github.com/sagernet/gvisor/pkg/tcpip/transport/udp"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/transport/wireguard"
 	"github.com/sagernet/sing-tun"
@@ -29,15 +27,15 @@ import (
 )
 
 type stackDevice struct {
-	ctx    context.Context
-	logger log.ContextLogger
-	stack  *stack.Stack
-	mtu    uint32
-	events chan wgTun.Event
-	wgTun.Device
+	ctx            context.Context
+	logger         log.ContextLogger
+	stack          *stack.Stack
+	mtu            uint32
+	events         chan wgTun.Event
 	outbound       chan *stack.PacketBuffer
 	packetOutbound chan *buf.Buffer
 	done           chan struct{}
+	closeOnce      sync.Once
 	dispatcher     stack.NetworkDispatcher
 	inet4Address   netip.Addr
 	inet6Address   netip.Addr
@@ -84,13 +82,6 @@ func newStackDevice(options DeviceOptions) (*stackDevice, error) {
 		}
 	}
 	tunDevice.stack = ipStack
-	if options.Handler != nil {
-		ipStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tun.NewTCPForwarder(options.Context, ipStack, options.Handler).HandlePacket)
-		ipStack.SetTransportProtocolHandler(udp.ProtocolNumber, tun.NewUDPForwarder(options.Context, ipStack, options.Handler, options.UDPTimeout).HandlePacket)
-		icmpForwarder := tun.NewICMPForwarder(options.Context, ipStack, options.Handler, options.UDPTimeout)
-		ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber4, icmpForwarder.HandlePacket)
-		ipStack.SetTransportProtocolHandler(icmp.ProtocolNumber6, icmpForwarder.HandlePacket)
-	}
 	return tunDevice, nil
 }
 
@@ -141,11 +132,17 @@ func (w *stackDevice) ListenPacket(ctx context.Context, destination M.Socksaddr)
 	}
 	var networkProtocol tcpip.NetworkProtocolNumber
 	if destination.IsIPv4() {
+		if !w.inet4Address.IsValid() {
+			return nil, E.New("missing IPv4 local address")
+		}
 		networkProtocol = header.IPv4ProtocolNumber
 		bind.Addr = tun.AddressFromAddr(w.inet4Address)
 	} else {
+		if !w.inet6Address.IsValid() {
+			return nil, E.New("missing IPv6 local address")
+		}
 		networkProtocol = header.IPv6ProtocolNumber
-		bind.Addr = tun.AddressFromAddr(w.inet4Address)
+		bind.Addr = tun.AddressFromAddr(w.inet6Address)
 	}
 	udpConn, err := gonet.DialUDP(w.stack, &bind, nil, networkProtocol)
 	if err != nil {
@@ -228,13 +225,15 @@ func (w *stackDevice) Events() <-chan wgTun.Event {
 }
 
 func (w *stackDevice) Close() error {
-	close(w.done)
-	close(w.events)
-	w.stack.Close()
-	for _, endpoint := range w.stack.CleanupEndpoints() {
-		endpoint.Abort()
-	}
-	w.stack.Wait()
+	w.closeOnce.Do(func() {
+		close(w.done)
+		close(w.events)
+		w.stack.Close()
+		for _, endpoint := range w.stack.CleanupEndpoints() {
+			endpoint.Abort()
+		}
+		w.stack.Wait()
+	})
 	return nil
 }
 

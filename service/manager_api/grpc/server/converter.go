@@ -42,18 +42,19 @@ func convertNode(v CM.Node) *pb.Node {
 
 func convertUser(v CM.User) *pb.User {
 	return &pb.User{
-		Id:        int32(v.ID),
-		SquadIds:  toInt32Slice(v.SquadIDs),
-		Username:  v.Username,
-		Inbound:   v.Inbound,
-		Type:      v.Type,
-		Uuid:      v.UUID,
-		Password:  v.Password,
-		Secret:    v.Secret,
-		Flow:      v.Flow,
-		AlterId:   int32(v.AlterID),
-		CreatedAt: v.CreatedAt.UnixNano(),
-		UpdatedAt: v.UpdatedAt.UnixNano(),
+		Id:             int32(v.ID),
+		SquadIds:       toInt32Slice(v.SquadIDs),
+		Username:       v.Username,
+		Inbound:        v.Inbound,
+		Type:           v.Type,
+		Uuid:           v.UUID,
+		Password:       v.Password,
+		Secret:         v.Secret,
+		AuthorizedKeys: v.AuthorizedKeys,
+		Flow:           v.Flow,
+		AlterId:        int32(v.AlterID),
+		CreatedAt:      v.CreatedAt.UnixNano(),
+		UpdatedAt:      v.UpdatedAt.UnixNano(),
 	}
 }
 
@@ -66,7 +67,7 @@ func convertBandwidthLimiter(v CM.BandwidthLimiter) *pb.BandwidthLimiter {
 		Strategy:       v.Strategy,
 		ConnectionType: v.ConnectionType,
 		Mode:           v.Mode,
-		FlowKeys:      v.FlowKeys,
+		FlowKeys:       v.FlowKeys,
 		Speed:          v.Speed,
 		RawSpeed:       v.RawSpeed,
 		CreatedAt:      v.CreatedAt.UnixNano(),

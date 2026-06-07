@@ -331,6 +331,12 @@ var migrations = map[string]string{
         DROP TABLE IF EXISTS traffic_limiter_to_squad;
         DROP TABLE IF EXISTS traffic_limiters;
     `,
+	"3_add_authorized_keys.up.sql": `
+        ALTER TABLE users ADD COLUMN authorized_keys JSONB NOT NULL DEFAULT '[]'::jsonb;
+    `,
+	"3_add_authorized_keys.down.sql": `
+        ALTER TABLE users DROP COLUMN authorized_keys;
+    `,
 }
 
 func Migrate(db *sql.DB) error {

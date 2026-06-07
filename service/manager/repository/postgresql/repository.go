@@ -515,6 +515,11 @@ func (r *PostgreSQLRepository) CreateUser(user constant.UserCreate) (constant.Us
 	}
 	defer tx.Rollback(r.ctx)
 	now := time.Now()
+	authorizedKeysJSON, err := marshalStringSlice(user.AuthorizedKeys)
+	if err != nil {
+		return u, err
+	}
+	var authorizedKeys stringSliceJSON
 	err = tx.QueryRow(
 		r.ctx, `
 		INSERT INTO users (
@@ -524,12 +529,13 @@ func (r *PostgreSQLRepository) CreateUser(user constant.UserCreate) (constant.Us
 			uuid,
 			password,
 			secret,
+			authorized_keys,
 			flow,
 			alter_id,
 			created_at,
 			updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING 
 			id,
 			username,
@@ -538,6 +544,7 @@ func (r *PostgreSQLRepository) CreateUser(user constant.UserCreate) (constant.Us
 			uuid,
 			password,
 			secret,
+			authorized_keys,
 			flow,
 			alter_id,
 			created_at,
@@ -549,6 +556,7 @@ func (r *PostgreSQLRepository) CreateUser(user constant.UserCreate) (constant.Us
 		user.UUID,
 		user.Password,
 		user.Secret,
+		authorizedKeysJSON,
 		user.Flow,
 		user.AlterID,
 		now,
@@ -561,6 +569,7 @@ func (r *PostgreSQLRepository) CreateUser(user constant.UserCreate) (constant.Us
 		&u.UUID,
 		&u.Password,
 		&u.Secret,
+		&authorizedKeys,
 		&u.Flow,
 		&u.AlterID,
 		&u.CreatedAt,
@@ -569,6 +578,7 @@ func (r *PostgreSQLRepository) CreateUser(user constant.UserCreate) (constant.Us
 	if err != nil {
 		return u, err
 	}
+	u.AuthorizedKeys = []string(authorizedKeys)
 	rows := make([][]any, len(user.SquadIDs))
 	for i, squadID := range user.SquadIDs {
 		rows[i] = []any{u.ID, squadID}
@@ -605,6 +615,7 @@ func (r *PostgreSQLRepository) GetUsers(filters map[string][]string) ([]constant
 			"uuid",
 			"password",
 			"secret",
+			"authorized_keys",
 			"flow",
 			"alter_id",
 			"created_at",
@@ -636,6 +647,7 @@ func (r *PostgreSQLRepository) GetUsers(filters map[string][]string) ([]constant
 			&u.UUID,
 			&u.Password,
 			&u.Secret,
+			&u.AuthorizedKeys,
 			&u.Flow,
 			&u.AlterID,
 			&u.CreatedAt,
@@ -681,6 +693,7 @@ func (r *PostgreSQLRepository) GetUser(id int) (constant.User, error) {
 			uuid,
 			password,
 			secret,
+			authorized_keys,
 			flow,
 			alter_id,
 			created_at,
@@ -696,6 +709,7 @@ func (r *PostgreSQLRepository) GetUser(id int) (constant.User, error) {
 		&u.UUID,
 		&u.Password,
 		&u.Secret,
+		&u.AuthorizedKeys,
 		&u.Flow,
 		&u.AlterID,
 		&u.CreatedAt,
@@ -706,17 +720,22 @@ func (r *PostgreSQLRepository) GetUser(id int) (constant.User, error) {
 
 func (r *PostgreSQLRepository) UpdateUser(id int, user constant.UserUpdate) (constant.User, error) {
 	var u constant.User
-	err := r.db.QueryRow(
+	authorizedKeysJSON, err := marshalStringSlice(user.AuthorizedKeys)
+	if err != nil {
+		return u, err
+	}
+	err = r.db.QueryRow(
 		r.ctx, `
 		UPDATE users
 		SET
 			uuid = $1,
 			password = $2,
 			secret = $3,
-			flow = $4,
-			alter_id = $5,
-			updated_at = $6
-		WHERE id = $7
+			authorized_keys = $4,
+			flow = $5,
+			alter_id = $6,
+			updated_at = $7
+		WHERE id = $8
 		RETURNING
 			id,
 			ARRAY(
@@ -730,6 +749,7 @@ func (r *PostgreSQLRepository) UpdateUser(id int, user constant.UserUpdate) (con
 			uuid,
 			password,
 			secret,
+			authorized_keys,
 			flow,
 			alter_id,
 			created_at,
@@ -738,6 +758,7 @@ func (r *PostgreSQLRepository) UpdateUser(id int, user constant.UserUpdate) (con
 		user.UUID,
 		user.Password,
 		user.Secret,
+		authorizedKeysJSON,
 		user.Flow,
 		user.AlterID,
 		time.Now(),
@@ -751,6 +772,7 @@ func (r *PostgreSQLRepository) UpdateUser(id int, user constant.UserUpdate) (con
 		&u.UUID,
 		&u.Password,
 		&u.Secret,
+		&u.AuthorizedKeys,
 		&u.Flow,
 		&u.AlterID,
 		&u.CreatedAt,
@@ -777,6 +799,7 @@ func (r *PostgreSQLRepository) DeleteUser(id int) (constant.User, error) {
 			uuid,
 			password,
 			secret,
+			authorized_keys,
 			flow,
 			alter_id,
 			created_at,
@@ -790,6 +813,7 @@ func (r *PostgreSQLRepository) DeleteUser(id int) (constant.User, error) {
 		&u.UUID,
 		&u.Password,
 		&u.Secret,
+		&u.AuthorizedKeys,
 		&u.Flow,
 		&u.AlterID,
 		&u.CreatedAt,
@@ -2143,11 +2167,11 @@ func init() {
 		"updated_at_end":   LessThanFilter("updated_at"),
 		"sort_asc": ReplacedSortAscFilter(
 			map[string]string{"speed": "raw_speed"},
-			[]string{"id", "username", "outbound", "strategy", "mode", "raw_speed", "created_at", "updated_at"},
+			[]string{"id", "username", "outbound", "strategy", "connection_type", "mode", "raw_speed", "created_at", "updated_at"},
 		),
 		"sort_desc": ReplacedSortDescFilter(
 			map[string]string{"speed": "raw_speed"},
-			[]string{"id", "username", "outbound", "strategy", "mode", "raw_speed", "created_at", "updated_at"},
+			[]string{"id", "username", "outbound", "strategy", "connection_type", "mode", "raw_speed", "created_at", "updated_at"},
 		),
 		"offset": OffsetFilter(),
 		"limit":  LimitFilter(),

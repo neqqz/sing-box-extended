@@ -1,0 +1,76 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "default"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "ssh",
+      "tag": "ssh-in",
+      "listen": "0.0.0.0",
+      "listen_port": 2222,
+      "host_key": [
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
+      ],
+      // or: "host_key_path": ["/etc/sing-box/ssh_host_ed25519_key"],
+      "server_version": "SSH-2.0-OpenSSH_9.6",
+      "max_auth_tries": 3,
+      "users": [
+        {
+          "name": "user1",
+          "password": "password1"
+        },
+        {
+          "name": "user2",
+          "authorized_keys": [
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... user2@host"
+          ]
+        }
+      ],
+      "fallback": {
+        "server": "10.0.0.2",
+        "server_port": 22,
+        "ca": {
+          "private_key": [
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
+          ],
+          // or: "private_key_path": "/etc/sing-box/ca_key",
+          "private_key_passphrase": ""
+        },
+        // Optional: separate CA for issuing upstream certs (defaults to ca)
+        "issue_ca": {
+          "private_key": [
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"
+          ],
+          // or: "private_key_path": "/etc/sing-box/issue_ca_key",
+          "private_key_passphrase": ""
+        },
+        "host_key": [
+          "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... upstream-host-key"
+        ],
+        // or: "host_key_path": ["/etc/sing-box/upstream_host_key.pub"],
+        "host_key_algorithms": ["ssh-ed25519"],
+        "client_version": "SSH-2.0-OpenSSH_9.6"
+        // Dial Fields
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "final": "direct",
+    "default_domain_resolver": "default",
+    "auto_detect_interface": true
+  }
+}

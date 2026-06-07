@@ -64,7 +64,7 @@ import type { Listable } from "../api/types";
 import { notifyApiError, useNotify } from "../notifications/NotificationsProvider";
 import { PageHeader } from "./PageHeader";
 
-export type FieldType = "text" | "number" | "select" | "multiselect" | "ids" | "uuid";
+export type FieldType = "text" | "number" | "select" | "multiselect" | "ids" | "uuid" | "string-list";
 
 // FILTER_WIDTH is the fixed CSS width (px) of a single filter cell in the
 // filter panel. FILTER_GAP is the flex gap between cells (matches the
@@ -126,7 +126,7 @@ export interface FieldSpec<TValue = unknown> {
 // spec, matching what `emptyForm` would produce.
 function emptyValueForField(f: FieldSpec): unknown {
   if (f.defaultValue !== undefined) return f.defaultValue;
-  if (f.type === "multiselect") return [];
+  if (f.type === "multiselect" || f.type === "string-list") return [];
   return "";
 }
 
@@ -575,7 +575,7 @@ function fieldVisible(
 // strings, missing selections, and empty arrays for multi-select / ids.
 function isFieldEmpty(f: FieldSpec, value: unknown): boolean {
   if (value === undefined || value === null) return true;
-  if (f.type === "multiselect" || f.type === "ids") {
+  if (f.type === "multiselect" || f.type === "ids" || f.type === "string-list") {
     if (Array.isArray(value)) return value.length === 0;
     if (typeof value === "string") return value.trim() === "";
     return true;
@@ -4762,6 +4762,40 @@ function CrudDialog({
                     ),
                   }}
                 />
+              );
+            }
+            if (f.type === "string-list") {
+              const arr = Array.isArray(value) ? (value as string[]) : [];
+              return (
+                <Box key={f.name} sx={{ mt: -1 }}>
+                  <Typography variant="caption" color={errored ? "error" : "textSecondary"} sx={{ mb: 0.5, ml: "14px", display: "block" }}>
+                    {f.label}{f.required ? " *" : ""}
+                  </Typography>
+                  <Stack spacing={1}>
+                    {arr.map((item, idx) => (
+                      <Stack key={idx} direction="row" spacing={1} alignItems="center">
+                        <TextField
+                          fullWidth
+                          size="small"
+                          value={item}
+                          placeholder={`Key ${idx + 1}`}
+                          onChange={(e) => {
+                            const next = [...arr];
+                            next[idx] = e.target.value;
+                            set(f.name, next);
+                          }}
+                        />
+                        <IconButton size="small" color="error" onClick={() => set(f.name, arr.filter((_, i) => i !== idx))}>
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </Stack>
+                    ))}
+                  </Stack>
+                  <Button size="small" startIcon={<AddIcon />} sx={{ mt: 1 }} onClick={() => set(f.name, [...arr, ""])}>
+                    Add
+                  </Button>
+                  {fieldErr && <Typography variant="caption" color="error" sx={{ mt: 0.5, display: "block" }}>{fieldErr}</Typography>}
+                </Box>
               );
             }
             const isNumber = f.type === "number";

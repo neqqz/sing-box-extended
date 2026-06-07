@@ -11,7 +11,7 @@ type MTProxyInboundOptions struct {
 	Users                       []MTProxyUser      `json:"users,omitempty"`
 	Concurrency                 uint               `json:"concurrency,omitempty"`
 	DomainFrontingPort          uint               `json:"domain_fronting_port,omitempty"`
-	DomainFrontingIP            string             `json:"domain_fronting_ip,omitempty"`
+	DomainFrontingHost          string             `json:"domain_fronting_host,omitempty"`
 	DomainFrontingProxyProtocol bool               `json:"domain_fronting_proxy_protocol,omitempty"`
 	PreferIP                    string             `json:"prefer_ip,omitempty"`
 	AutoUpdate                  bool               `json:"auto_update,omitempty"`

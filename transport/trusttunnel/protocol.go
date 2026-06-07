@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	UDPMagicAddress         = "_udp2"
-	ICMPMagicAddress        = "_icmp"
-	HealthCheckMagicAddress = "_check"
+	UDPMagicAddress           = "_udp2"
+	ICMPMagicAddress          = "_icmp"
+	HealthCheckMagicAddress   = "_check"
 	DefaultConnectionTimeout  = 30 * time.Second
 	DefaultHealthCheckTimeout = 7 * time.Second
 	DefaultSessionTimeout     = 30 * time.Second

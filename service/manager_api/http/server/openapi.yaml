@@ -194,7 +194,7 @@ paths:
         - {in: query, name: id, schema: {type: integer, format: int32}}
         - {in: query, name: username, schema: {type: string}}
         - {in: query, name: inbound, schema: {type: string}}
-        - {in: query, name: type, schema: {type: string, enum: [hysteria, hysteria2, mtproxy, trojan, tuic, vless, vmess]}}
+        - {in: query, name: type, schema: {type: string, enum: [anytls, http, hysteria, hysteria2, mixed, mtproxy, naive, socks, ssh, trojan, trusttunnel, tuic, vless, vmess]}}
         - {$ref: "#/components/parameters/FilterSquadIdIn"}
         - {$ref: "#/components/parameters/FilterCreatedAtStart"}
         - {$ref: "#/components/parameters/FilterCreatedAtEnd"}
@@ -210,6 +210,15 @@ paths:
     post:
       tags: [Users]
       summary: Create user
+      description: |
+        Required fields depend on `type`:
+        - **vless**: uuid (flow optional)
+        - **vmess**: uuid, alter_id
+        - **trojan, hysteria, hysteria2**: password
+        - **tuic**: uuid, password
+        - **mtproxy**: secret
+        - **ssh**: password OR authorized_keys (at least one)
+        - **anytls, http, mixed, naive, socks, trusttunnel**: password
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/UserCreate"}}}}
       responses:
         "201": {content: {application/json: {schema: {$ref: "#/components/schemas/User"}}}}
@@ -222,7 +231,7 @@ paths:
         - {in: query, name: id, schema: {type: integer, format: int32}}
         - {in: query, name: username, schema: {type: string}}
         - {in: query, name: inbound, schema: {type: string}}
-        - {in: query, name: type, schema: {type: string, enum: [hysteria, hysteria2, mtproxy, trojan, tuic, vless, vmess]}}
+        - {in: query, name: type, schema: {type: string, enum: [anytls, http, hysteria, hysteria2, mixed, mtproxy, naive, socks, ssh, trojan, trusttunnel, tuic, vless, vmess]}}
         - {$ref: "#/components/parameters/FilterSquadIdIn"}
         - {$ref: "#/components/parameters/FilterCreatedAtStart"}
         - {$ref: "#/components/parameters/FilterCreatedAtEnd"}
@@ -247,6 +256,15 @@ paths:
     put:
       tags: [Users]
       summary: Update user
+      description: |
+        Required fields depend on user `type`:
+        - **vless**: uuid (flow optional)
+        - **vmess**: uuid, alter_id
+        - **trojan, hysteria, hysteria2**: password
+        - **tuic**: uuid, password
+        - **mtproxy**: secret
+        - **ssh**: password OR authorized_keys (at least one)
+        - **anytls, http, mixed, naive, socks, trusttunnel**: password
       requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/UserUpdate"}}}}
       responses:
         "200": {content: {application/json: {schema: {$ref: "#/components/schemas/User"}}}}
@@ -266,7 +284,7 @@ paths:
       summary: List bandwidth limiters
       parameters:
         - {in: query, name: id, schema: {type: integer, format: int32}}
-        - {in: query, name: strategy, schema: {type: string, enum: [global, connection]}}
+        - {in: query, name: strategy, schema: {type: string, enum: [global, connection, bypass]}}
         - {in: query, name: mode, schema: {type: string, enum: [upload, download, bidirectional]}}
         - {in: query, name: type, schema: {type: string}}
         - {in: query, name: username, schema: {type: string}}
@@ -299,7 +317,7 @@ paths:
       summary: Count bandwidth limiters
       parameters:
         - {in: query, name: id, schema: {type: integer, format: int32}}
-        - {in: query, name: strategy, schema: {type: string, enum: [global, connection]}}
+        - {in: query, name: strategy, schema: {type: string, enum: [global, connection, bypass]}}
         - {in: query, name: mode, schema: {type: string, enum: [upload, download, bidirectional]}}
         - {in: query, name: type, schema: {type: string}}
         - {in: query, name: username, schema: {type: string}}
@@ -430,7 +448,7 @@ paths:
       summary: List connection limiters
       parameters:
         - {in: query, name: id, schema: {type: integer, format: int32}}
-        - {in: query, name: strategy, schema: {type: string, enum: [connection]}}
+        - {in: query, name: strategy, schema: {type: string, enum: [connection, bypass]}}
         - {in: query, name: username, schema: {type: string}}
         - {in: query, name: outbound, schema: {type: string}}
         - {in: query, name: connection_type, schema: {type: string, enum: [default, hwid, mux, ip]}}
@@ -460,7 +478,7 @@ paths:
       summary: Count connection limiters
       parameters:
         - {in: query, name: id, schema: {type: integer, format: int32}}
-        - {in: query, name: strategy, schema: {type: string, enum: [connection]}}
+        - {in: query, name: strategy, schema: {type: string, enum: [connection, bypass]}}
         - {in: query, name: username, schema: {type: string}}
         - {in: query, name: outbound, schema: {type: string}}
         - {in: query, name: connection_type, schema: {type: string, enum: [default, hwid, mux, ip]}}
@@ -507,7 +525,7 @@ paths:
       summary: List rate limiters
       parameters:
         - {in: query, name: id, schema: {type: integer, format: int32}}
-        - {in: query, name: strategy, schema: {type: string, enum: [fixed_window, sliding_window, token_bucket, leaky_bucket]}}
+        - {in: query, name: strategy, schema: {type: string, enum: [fixed_window, sliding_window, token_bucket, leaky_bucket, bypass]}}
         - {in: query, name: username, schema: {type: string}}
         - {in: query, name: outbound, schema: {type: string}}
         - {in: query, name: connection_type, schema: {type: string, enum: [hwid, mux, ip, default]}}
@@ -539,7 +557,7 @@ paths:
       summary: Count rate limiters
       parameters:
         - {in: query, name: id, schema: {type: integer, format: int32}}
-        - {in: query, name: strategy, schema: {type: string, enum: [fixed_window, sliding_window, token_bucket, leaky_bucket]}}
+        - {in: query, name: strategy, schema: {type: string, enum: [fixed_window, sliding_window, token_bucket, leaky_bucket, bypass]}}
         - {in: query, name: username, schema: {type: string}}
         - {in: query, name: outbound, schema: {type: string}}
         - {in: query, name: connection_type, schema: {type: string, enum: [hwid, mux, ip, default]}}
@@ -686,16 +704,17 @@ components:
 
     User:
       type: object
-      required: [id, squad_ids, username, inbound, type, uuid, password, secret, flow, alter_id, created_at, updated_at]
+      required: [id, squad_ids, username, inbound, type, uuid, password, secret, authorized_keys, flow, alter_id, created_at, updated_at]
       properties:
         id: {type: integer, format: int32}
         squad_ids: {$ref: "#/components/schemas/SquadIDs"}
         username: {type: string, example: "alice"}
         inbound: {type: string, example: "vless-in"}
-        type: {type: string, enum: [hysteria, hysteria2, mtproxy, trojan, tuic, vless, vmess]}
+        type: {type: string, enum: [anytls, http, hysteria, hysteria2, mixed, mtproxy, naive, socks, ssh, trojan, trusttunnel, tuic, vless, vmess]}
         uuid: {type: string}
         password: {type: string}
         secret: {type: string}
+        authorized_keys: {type: array, items: {type: string}}
         flow: {type: string}
         alter_id: {type: integer, format: int32}
         created_at: {type: string, format: date-time}
@@ -703,24 +722,44 @@ components:
     UserCreate:
       type: object
       required: [squad_ids, username, inbound, type]
+      description: |
+        Required fields depend on `type`:
+        - vless: uuid (flow optional)
+        - vmess: uuid, alter_id
+        - trojan, shadowsocks, hysteria, hysteria2: password
+        - tuic: uuid, password
+        - mtproxy: secret
+        - ssh: password OR authorized_keys (at least one)
+        - anytls, http, mixed, naive, socks, trusttunnel: password
       properties:
         squad_ids: {$ref: "#/components/schemas/SquadIDs"}
         username: {type: string, example: "alice"}
         inbound: {type: string, example: "vless-in"}
         type:
           type: string
-          enum: [hysteria, hysteria2, mtproxy, trojan, tuic, vless, vmess]
+          enum: [anytls, http, hysteria, hysteria2, mixed, mtproxy, naive, socks, ssh, trojan, trusttunnel, tuic, vless, vmess]
         uuid: {type: string, format: uuid}
         password: {type: string}
         secret: {type: string}
+        authorized_keys: {type: array, items: {type: string}}
         flow: {type: string}
         alter_id: {type: integer, format: int32}
     UserUpdate:
       type: object
+      description: |
+        All fields are optional. Validation rules match UserCreate by type:
+        - vless: uuid (flow optional)
+        - vmess: uuid, alter_id
+        - trojan, shadowsocks, hysteria, hysteria2: password
+        - tuic: uuid, password
+        - mtproxy: secret
+        - ssh: password OR authorized_keys (at least one)
+        - anytls, http, mixed, naive, socks, trusttunnel: password
       properties:
         uuid: {type: string, format: uuid}
         password: {type: string}
         secret: {type: string}
+        authorized_keys: {type: array, items: {type: string}}
         flow: {type: string}
         alter_id: {type: integer, format: int32}
 
@@ -732,41 +771,43 @@ components:
         squad_ids: {$ref: "#/components/schemas/SquadIDs"}
         username: {type: string}
         outbound: {type: string, example: "direct"}
-        strategy: {type: string, enum: [global, connection]}
-        connection_type: {type: string, enum: [default, hwid, mux, ip]}
+        strategy: {type: string, enum: [global, connection, bypass]}
+        connection_type: {type: string}
         mode: {type: string, enum: [upload, download, bidirectional]}
-        flow_keys: {type: array, items: {type: string, enum: [user, destination, ip, hwid, mux]}}
+        flow_keys: {type: array, items: {type: string, enum: [user, source_ip, hwid, mux, protocol, destination]}}
         speed: {type: string, example: "10mbit"}
         raw_speed: {type: integer, format: int64}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
     BandwidthLimiterCreate:
       type: object
-      required: [squad_ids, outbound, strategy, mode, speed]
+      required: [squad_ids, outbound, strategy]
+      description: "mode, speed, flow_keys, connection_type are required/relevant unless strategy=bypass"
       properties:
         squad_ids: {$ref: "#/components/schemas/SquadIDs"}
         username: {type: string}
         outbound: {type: string, example: "direct"}
-        strategy: {type: string, enum: [global, connection]}
-        connection_type: {type: string, enum: [default, hwid, mux, ip]}
+        strategy: {type: string, enum: [global, connection, bypass]}
+        connection_type: {type: string}
         mode: {type: string, enum: [upload, download, bidirectional]}
-        flow_keys: {type: array, items: {type: string, enum: [user, destination, ip, hwid, mux]}}
+        flow_keys: {type: array, items: {type: string, enum: [user, source_ip, hwid, mux, protocol, destination]}}
         speed: {type: string, example: "10mbit"}
     BandwidthLimiterUpdate:
       type: object
-      required: [outbound, strategy, mode, speed]
+      required: [outbound, strategy]
+      description: "mode, speed, flow_keys, connection_type are required/relevant unless strategy=bypass"
       properties:
         username: {type: string}
         outbound: {type: string}
-        strategy: {type: string, enum: [global, connection]}
-        connection_type: {type: string, enum: [default, hwid, mux, ip]}
+        strategy: {type: string, enum: [global, connection, bypass]}
+        connection_type: {type: string}
         mode: {type: string, enum: [upload, download, bidirectional]}
-        flow_keys: {type: array, items: {type: string, enum: [user, destination, ip, hwid, mux]}}
+        flow_keys: {type: array, items: {type: string, enum: [user, source_ip, hwid, mux, protocol, destination]}}
         speed: {type: string}
 
     TrafficLimiter:
       type: object
-      required: [id, squad_ids, outbound, strategy, mode, raw_used, quota, raw_quota, created_at, updated_at]
+      required: [id, squad_ids, outbound, strategy, mode, raw_used, quota, raw_quota, usage, created_at, updated_at]
       properties:
         id: {type: integer, format: int32}
         squad_ids: {$ref: "#/components/schemas/SquadIDs"}
@@ -777,11 +818,13 @@ components:
         raw_used: {type: integer, format: int64}
         quota: {type: string, example: "10gb"}
         raw_quota: {type: integer, format: int64}
+        usage: {type: integer, format: int32, description: "Usage percentage 0-100"}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
     TrafficLimiterCreate:
       type: object
-      required: [squad_ids, outbound, strategy, mode, quota]
+      required: [squad_ids, outbound, strategy]
+      description: "mode, quota are required unless strategy=bypass"
       properties:
         squad_ids: {$ref: "#/components/schemas/SquadIDs"}
         username: {type: string}
@@ -791,7 +834,8 @@ components:
         quota: {type: string, example: "10gb"}
     TrafficLimiterUpdate:
       type: object
-      required: [outbound, strategy, mode, quota]
+      required: [outbound, strategy]
+      description: "mode, quota are required unless strategy=bypass"
       properties:
         username: {type: string}
         outbound: {type: string}
@@ -807,7 +851,7 @@ components:
         squad_ids: {$ref: "#/components/schemas/SquadIDs"}
         username: {type: string}
         outbound: {type: string, example: "direct"}
-        strategy: {type: string, enum: [connection]}
+        strategy: {type: string, enum: [connection, bypass]}
         connection_type: {type: string, enum: [default, hwid, mux, ip]}
         lock_type: {type: string, enum: [manager, default]}
         count: {type: integer, format: int64}
@@ -815,22 +859,24 @@ components:
         updated_at: {type: string, format: date-time}
     ConnectionLimiterCreate:
       type: object
-      required: [squad_ids, outbound, strategy, lock_type, count]
+      required: [squad_ids, outbound, strategy]
+      description: "lock_type, connection_type, count are required unless strategy=bypass"
       properties:
         squad_ids: {$ref: "#/components/schemas/SquadIDs"}
         username: {type: string}
         outbound: {type: string, example: "direct"}
-        strategy: {type: string, enum: [connection]}
+        strategy: {type: string, enum: [connection, bypass]}
         connection_type: {type: string, enum: [default, hwid, mux, ip]}
         lock_type: {type: string, enum: [manager, default]}
         count: {type: integer, format: int64}
     ConnectionLimiterUpdate:
       type: object
-      required: [outbound, strategy, lock_type, count]
+      required: [outbound, strategy]
+      description: "lock_type, connection_type, count are required unless strategy=bypass"
       properties:
         username: {type: string}
         outbound: {type: string}
-        strategy: {type: string, enum: [connection]}
+        strategy: {type: string, enum: [connection, bypass]}
         connection_type: {type: string, enum: [default, hwid, mux, ip]}
         lock_type: {type: string, enum: [manager, default]}
         count: {type: integer, format: int64}
@@ -843,7 +889,7 @@ components:
         squad_ids: {$ref: "#/components/schemas/SquadIDs"}
         username: {type: string}
         outbound: {type: string, example: "direct"}
-        strategy: {type: string, enum: [fixed_window, sliding_window, token_bucket, leaky_bucket]}
+        strategy: {type: string, enum: [fixed_window, sliding_window, token_bucket, leaky_bucket, bypass]}
         connection_type: {type: string, enum: [hwid, mux, ip, default]}
         count: {type: integer, format: int64}
         interval: {type: string, example: "1s"}
@@ -851,22 +897,24 @@ components:
         updated_at: {type: string, format: date-time}
     RateLimiterCreate:
       type: object
-      required: [squad_ids, outbound, strategy, connection_type, count, interval]
+      required: [squad_ids, outbound, strategy]
+      description: "connection_type, count, interval are required unless strategy=bypass"
       properties:
         squad_ids: {$ref: "#/components/schemas/SquadIDs"}
         username: {type: string}
         outbound: {type: string, example: "direct"}
-        strategy: {type: string, enum: [fixed_window, sliding_window, token_bucket, leaky_bucket]}
+        strategy: {type: string, enum: [fixed_window, sliding_window, token_bucket, leaky_bucket, bypass]}
         connection_type: {type: string, enum: [hwid, mux, ip, default]}
         count: {type: integer, format: int64}
         interval: {type: string, example: "1s"}
     RateLimiterUpdate:
       type: object
-      required: [outbound, strategy, connection_type, count, interval]
+      required: [outbound, strategy]
+      description: "connection_type, count, interval are required unless strategy=bypass"
       properties:
         username: {type: string}
         outbound: {type: string}
-        strategy: {type: string, enum: [fixed_window, sliding_window, token_bucket, leaky_bucket]}
+        strategy: {type: string, enum: [fixed_window, sliding_window, token_bucket, leaky_bucket, bypass]}
         connection_type: {type: string, enum: [hwid, mux, ip, default]}
         count: {type: integer, format: int64}
         interval: {type: string}

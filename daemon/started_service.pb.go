@@ -20,13 +20,14 @@ const (
 type LogLevel int32
 
 const (
-	LogLevel_PANIC LogLevel = 0
-	LogLevel_FATAL LogLevel = 1
-	LogLevel_ERROR LogLevel = 2
-	LogLevel_WARN  LogLevel = 3
-	LogLevel_INFO  LogLevel = 4
-	LogLevel_DEBUG LogLevel = 5
-	LogLevel_TRACE LogLevel = 6
+	LogLevel_PANIC  LogLevel = 0
+	LogLevel_FATAL  LogLevel = 1
+	LogLevel_ERROR  LogLevel = 2
+	LogLevel_WARN   LogLevel = 3
+	LogLevel_NOTICE LogLevel = 4
+	LogLevel_INFO   LogLevel = 5
+	LogLevel_DEBUG  LogLevel = 6
+	LogLevel_TRACE  LogLevel = 7
 )
 
 // Enum value maps for LogLevel.
@@ -36,18 +37,20 @@ var (
 		1: "FATAL",
 		2: "ERROR",
 		3: "WARN",
-		4: "INFO",
-		5: "DEBUG",
-		6: "TRACE",
+		4: "NOTICE",
+		5: "INFO",
+		6: "DEBUG",
+		7: "TRACE",
 	}
 	LogLevel_value = map[string]int32{
-		"PANIC": 0,
-		"FATAL": 1,
-		"ERROR": 2,
-		"WARN":  3,
-		"INFO":  4,
-		"DEBUG": 5,
-		"TRACE": 6,
+		"PANIC":  0,
+		"FATAL":  1,
+		"ERROR":  2,
+		"WARN":   3,
+		"NOTICE": 4,
+		"INFO":   5,
+		"DEBUG":  6,
+		"TRACE":  7,
 	}
 )
 
