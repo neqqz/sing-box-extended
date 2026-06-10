@@ -147,7 +147,7 @@ func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
 	}
 }
 
-// quicConfigWithRandom возвращает копию quic.Config с ClientRandomPrefix/Mask.
+// quicConfigWithRandom возвращает копию quic.Config с ClientRandomPrefix/Mask/HelloID.
 func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
 	if len(c.clientRandomPrefix) == 0 {
 		return cfg
@@ -155,6 +155,7 @@ func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
 	cloned := cfg.Clone()
 	cloned.ClientRandomPrefix = c.clientRandomPrefix
 	cloned.ClientRandomMask = c.clientRandomMask
+	cloned.ClientHelloID = c.id
 	return cloned
 }
 
