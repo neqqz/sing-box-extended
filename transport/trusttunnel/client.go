@@ -99,7 +99,15 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				if err != nil {
 					return nil, err
 				}
-				conn, err := qtls.DialEarly(ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), options.TLSConfig, cfg)
+				pktConn := bufio.NewUnbindPacketConn(udpConn)
+				var conn *quic.Conn
+				// Если TLS конфиг поддерживает QUICDialer (UTLSClientConfig с ClientRandomPrefix),
+				// используем его DialEarly напрямую — он применяет quicConfigWithRandom.
+				if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
+					conn, err = qd.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), cfg)
+				} else {
+					conn, err = qtls.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), options.TLSConfig, cfg)
+				}
 				if err != nil {
 					return nil, err
 				}
