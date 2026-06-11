@@ -28,6 +28,7 @@ builds:
       - with_sudoku
       - with_manager
       - with_admin_panel
+      - with_profiler
       - badlinkname
       - tfogo_checklinkname0
     env:
@@ -63,6 +64,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_profiler
       - badlinkname
       - tfogo_checklinkname0
     targets:
@@ -123,6 +125,7 @@ builds:
       - with_sudoku
       - with_manager
       - with_admin_panel
+      - with_profiler
       - badlinkname
       - tfogo_checklinkname0
       - with_naive_outbound
@@ -155,6 +158,7 @@ builds:
       - with_sudoku
       - with_manager
       - with_admin_panel
+      - with_profiler
       - badlinkname
       - tfogo_checklinkname0
       - with_naive_outbound
@@ -187,6 +191,7 @@ builds:
       - with_sudoku
       - with_manager
       - with_admin_panel
+      - with_profiler
       - badlinkname
       - tfogo_checklinkname0
       - with_naive_outbound
@@ -219,6 +224,7 @@ builds:
       - with_sudoku
       - with_manager
       - with_admin_panel
+      - with_profiler
       - badlinkname
       - tfogo_checklinkname0
       - with_naive_outbound
@@ -251,6 +257,7 @@ builds:
       - with_sudoku
       - with_manager
       - with_admin_panel
+      - with_profiler
       - badlinkname
       - tfogo_checklinkname0
       - with_naive_outbound
@@ -299,6 +306,7 @@ builds:
       - with_sudoku
       - with_manager
       - with_admin_panel
+      - with_profiler
       - badlinkname
       - tfogo_checklinkname0
       - with_naive_outbound
@@ -353,6 +361,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_profiler
       - badlinkname
       - tfogo_checklinkname0
     targets:
@@ -424,6 +433,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_profiler
       - badlinkname
       - tfogo_checklinkname0
     hooks:

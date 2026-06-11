@@ -6,14 +6,15 @@ import (
 	"net/http/pprof"
 	runtimePprof "runtime/pprof"
 	"strings"
-	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	boxService "github.com/sagernet/sing-box/adapter/service"
+	"github.com/sagernet/sing-box/common/listener"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	E "github.com/sagernet/sing/common/exceptions"
+	N "github.com/sagernet/sing/common/network"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -24,23 +25,21 @@ func RegisterService(registry *boxService.Registry) {
 
 type Service struct {
 	boxService.Adapter
-	logger       log.ContextLogger
-	listen       string
-	readTimeout  time.Duration
-	writeTimeout time.Duration
-	server       *http.Server
+	logger   log.ContextLogger
+	listener *listener.Listener
+	server   *http.Server
 }
 
 func NewService(ctx context.Context, logger log.ContextLogger, tag string, options option.ProfilerServiceOptions) (adapter.Service, error) {
-	if options.Listen == "" {
-		return nil, E.New("missing listen")
-	}
 	return &Service{
-		Adapter:      boxService.NewAdapter(C.TypeProfiler, tag),
-		logger:       logger,
-		listen:       options.Listen,
-		readTimeout:  time.Duration(options.ReadTimeout),
-		writeTimeout: time.Duration(options.WriteTimeout),
+		Adapter: boxService.NewAdapter(C.TypeProfiler, tag),
+		logger:  logger,
+		listener: listener.New(listener.Options{
+			Context: ctx,
+			Logger:  logger,
+			Network: []string{N.NetworkTCP},
+			Listen:  options.ListenOptions,
+		}),
 	}, nil
 }
 
@@ -69,14 +68,15 @@ func (s *Service) Start(stage adapter.StartStage) error {
 	})
 
 	s.server = &http.Server{
-		Addr:         s.listen,
-		Handler:      r,
-		ReadTimeout:  s.readTimeout,
-		WriteTimeout: s.writeTimeout,
+		Handler: r,
 	}
-	s.logger.Info("profiler listening at ", s.listen)
+	tcpListener, err := s.listener.ListenTCP()
+	if err != nil {
+		return err
+	}
+	s.logger.Info("profiler listening at ", tcpListener.Addr())
 	go func() {
-		err := s.server.ListenAndServe()
+		err := s.server.Serve(tcpListener)
 		if err != nil && !E.IsClosed(err) {
 			s.logger.Error(E.Cause(err, "serve profiler"))
 		}
@@ -89,5 +89,5 @@ func (s *Service) Close() error {
 		_ = s.server.Close()
 		s.server = nil
 	}
-	return nil
+	return s.listener.Close()
 }
