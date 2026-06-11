@@ -237,4 +237,4 @@ replace github.com/shtorm-7/go-cache/v2 => github.com/shtorm-7/go-cache/v2 v2.1.
 
 replace github.com/sagernet/sing => github.com/shtorm-7/sing v0.8.10-extended-1.1.0
 
-replace github.com/sagernet/quic-go => github.com/0dinsky/quic-go v0.0.0-20260610153615-97b6e4ce0ecf
+replace github.com/sagernet/quic-go => github.com/0dinsky/quic-go v0.0.0-20260611054317-c49443429a38
