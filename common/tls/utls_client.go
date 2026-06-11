@@ -137,7 +137,7 @@ func (c *UTLSClientConfig) SetECHConfigList(EncryptedClientHelloConfigList []byt
 // so that QUIC transport can use UTLSClientConfig directly without
 // calling STDConfig() which is unsupported for uTLS.
 func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
-	return &tls.Config{
+	cfg := &tls.Config{
 		ServerName:         c.config.ServerName,
 		RootCAs:            c.config.RootCAs,
 		NextProtos:         c.config.NextProtos,
@@ -145,6 +145,33 @@ func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
 		MinVersion:         c.config.MinVersion,
 		MaxVersion:         c.config.MaxVersion,
 	}
+	// Если задан certDomain — верифицируем сертификат по нему, а не по ServerName.
+	// Это нужно для QUIC так же как и для TCP (certDomain фича).
+	if c.certDomain != "" {
+		cfg.InsecureSkipVerify = true
+		certDomain := c.certDomain
+		rootCAs := c.config.RootCAs
+		timeFn := c.config.Time
+		cfg.VerifyConnection = func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return E.New("tls: no peer certificates")
+			}
+			opts := x509.VerifyOptions{
+				DNSName:       certDomain,
+				Roots:         rootCAs,
+				Intermediates: x509.NewCertPool(),
+			}
+			for _, cert := range state.PeerCertificates[1:] {
+				opts.Intermediates.AddCert(cert)
+			}
+			if timeFn != nil {
+				opts.CurrentTime = timeFn()
+			}
+			_, err := state.PeerCertificates[0].Verify(opts)
+			return err
+		}
+	}
+	return cfg
 }
 
 // quicConfigWithRandom возвращает копию quic.Config с ClientRandomPrefix/Mask/HelloID.
