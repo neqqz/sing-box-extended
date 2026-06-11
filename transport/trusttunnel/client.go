@@ -101,8 +101,6 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				}
 				pktConn := bufio.NewUnbindPacketConn(udpConn)
 				var conn *quic.Conn
-				// Если TLS конфиг поддерживает QUICDialer (UTLSClientConfig с ClientRandomPrefix),
-				// используем его DialEarly напрямую — он применяет quicConfigWithRandom.
 				if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
 					conn, err = qd.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), cfg)
 				} else {
