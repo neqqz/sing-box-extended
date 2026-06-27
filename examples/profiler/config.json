@@ -1,0 +1,13 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "services": [
+    {
+      "type": "profiler",
+      "tag": "pprof",
+      "listen": "127.0.0.1",
+      "listen_port": 6060
+    }
+  ]
+}

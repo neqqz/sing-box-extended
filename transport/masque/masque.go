@@ -2,9 +2,9 @@ package masque
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -12,13 +12,13 @@ import (
 
 	connectip "github.com/Diniboy1123/connect-ip-go"
 	"github.com/sagernet/quic-go"
+	"github.com/sagernet/quic-go/congestion"
 	"github.com/sagernet/quic-go/http3"
 	qtls "github.com/sagernet/sing-quic"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	aTLS "github.com/sagernet/sing/common/tls"
 	"github.com/yosida95/uritemplate/v3"
-	"golang.org/x/net/http2"
 )
 
 type (
@@ -26,39 +26,60 @@ type (
 	ListenPacket func(network string, address string) (net.PacketConn, error)
 )
 
-func ConnectTunnel(ctx context.Context, dialer N.Dialer, tlsConfig aTLS.Config, quicConfig *quic.Config, connectUri string, endpoint net.Addr, useHTTP2 bool) (net.PacketConn, *http3.Transport, *connectip.Conn, *http.Response, error) {
-	template := uritemplate.MustNew(connectUri)
-	additionalHeaders := http.Header{
-		"User-Agent": []string{""},
+type IpConn interface {
+	ReadPacket() (b []byte, err error)
+	WritePacket(b []byte) (icmp []byte, err error)
+	Close() error
+}
+
+type closerFunc func() error
+
+func (f closerFunc) Close() error { return f() }
+
+type quicIpConn struct {
+	conn *connectip.Conn
+	buf  []byte
+}
+
+func newQuicIpConn(conn *connectip.Conn) *quicIpConn {
+	return &quicIpConn{
+		conn: conn,
+		buf:  make([]byte, 0xFFFF),
 	}
+}
+
+func (c *quicIpConn) ReadPacket() ([]byte, error) {
+	n, err := c.conn.ReadPacket(c.buf, true)
+	if err != nil {
+		return nil, err
+	}
+	return c.buf[:n], nil
+}
+
+func (c *quicIpConn) WritePacket(b []byte) (icmp []byte, err error) {
+	return c.conn.WritePacket(b)
+}
+
+func (c *quicIpConn) Close() error {
+	return c.conn.Close()
+}
+
+func ConnectTunnel(ctx context.Context, dialer N.Dialer, tlsConfig aTLS.Config, quicConfig *quic.Config, connectUri string, endpoint net.Addr, useHTTP2 bool, congestionControl func(conn *quic.Conn) congestion.CongestionControl) (io.Closer, IpConn, *http.Response, error) {
 	if useHTTP2 {
 		h2Endpoint, ok := endpoint.(*net.TCPAddr)
 		if !ok || h2Endpoint == nil {
-			return nil, nil, nil, nil, errors.New("missing HTTP/2 TCP endpoint")
+			return nil, nil, nil, errors.New("missing HTTP/2 TCP endpoint")
 		}
-		h2Headers := additionalHeaders.Clone()
-		h2Headers.Set("cf-connect-proto", "cf-connect-ip")
-		h2Headers.Set("pq-enabled", "false")
-		h2Client, err := newHTTP2Client(dialer, tlsConfig, h2Endpoint, connectUri)
-		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("failed to create HTTP/2 client: %w", err)
-		}
-		ipConn, rsp, err := connectip.DialH2(ctx, h2Client, template, h2Headers)
-		if err != nil {
-			if strings.Contains(err.Error(), "tls: access denied") {
-				return nil, nil, nil, nil, errors.New("login failed! Please double-check if your tls key and cert is enrolled in the Cloudflare Access service")
-			}
-			return nil, nil, nil, nil, fmt.Errorf("failed to dial connect-ip over HTTP/2: %w", err)
-		}
-		return nil, nil, ipConn, rsp, nil
+		return ConnectTunnelH2(ctx, dialer, tlsConfig, h2Endpoint, connectUri)
 	}
+
 	quicEndpoint, ok := endpoint.(*net.UDPAddr)
 	if !ok || quicEndpoint == nil {
-		return nil, nil, nil, nil, errors.New("missing HTTP/3 UDP endpoint")
+		return nil, nil, nil, errors.New("missing HTTP/3 UDP endpoint")
 	}
 	udpConn, err := dialer.ListenPacket(ctx, M.SocksaddrFromNetIP(quicEndpoint.AddrPort()))
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, err
 	}
 	conn, err := qtls.Dial(
 		ctx,
@@ -68,28 +89,34 @@ func ConnectTunnel(ctx context.Context, dialer N.Dialer, tlsConfig aTLS.Config, 
 		quicConfig,
 	)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		_ = udpConn.Close()
+		return nil, nil, nil, err
+	}
+	if congestionControl != nil {
+		conn.SetCongestionControl(congestionControl(conn))
 	}
 	tr := &http3.Transport{
 		EnableDatagrams: true,
 		AdditionalSettings: map[uint64]uint64{
-			// official client still sends this out as well, even though
-			// it's deprecated, see https://datatracker.ietf.org/doc/draft-ietf-masque-h3-datagram/00/
-			// SETTINGS_H3_DATAGRAM_00 = 0x0000000000000276
-			// https://github.com/cloudflare/quiche/blob/7c66757dbc55b8d0c3653d4b345c6785a181f0b7/quiche/src/h3/frame.rs#L46
 			0x276: 1,
 		},
 		DisableCompression: true,
 	}
 	hconn := tr.NewClientConn(conn)
+
+	template := uritemplate.MustNew(connectUri)
+	additionalHeaders := http.Header{
+		"User-Agent": []string{""},
+	}
 	ipConn, rsp, err := connectip.Dial(ctx, hconn, template, "cf-connect-ip", additionalHeaders, true)
 	if err != nil {
 		_ = tr.Close()
 		_ = conn.CloseWithError(0, "connect-ip dial failed")
+		_ = udpConn.Close()
 		if strings.Contains(err.Error(), "tls: access denied") {
-			return udpConn, nil, nil, nil, errors.New("login failed! Please double-check if your tls key and cert is enrolled in the Cloudflare Access service")
+			return nil, nil, nil, errors.New("login failed! Please double-check if your tls key and cert is enrolled in the Cloudflare Access service")
 		}
-		return udpConn, nil, nil, nil, fmt.Errorf("failed to dial connect-ip: %w", err)
+		return nil, nil, rsp, fmt.Errorf("failed to dial connect-ip: %w", err)
 	}
 	err = ipConn.AdvertiseRoute(ctx, []connectip.IPRoute{
 		{
@@ -109,34 +136,16 @@ func ConnectTunnel(ctx context.Context, dialer N.Dialer, tlsConfig aTLS.Config, 
 		},
 	})
 	if err != nil {
-		return udpConn, nil, nil, nil, err
+		_ = ipConn.Close()
+		_ = tr.Close()
+		_ = udpConn.Close()
+		return nil, nil, nil, err
 	}
-	return udpConn, tr, ipConn, rsp, nil
-}
 
-func newHTTP2Client(dialer N.Dialer, baseTLSConfig aTLS.Config, endpoint *net.TCPAddr, connectURI string) (*http.Client, error) {
-	if endpoint == nil {
-		return nil, errors.New("missing HTTP/2 endpoint")
-	}
-	tlsConfig := baseTLSConfig.Clone()
-	tlsConfig.SetNextProtos([]string{"h2"})
-	return &http.Client{
-		Transport: &http2.Transport{
-			DialTLSContext: func(ctx context.Context, network, _ string, _ *tls.Config) (net.Conn, error) {
-				conn, err := dialer.DialContext(ctx, network, M.SocksaddrFromNetIP(endpoint.AddrPort()))
-				if err != nil {
-					return nil, err
-				}
-				tlsConn, err := tlsConfig.Client(conn)
-				if err != nil {
-					return nil, err
-				}
-				if err := tlsConn.HandshakeContext(ctx); err != nil {
-					_ = conn.Close()
-					return nil, err
-				}
-				return tlsConn, nil
-			},
-		},
-	}, nil
+	closer := closerFunc(func() error {
+		_ = tr.Close()
+		_ = udpConn.Close()
+		return nil
+	})
+	return closer, newQuicIpConn(ipConn), rsp, nil
 }

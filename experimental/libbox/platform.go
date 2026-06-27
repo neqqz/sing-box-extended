@@ -6,6 +6,7 @@ type PlatformInterface interface {
 	LocalDNSTransport() LocalDNSTransport
 	UsePlatformAutoDetectInterfaceControl() bool
 	AutoDetectInterfaceControl(fd int32) error
+	BindInterfaceControl(fd int32, interfaceName string) error
 	OpenTun(options TunOptions) (int32, error)
 	UseProcFS() bool
 	FindConnectionOwner(ipProtocol int32, sourceAddress string, sourcePort int32, destinationAddress string, destinationPort int32) (*ConnectionOwner, error)

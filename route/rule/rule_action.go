@@ -29,13 +29,17 @@ func NewRuleAction(ctx context.Context, logger logger.ContextLogger, action opti
 	case "":
 		return nil, nil
 	case C.RuleActionTypeRoute:
-		overrideGateway := M.ParseAddr(action.RouteOptions.OverrideGateway)
+		var overrideGateway *netip.Addr
+		if action.RouteOptions.OverrideGateway != "" {
+			parsed := M.ParseAddr(action.RouteOptions.OverrideGateway)
+			overrideGateway = &parsed
+		}
 		return &RuleActionRoute{
 			Outbound: action.RouteOptions.Outbound,
 			RuleActionRouteOptions: RuleActionRouteOptions{
 				OverrideAddress:           M.ParseSocksaddrHostPort(action.RouteOptions.OverrideAddress, 0),
 				OverridePort:              action.RouteOptions.OverridePort,
-				OverrideGateway:           &overrideGateway,
+				OverrideGateway:           overrideGateway,
 				NetworkStrategy:           (*C.NetworkStrategy)(action.RouteOptions.NetworkStrategy),
 				FallbackDelay:             time.Duration(action.RouteOptions.FallbackDelay),
 				UDPDisableDomainUnmapping: action.RouteOptions.UDPDisableDomainUnmapping,

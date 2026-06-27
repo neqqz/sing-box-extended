@@ -10,6 +10,7 @@ import (
 	"github.com/sagernet/quic-go/http3"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
+	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/listener"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
@@ -136,10 +137,9 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		if err != nil {
 			return err
 		}
-		congestionControlFactory, err := trusttunnel.NewCongestionControl(
+		congestionControlFactory, err := congestion.NewCongestionControl(
 			h.options.CongestionController,
 			h.options.CWND,
-			h.options.BBRProfile,
 			ntp.TimeFuncFromContext(h.ctx),
 		)
 		if err != nil {

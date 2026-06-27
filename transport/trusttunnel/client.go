@@ -14,12 +14,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing/common/bufio"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/ntp"
+	"github.com/sagernet/sing/common/logger"
 
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/http3"
@@ -50,7 +52,7 @@ type ClientOptions struct {
 	QUIC              bool
 	CongestionControl string
 	CWND              int
-	BBRProfile        string
+	Logger            logger.Logger
 	HealthCheck       bool
 	MaxConnections    int
 	MinStreams        int
@@ -81,7 +83,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		healthCheck:  options.HealthCheck,
 	}
 	if options.QUIC {
-		congestionControlFactory, err := NewCongestionControl(options.CongestionControl, options.CWND, options.BBRProfile, ntp.TimeFuncFromContext(ctx))
+		congestionControlFactory, err := congestion.NewCongestionControl(options.CongestionControl, options.CWND, ntp.TimeFuncFromContext(ctx))
 		if err != nil {
 			cancel()
 			return nil, err

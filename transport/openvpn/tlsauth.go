@@ -2,6 +2,7 @@ package openvpn
 
 import (
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -35,6 +36,9 @@ func NewTLSAuth(staticKey []byte, keyDirection int, auth string) (*TLSAuth, erro
 	var newHash func() hash.Hash
 	var hmacSize int
 	switch auth {
+	case AuthMD5:
+		newHash = md5.New
+		hmacSize = md5.Size
 	case AuthSHA256:
 		newHash = sha256.New
 		hmacSize = sha256.Size

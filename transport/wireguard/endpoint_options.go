@@ -5,7 +5,7 @@ import (
 	"net/netip"
 	"time"
 
-	Xbadoption "github.com/sagernet/sing-box/common/xray/json/badoption"
+	"github.com/sagernet/sing/common/json/badoption"
 	tun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -18,6 +18,7 @@ type EndpointOptions struct {
 	System                     bool
 	Handler                    tun.Handler
 	UDPTimeout                 time.Duration
+	ICMPTimeout                time.Duration
 	Dialer                     N.Dialer
 	CreateDialer               func(interfaceName string) N.Dialer
 	Name                       string
@@ -49,10 +50,10 @@ type AmneziaOptions struct {
 	S2    int
 	S3    int
 	S4    int
-	H1    *Xbadoption.Range
-	H2    *Xbadoption.Range
-	H3    *Xbadoption.Range
-	H4    *Xbadoption.Range
+	H1    *badoption.Range[uint32]
+	H2    *badoption.Range[uint32]
+	H3    *badoption.Range[uint32]
+	H4    *badoption.Range[uint32]
 	I1    string
 	I2    string
 	I3    string

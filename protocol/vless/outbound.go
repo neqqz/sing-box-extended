@@ -92,7 +92,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		case "xudp":
 			outbound.xudp = true
 		default:
-			return nil, E.New("unknown packet encoding: ", options.PacketEncoding)
+			return nil, E.New("unknown packet encoding: ", *options.PacketEncoding)
 		}
 	}
 	muxOpts := common.PtrValueOrDefault(options.Multiplex)

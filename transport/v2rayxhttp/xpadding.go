@@ -264,7 +264,7 @@ func ExtractXPaddingFromRequest(options *option.V2RayXHTTPBaseOptions, req *http
 	return "", ""
 }
 
-func IsPaddingValid(options *option.V2RayXHTTPBaseOptions, paddingValue string, from, to int32, method PaddingMethod) bool {
+func IsPaddingValid(options *option.V2RayXHTTPBaseOptions, paddingValue string, from, to int, method PaddingMethod) bool {
 	if paddingValue == "" {
 		return false
 	}
@@ -274,11 +274,11 @@ func IsPaddingValid(options *option.V2RayXHTTPBaseOptions, paddingValue string, 
 	}
 	switch method {
 	case PaddingMethodRepeatX:
-		n := int32(len(paddingValue))
+		n := len(paddingValue)
 		return n >= from && n <= to
 	case PaddingMethodTokenish:
-		const tolerance = int32(validationTolerance)
-		n := int32(hpack.HuffmanEncodeLength(paddingValue))
+		const tolerance = validationTolerance
+		n := int(hpack.HuffmanEncodeLength(paddingValue))
 		f := from - tolerance
 		t := to + tolerance
 		if f < 0 {
@@ -286,7 +286,7 @@ func IsPaddingValid(options *option.V2RayXHTTPBaseOptions, paddingValue string, 
 		}
 		return n >= f && n <= t
 	default:
-		n := int32(len(paddingValue))
+		n := len(paddingValue)
 		return n >= from && n <= to
 	}
 }

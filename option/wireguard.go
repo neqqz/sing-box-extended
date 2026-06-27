@@ -3,7 +3,6 @@ package option
 import (
 	"net/netip"
 
-	Xbadoption "github.com/sagernet/sing-box/common/xray/json/badoption"
 	"github.com/sagernet/sing/common/json/badoption"
 )
 
@@ -40,10 +39,10 @@ type WireGuardAmnezia struct {
 	S2    int               `json:"s2,omitempty"`
 	S3    int               `json:"s3,omitempty"`
 	S4    int               `json:"s4,omitempty"`
-	H1    *Xbadoption.Range `json:"h1,omitempty"`
-	H2    *Xbadoption.Range `json:"h2,omitempty"`
-	H3    *Xbadoption.Range `json:"h3,omitempty"`
-	H4    *Xbadoption.Range `json:"h4,omitempty"`
+	H1    *badoption.Range[uint32] `json:"h1,omitempty"`
+	H2    *badoption.Range[uint32] `json:"h2,omitempty"`
+	H3    *badoption.Range[uint32] `json:"h3,omitempty"`
+	H4    *badoption.Range[uint32] `json:"h4,omitempty"`
 	I1    string            `json:"i1,omitempty"`
 	I2    string            `json:"i2,omitempty"`
 	I3    string            `json:"i3,omitempty"`

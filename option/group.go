@@ -18,7 +18,8 @@ type URLTestOutboundOptions struct {
 }
 
 type FallbackOutboundOptions struct {
-	Outbounds []string `json:"outbounds"`
+	Outbounds        []string           `json:"outbounds"`
+	BlacklistTimeout badoption.Duration `json:"blacklist_timeout,omitempty"`
 }
 
 type GroupCommonOption struct {

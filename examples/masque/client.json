@@ -39,11 +39,15 @@
       "udp_keepalive_period": "30s",
       "udp_initial_packet_size": 0,
       "reconnect_delay": "5s",
+      "congestion_controller": "bbr",
+      "cwnd": 0,
       "tls": { // TLS fields for HTTP2
+        "server_name": "", // SNI; empty = default "consumer-masque.cloudflareclient.com"
         "insecure": false,
         "cipher_suites": [],
         "curve_preferences": [],
         "fragment": false,
+        "fragment_fallback_delay": "500ms",
         "record_fragment": false,
         "kernel_tx": false,
         "kernel_rx": false

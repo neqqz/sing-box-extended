@@ -31,7 +31,8 @@
       "multiplex": {
         "enabled": true,
         "max_connections": 8,
-        "min_streams": 5
+        "min_streams": 5,
+        "max_streams": 0
       },
       "tls": {
         "enabled": true,
@@ -50,12 +51,12 @@
       "health_check": true,
       "quic": true,
       "congestion_controller": "bbr", // bbr, bbr_standard, bbr2, bbr2_variant, cubic, reno
-      "bbr_profile": "standard", // standard, conservative, aggressive
       "cwnd": 32,
       "multiplex": {
         "enabled": true,
         "max_connections": 8,
-        "min_streams": 5
+        "min_streams": 5,
+        "max_streams": 0
       },
       "tls": {
         "enabled": true,

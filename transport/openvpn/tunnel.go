@@ -30,16 +30,19 @@ type TunnelOptions struct {
 	UDPTimeout     time.Duration
 	ReconnectDelay time.Duration
 	PingInterval   time.Duration
+	PingRestart    time.Duration
 }
 
 type Tunnel struct {
 	ctx         context.Context
+	cancel      context.CancelFunc
 	logger      logger.ContextLogger
 	options     TunnelOptions
 	device      Device
 	client      *Client
 	mtu         uint32
 	serverIndex int
+	wg          sync.WaitGroup
 
 	await chan struct{}
 	mu    sync.Mutex
@@ -49,8 +52,10 @@ func NewTunnel(ctx context.Context, logger logger.ContextLogger, options TunnelO
 	if options.ReconnectDelay == 0 {
 		options.ReconnectDelay = 5 * time.Second
 	}
+	ctx, cancel := context.WithCancel(ctx)
 	return &Tunnel{
 		ctx:     ctx,
+		cancel:  cancel,
 		logger:  logger,
 		options: options,
 		await:   make(chan struct{}),
@@ -59,10 +64,10 @@ func NewTunnel(ctx context.Context, logger logger.ContextLogger, options TunnelO
 
 func (t *Tunnel) Start() error {
 	go func() {
-		defer close(t.await)
 		client, err := t.getClient()
 		if err != nil {
 			t.logger.Error("OpenVPN connect: ", err)
+			close(t.await)
 			return
 		}
 		t.mtu = 1500
@@ -84,20 +89,26 @@ func (t *Tunnel) Start() error {
 		if err != nil {
 			client.Close()
 			t.logger.Error("create OpenVPN device: ", err)
+			close(t.await)
 			return
 		}
 		t.device = device
 		if err := device.Start(); err != nil {
 			client.Close()
 			t.logger.Error("start OpenVPN device: ", err)
+			close(t.await)
 			return
 		}
+		close(t.await)
 		t.maintainTunnel()
 	}()
 	return nil
 }
 
 func (t *Tunnel) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+	if err := t.isTunnelInitialized(ctx); err != nil {
+		return nil, err
+	}
 	if !destination.Addr.IsValid() {
 		return nil, E.Cause(os.ErrInvalid, "invalid non-IP destination")
 	}
@@ -105,6 +116,9 @@ func (t *Tunnel) DialContext(ctx context.Context, network string, destination M.
 }
 
 func (t *Tunnel) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
+	if err := t.isTunnelInitialized(ctx); err != nil {
+		return nil, err
+	}
 	if !destination.Addr.IsValid() {
 		return nil, E.Cause(os.ErrInvalid, "invalid non-IP destination")
 	}
@@ -112,15 +126,18 @@ func (t *Tunnel) ListenPacket(ctx context.Context, destination M.Socksaddr) (net
 }
 
 func (t *Tunnel) Close() error {
+	t.cancel()
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.client != nil {
 		t.client.Close()
 		t.client = nil
 	}
 	if t.device != nil {
-		return t.device.Close()
+		t.device.Close()
+		t.device = nil
 	}
+	t.mu.Unlock()
+	t.wg.Wait()
 	return nil
 }
 
@@ -137,7 +154,9 @@ func (t *Tunnel) isTunnelInitialized(ctx context.Context) error {
 }
 
 func (t *Tunnel) maintainTunnel() {
+	t.wg.Add(2)
 	go func() {
+		defer t.wg.Done()
 		bufs := make([][]byte, 1)
 		bufs[0] = make([]byte, t.mtu)
 		sizes := make([]int, 1)
@@ -161,6 +180,7 @@ func (t *Tunnel) maintainTunnel() {
 		}
 	}()
 	go func() {
+		defer t.wg.Done()
 		for t.ctx.Err() == nil {
 			client, err := t.getClient()
 			if err != nil {
@@ -179,10 +199,14 @@ func (t *Tunnel) maintainTunnel() {
 			if bytes.Equal(packet, pingPayload) {
 				continue
 			}
+			if t.ctx.Err() != nil {
+				return
+			}
+			if t.ctx.Err() != nil {
+				return
+			}
 			if _, err := t.device.Write([][]byte{packet}, 0); err != nil {
-				if t.ctx.Err() != nil {
-					return
-				}
+				return
 			}
 		}
 	}()
@@ -204,6 +228,34 @@ func (t *Tunnel) maintainTunnel() {
 						return
 					}
 					client.WriteIPPacket(t.ctx, pingPayload)
+				}
+			}
+		}()
+	}
+	pingRestart := t.options.PingRestart
+	if pingRestart == 0 && t.client != nil && t.client.push.PingRestart > 0 {
+		pingRestart = time.Duration(t.client.push.PingRestart) * time.Second
+	}
+	if pingRestart > 0 {
+		t.wg.Add(1)
+		go func() {
+			defer t.wg.Done()
+			ticker := time.NewTicker(pingRestart)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-t.ctx.Done():
+					return
+				case <-ticker.C:
+					client, err := t.getClient()
+					if err != nil {
+						return
+					}
+					if client.SinceReceive() >= pingRestart {
+						if ok := t.closeClient(client); ok {
+							t.logger.ErrorContext(t.ctx, fmt.Errorf("ping-restart timeout: no packet received for %s", pingRestart))
+						}
+					}
 				}
 			}
 		}()

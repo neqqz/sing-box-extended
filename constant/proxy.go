@@ -28,6 +28,7 @@ const (
 	TypeMieru             = "mieru"
 	TypeAnyTLS            = "anytls"
 	TypeSudoku            = "sudoku"
+	TypeSnell             = "snell"
 	TypeShadowsocksR      = "shadowsocksr"
 	TypeVLESS             = "vless"
 	TypeTUIC              = "tuic"
@@ -41,6 +42,7 @@ const (
 	TypeBandwidthLimiter  = "bandwidth-limiter"
 	TypeTrafficLimiter    = "traffic-limiter"
 	TypeRateLimiter       = "rate-limiter"
+	TypeFairQueue         = "fair-queue"
 	TypeAdminPanel        = "admin-panel"
 	TypeManagerAPI        = "manager-api"
 	TypeNodeManagerAPI    = "node-manager-api"
@@ -129,6 +131,8 @@ func ProxyDisplayName(proxyType string) string {
 		return "AnyTLS"
 	case TypeSudoku:
 		return "Sudoku"
+	case TypeSnell:
+		return "Snell"
 	case TypeFallback:
 		return "Fallback"
 	case TypeTailscale:
@@ -145,6 +149,8 @@ func ProxyDisplayName(proxyType string) string {
 		return "Traffic Limiter"
 	case TypeRateLimiter:
 		return "Rate Limiter"
+	case TypeFairQueue:
+		return "Fair Queue"
 	case TypeVPNClient:
 		return "VPN Client"
 	case TypeVPNServer:

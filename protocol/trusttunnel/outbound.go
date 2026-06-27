@@ -53,7 +53,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		QUIC:              options.QUIC,
 		CongestionControl: options.CongestionController,
 		CWND:              options.CWND,
-		BBRProfile:        options.BBRProfile,
+		Logger:            logger,
 		HealthCheck:       options.HealthCheck,
 	}
 	var client trusttunnel.Dialer

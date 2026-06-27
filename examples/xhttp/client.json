@@ -65,6 +65,8 @@
         "uplink_data_placement": "",
         "uplink_data_key": "",
         "uplink_chunk_size": 0,
+        "congestion_controller": "", // h3 only: bbr, bbr_standard, bbr2, bbr2_variant, cubic, reno
+        "cwnd": 0, // h3 only: initial congestion window in packets, default 32
         "server": "example.com",
         "server_port": 443,
         "download": {
@@ -97,6 +99,8 @@
           "uplink_data_placement": "",
           "uplink_data_key": "",
           "uplink_chunk_size": 0,
+          "congestion_controller": "", // h3 only: bbr, bbr_standard, bbr2, bbr2_variant, cubic, reno
+          "cwnd": 0, // h3 only: initial congestion window in packets, default 32
           "server": "example.com",
           "server_port": 443,
           "tls": { // https://sing-box.sagernet.org/configuration/shared/tls/#outbound

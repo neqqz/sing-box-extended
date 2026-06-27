@@ -104,6 +104,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		AllowedAddress: options.AllowedIPs,
 		ReconnectDelay: time.Duration(options.ReconnectDelay),
 		PingInterval:   time.Duration(options.PingInterval),
+		PingRestart:    time.Duration(options.PingRestart),
 	})
 	if err != nil {
 		return nil, err

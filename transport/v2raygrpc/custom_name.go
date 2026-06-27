@@ -2,6 +2,7 @@ package v2raygrpc
 
 import (
 	"context"
+	"strings"
 
 	"google.golang.org/grpc"
 )
@@ -13,13 +14,21 @@ type GunService interface {
 }
 
 func ServerDesc(name string) grpc.ServiceDesc {
+	serviceName := name
+	streamName := "Tun"
+	if strings.Contains(name, "/") {
+		name = strings.TrimPrefix(name, "/")
+		lastSlash := strings.LastIndex(name, "/")
+		serviceName = name[:lastSlash]
+		streamName = name[lastSlash+1:]
+	}
 	return grpc.ServiceDesc{
-		ServiceName: name,
+		ServiceName: serviceName,
 		HandlerType: (*GunServiceServer)(nil),
 		Methods:     []grpc.MethodDesc{},
 		Streams: []grpc.StreamDesc{
 			{
-				StreamName:    "Tun",
+				StreamName:    streamName,
 				Handler:       _GunService_Tun_Handler,
 				ServerStreams: true,
 				ClientStreams: true,
@@ -30,7 +39,11 @@ func ServerDesc(name string) grpc.ServiceDesc {
 }
 
 func (c *gunServiceClient) TunCustomName(ctx context.Context, name string, opts ...grpc.CallOption) (GunService_TunClient, error) {
-	stream, err := c.cc.NewStream(ctx, &ServerDesc(name).Streams[0], "/"+name+"/Tun", opts...)
+	path := "/" + name + "/Tun"
+	if strings.Contains(name, "/") {
+		path = name
+	}
+	stream, err := c.cc.NewStream(ctx, &ServerDesc(name).Streams[0], path, opts...)
 	if err != nil {
 		return nil, err
 	}

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	Xbadoption "github.com/sagernet/sing-box/common/xray/json/badoption"
 	"github.com/sagernet/sing/common/json/badoption"
 )
 
@@ -69,8 +68,8 @@ func DecodeBase64URLSafe(content string) (string, error) {
 	return string(result), nil
 }
 
-func ParseXHTTPRange(value string) (Xbadoption.Range, error) {
-	result := Xbadoption.Range{}
+func ParseXHTTPRange(value string) (badoption.Range[int], error) {
+	result := badoption.Range[int]{}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return result, err

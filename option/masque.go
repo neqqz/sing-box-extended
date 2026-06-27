@@ -18,10 +18,13 @@ type MASQUEOutboundOptions struct {
 	UDPKeepalivePeriod   badoption.Duration               `json:"udp_keepalive_period,omitempty"`
 	UDPInitialPacketSize uint16                           `json:"udp_initial_packet_size,omitempty"`
 	ReconnectDelay       badoption.Duration               `json:"reconnect_delay,omitempty"`
+	CongestionController string                           `json:"congestion_controller,omitempty"`
+	CWND                 int                              `json:"cwnd,omitempty"`
 	MASQUEOutboundTLSOptionsContainer
 }
 
 type MASQUEOutboundTLSOptions struct {
+	ServerName            string                              `json:"server_name,omitempty"`
 	Insecure              bool                                `json:"insecure,omitempty"`
 	CipherSuites          badoption.Listable[string]          `json:"cipher_suites,omitempty"`
 	CurvePreferences      badoption.Listable[CurvePreference] `json:"curve_preferences,omitempty"`

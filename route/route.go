@@ -58,6 +58,13 @@ func (r *Router) RouteConnectionEx(ctx context.Context, conn net.Conn, metadata 
 }
 
 func (r *Router) routeConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) error {
+	select {
+	case <-r.started:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-r.ctx.Done():
+		return r.ctx.Err()
+	}
 	//nolint:staticcheck
 	if metadata.InboundDetour != "" {
 		if metadata.LastInbound == metadata.InboundDetour {
@@ -192,6 +199,13 @@ func (r *Router) RoutePacketConnectionEx(ctx context.Context, conn N.PacketConn,
 }
 
 func (r *Router) routePacketConnection(ctx context.Context, conn N.PacketConn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) error {
+	select {
+	case <-r.started:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-r.ctx.Done():
+		return r.ctx.Err()
+	}
 	//nolint:staticcheck
 	if metadata.InboundDetour != "" {
 		if metadata.LastInbound == metadata.InboundDetour {
@@ -701,7 +715,7 @@ func (r *Router) actionSniff(
 			}
 			if err != nil {
 				sniffBuffer.Release()
-				if !errors.Is(err, context.DeadlineExceeded) {
+				if !E.IsTimeout(err) {
 					fatalErr = err
 					return
 				}

@@ -17,6 +17,7 @@ Sing-box with extended features.
 - **OpenVPN** — OpenVPN client with tls-auth, tls-crypt and tls-crypt-v2 support
 - **TrustTunnel** — AdGuard's obfuscated VPN protocol, indistinguishable from HTTPS traffic
 - **Sudoku** — Traffic obfuscation protocol based on 4×4 Sudoku puzzles with low-entropy fingerprints
+- **Snell** — Lightweight encrypted proxy (v1–v5) with TLS / HTTP obfuscation
 - **SSH** — SSH client and server with certificate authentication and upstream fallback
 - **VPN** — Routed tunnel over any TCP sing-box protocol
 - **Bond** — Link aggregation for increasing throughput

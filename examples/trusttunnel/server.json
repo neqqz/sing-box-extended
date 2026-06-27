@@ -13,7 +13,6 @@
         }
       ],
       "congestion_controller": "bbr", // bbr, bbr_standard, bbr2, bbr2_variant, cubic, reno
-      "bbr_profile": "standard", // standard, conservative, aggressive
       "cwnd": 32,
       "tls": {
         "enabled": true,

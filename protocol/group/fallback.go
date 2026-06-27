@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
@@ -31,13 +32,18 @@ type Fallback struct {
 	tags             []string
 	outbounds        map[string]adapter.Outbound
 	lastUsedOutbound string
-
-	mtx sync.Mutex
+	blacklistTimeout time.Duration
+	blacklist        map[string]time.Time
+	mtx              sync.Mutex
 }
 
 func NewFallback(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.FallbackOutboundOptions) (adapter.Outbound, error) {
 	if len(options.Outbounds) == 0 {
 		return nil, E.New("missing tags")
+	}
+	blacklistTimeout := time.Duration(options.BlacklistTimeout)
+	if blacklistTimeout == 0 {
+		blacklistTimeout = time.Minute
 	}
 	outbound := &Fallback{
 		Adapter:          outbound.NewAdapter(C.TypeFallback, tag, []string{N.NetworkTCP, N.NetworkUDP}, options.Outbounds),
@@ -47,6 +53,8 @@ func NewFallback(ctx context.Context, router adapter.Router, logger log.ContextL
 		tags:             options.Outbounds,
 		outbounds:        make(map[string]adapter.Outbound, len(options.Outbounds)),
 		lastUsedOutbound: options.Outbounds[0],
+		blacklistTimeout: blacklistTimeout,
+		blacklist:        make(map[string]time.Time),
 	}
 	return outbound, nil
 }
@@ -73,35 +81,110 @@ func (s *Fallback) All() []string {
 }
 
 func (s *Fallback) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
-	var conn net.Conn
+	s.mtx.Lock()
+	var active, blacklisted []string
+	for _, tag := range s.tags {
+		if s.isBlacklisted(tag) {
+			blacklisted = append(blacklisted, tag)
+		} else {
+			active = append(active, tag)
+		}
+	}
+	s.mtx.Unlock()
+
 	var err error
-	for _, outbound := range s.outbounds {
-		conn, err = outbound.DialContext(ctx, network, destination)
+	for _, tag := range active {
+		var conn net.Conn
+		conn, err = s.outbounds[tag].DialContext(ctx, network, destination)
+		if err != nil {
+			s.logger.InfoContext(ctx, err)
+			s.mtx.Lock()
+			s.addToBlacklist(tag)
+			s.mtx.Unlock()
+			continue
+		}
+		s.mtx.Lock()
+		s.lastUsedOutbound = tag
+		s.mtx.Unlock()
+		return conn, nil
+	}
+	for _, tag := range blacklisted {
+		var conn net.Conn
+		conn, err = s.outbounds[tag].DialContext(ctx, network, destination)
 		if err != nil {
 			s.logger.InfoContext(ctx, err)
 			continue
 		}
 		s.mtx.Lock()
-		defer s.mtx.Unlock()
-		s.lastUsedOutbound = outbound.Tag()
+		delete(s.blacklist, tag)
+		s.lastUsedOutbound = tag
+		s.mtx.Unlock()
 		return conn, nil
 	}
 	return nil, err
 }
 
 func (s *Fallback) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
-	var conn net.PacketConn
+	s.mtx.Lock()
+	var active, blacklisted []string
+	for _, tag := range s.tags {
+		if s.isBlacklisted(tag) {
+			blacklisted = append(blacklisted, tag)
+		} else {
+			active = append(active, tag)
+		}
+	}
+	s.mtx.Unlock()
+
 	var err error
-	for _, outbound := range s.outbounds {
-		conn, err = outbound.ListenPacket(ctx, destination)
+	for _, tag := range active {
+		var conn net.PacketConn
+		conn, err = s.outbounds[tag].ListenPacket(ctx, destination)
+		if err != nil {
+			s.logger.InfoContext(ctx, err)
+			s.mtx.Lock()
+			s.addToBlacklist(tag)
+			s.mtx.Unlock()
+			continue
+		}
+		s.mtx.Lock()
+		s.lastUsedOutbound = tag
+		s.mtx.Unlock()
+		return conn, nil
+	}
+	for _, tag := range blacklisted {
+		var conn net.PacketConn
+		conn, err = s.outbounds[tag].ListenPacket(ctx, destination)
 		if err != nil {
 			s.logger.InfoContext(ctx, err)
 			continue
 		}
 		s.mtx.Lock()
-		defer s.mtx.Unlock()
-		s.lastUsedOutbound = outbound.Tag()
+		delete(s.blacklist, tag)
+		s.lastUsedOutbound = tag
+		s.mtx.Unlock()
 		return conn, nil
 	}
 	return nil, err
+}
+
+func (s *Fallback) isBlacklisted(tag string) bool {
+	if s.blacklistTimeout == 0 {
+		return false
+	}
+	expiry, ok := s.blacklist[tag]
+	if !ok {
+		return false
+	}
+	if time.Now().After(expiry) {
+		delete(s.blacklist, tag)
+		return false
+	}
+	return true
+}
+
+func (s *Fallback) addToBlacklist(tag string) {
+	if s.blacklistTimeout > 0 {
+		s.blacklist[tag] = time.Now().Add(s.blacklistTimeout)
+	}
 }

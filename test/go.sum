@@ -362,8 +362,6 @@ github.com/sagernet/sing-shadowtls v0.2.1-0.20250503051639-fcd445d33c11 h1:tK+75
 github.com/sagernet/sing-shadowtls v0.2.1-0.20250503051639-fcd445d33c11/go.mod h1:sWqKnGlMipCHaGsw1sTTlimyUpgzP4WP3pjhCsYt9oA=
 github.com/sagernet/sing-tun v0.8.9 h1:ixFKKUGdVcJl4wb0xbL36hobiw9l6DIH497EQf5ILpM=
 github.com/sagernet/sing-tun v0.8.9/go.mod h1:QvarqUtHfj1ULaRR+6kZOS/OoCE+pYGq67A5tyIy+dQ=
-github.com/sagernet/smux v1.5.50-sing-box-mod.1 h1:XkJcivBC9V4wBjiGXIXZ229aZCU1hzcbp6kSkkyQ478=
-github.com/sagernet/smux v1.5.50-sing-box-mod.1/go.mod h1:NjhsCEWedJm7eFLyhuBgIEzwfhRmytrUoiLluxs5Sk8=
 github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854 h1:6uUiZcDRnZSAegryaUGwPC/Fj13JSHwiTftrXhMmYOc=
 github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854/go.mod h1:LtfoSK3+NG57tvnVEHgcuBW9ujgE8enPSgzgwStwCAA=
 github.com/shtorm-7/connect-ip-go v1.0.0-extended-1.0.0 h1:ws7BIsYLd31Wjifq88BYCHRVlgO+07iwil39s6ERba8=
@@ -372,12 +370,14 @@ github.com/shtorm-7/dnscrypt/v2 v2.4.0-extended-1.0.0 h1:e5s7RKBd2rIPR0StbvZ2vTV
 github.com/shtorm-7/dnscrypt/v2 v2.4.0-extended-1.0.0/go.mod h1:WpEFV2uhebXb8Jhes/5/fSdpmhGV8TL22RDaeWwV6hI=
 github.com/shtorm-7/go-cache/v2 v2.1.0-extended-1.1.0 h1:PLZ/YHqnApPx13wt6MX3ItqESp4ueBr1tGSi0bEGqYw=
 github.com/shtorm-7/go-cache/v2 v2.1.0-extended-1.1.0/go.mod h1:Ek4yz5OK6stwhLKgLsRRYDI+FA+ZWvRJiWLjsi/vMM4=
-github.com/shtorm-7/mtg-multi v1.8.0-extended-1.0.1 h1:UeJkrCJJmIjTBywErVMx7fCSoBf4gh6QgT9bp9o1ajM=
-github.com/shtorm-7/mtg-multi v1.8.0-extended-1.0.1/go.mod h1:3rvdhwdPABkwKBdvgMt3VwMn9uSq8hpoHRezZ5jRJU0=
-github.com/shtorm-7/sing v0.8.10-extended-1.0.0 h1:mAkyycCQOzCttPOR5fcHkJaZvXMQXeu3mbEfr8D+7A8=
-github.com/shtorm-7/sing v0.8.10-extended-1.0.0/go.mod h1:olXxWQNqRW/l2Q6JI3b2Qmz8iQnIFlOeeH8bx6JhgUA=
+github.com/shtorm-7/mtg-multi v1.11.0-extended-1.0.0 h1:iBLll4ZZG8ULQcHWs6gGslZWtBN72Zo1zjySzMVHF7g=
+github.com/shtorm-7/mtg-multi v1.11.0-extended-1.0.0/go.mod h1:3rvdhwdPABkwKBdvgMt3VwMn9uSq8hpoHRezZ5jRJU0=
+github.com/shtorm-7/sing v0.8.10-extended-1.1.0 h1:P4JL2cugjvEvnYu8tMmpR30SE1qsS45RcnNEwzDz5as=
+github.com/shtorm-7/sing v0.8.10-extended-1.1.0/go.mod h1:olXxWQNqRW/l2Q6JI3b2Qmz8iQnIFlOeeH8bx6JhgUA=
 github.com/shtorm-7/sing-mux v0.3.4-extended-1.0.0 h1:a5OoXr3e2ACbM6vDIaaGL44IdHQ6wPjcSoU13vfC0Sw=
 github.com/shtorm-7/sing-mux v0.3.4-extended-1.0.0/go.mod h1:QvlKMyNBNrQoyX4x+gq028uPbLM2XeRpWtDsWBJbFSk=
+github.com/shtorm-7/sing-vmess v0.2.7-extended-1.0.0 h1:WVheKmQH5hSQbJU1ZTKthKSutkTLWSb2hp4JuQhJBow=
+github.com/shtorm-7/sing-vmess v0.2.7-extended-1.0.0/go.mod h1:5aYoOtYksAyS0NXDm0qKeTYW1yoE1bJVcv+XLcVoyJs=
 github.com/shtorm-7/tailscale v1.92.4-sing-box-1.13-mod.7-extended-1.0.2 h1:hSMjh97OszszOd8HrzpaYUQH9dWRRBluJCbwQyz8ZOk=
 github.com/shtorm-7/tailscale v1.92.4-sing-box-1.13-mod.7-extended-1.0.2/go.mod h1:TYIIqO5sZpWq873rLIeO2usszSMUpR3h6WdqVVs65ug=
 github.com/shtorm-7/wireguard-go v0.0.2-beta.1-extended-1.4.3 h1:jtOA73D4F5qRV70//ahOt20KBnWvQimAFjtIiOtt0ps=
@@ -388,8 +388,6 @@ github.com/sirupsen/logrus v1.9.3 h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ
 github.com/sirupsen/logrus v1.9.3/go.mod h1:naHLuLoDiP4jHNo9R0sCBMtWGeIprob74mVsIT4qYEQ=
 github.com/spyzhov/ajson v0.9.4 h1:MVibcTCgO7DY4IlskdqIlCmDOsUOZ9P7oKj8ifdcf84=
 github.com/spyzhov/ajson v0.9.4/go.mod h1:a6oSw0MMb7Z5aD2tPoPO+jq11ETKgXUr2XktHdT8Wt8=
-github.com/starifly/sing-vmess v0.2.7-mod.9 h1:xobAmejSbBQ0A3f/EtJ9cJd3m6gK7dDPccPdeGz7tXY=
-github.com/starifly/sing-vmess v0.2.7-mod.9/go.mod h1:5aYoOtYksAyS0NXDm0qKeTYW1yoE1bJVcv+XLcVoyJs=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/objx v0.5.2 h1:xuMeJ0Sdp5ZMRXx/aWO6RZxdr3beISkG5/G/aIRr3pY=
 github.com/stretchr/objx v0.5.2/go.mod h1:FRsXN1f5AsAjCGJKqEizvkpNtU+EGNCLh3NxZ/8L+MA=

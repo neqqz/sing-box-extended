@@ -8,12 +8,16 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing/common/tls"
 )
 
-const defaultHandshakeTimeout = 30 * time.Second
+const (
+	defaultHandshakeTimeout = 30 * time.Second
+	controlRetransmitDelay  = time.Second
+)
 
 type Client struct {
 	config    *ClientConfig
@@ -26,6 +30,8 @@ type Client struct {
 	push    *PushReply
 
 	cancel context.CancelFunc
+
+	lastReceiveNano atomic.Int64
 }
 
 func NewClient(config *ClientConfig, io PacketIO, tlsConfig tls.Config) (*Client, error) {
@@ -154,6 +160,7 @@ func (c *Client) Handshake(ctx context.Context) (*PushReply, error) {
 		return nil, err
 	}
 	c.data = NewDataChannel(cipher, push.PeerID, push.CompLZO)
+	c.markReceive()
 	return push, nil
 }
 
@@ -181,9 +188,20 @@ func (c *Client) ReadIPPacket(ctx context.Context) ([]byte, error) {
 		if err != nil {
 			continue
 		}
+		c.markReceive()
 		return plain, nil
 	}
 }
+
+func (c *Client) SinceReceive() time.Duration {
+	return time.Duration(int64(time.Since(clientStart)) - c.lastReceiveNano.Load())
+}
+
+func (c *Client) markReceive() {
+	c.lastReceiveNano.Store(int64(time.Since(clientStart)))
+}
+
+var clientStart = time.Now().Add(-time.Hour)
 
 func (c *Client) Close() error {
 	if c.cancel != nil {
@@ -199,10 +217,24 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) waitServerReset(ctx context.Context) error {
+	retransmits := 0
 	for {
-		packet, err := c.control.Read(ctx)
+		readCtx := ctx
+		cancel := func() {}
+		if c.config.Proto == ProtoUDP {
+			readCtx, cancel = context.WithTimeout(ctx, controlRetransmitDelay)
+		}
+		packet, err := c.control.Read(readCtx)
+		cancel()
 		if err != nil {
-			return fmt.Errorf("read hard reset response: %w", err)
+			if c.config.Proto == ProtoUDP && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				if err := c.control.RetransmitPending(ctx); err != nil {
+					return fmt.Errorf("retransmit hard reset: %w", err)
+				}
+				retransmits++
+				continue
+			}
+			return fmt.Errorf("read hard reset response after %d retransmits: %w", retransmits, err)
 		}
 		switch packet.Opcode {
 		case PControlHardResetServerV2:

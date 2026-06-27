@@ -51,6 +51,8 @@
         "seq_key": "",
         "uplink_data_placement": "",
         "uplink_data_key": "",
+        "congestion_controller": "", // h3 only: bbr, bbr_standard, bbr2, bbr2_variant, cubic, reno
+        "cwnd": 0, // h3 only: initial congestion window in packets, default 32
       }
     }
   ],

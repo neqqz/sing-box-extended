@@ -147,7 +147,7 @@ func (c *DefaultDialerClient) PostPacket(ctx context.Context, url string, sessio
 	if c.httpVersion != "1.1" {
 		resp, err := c.client.Do(req)
 		if err != nil {
-			c.closed = true
+			c.Close()
 			return err
 		}
 		io.Copy(io.Discard, resp.Body)
@@ -225,10 +225,9 @@ func (w *WaitReadCloser) Set(rc io.ReadCloser) {
 }
 
 func (w *WaitReadCloser) Read(b []byte) (int, error) {
+	<-w.Wait
 	if w.ReadCloser == nil {
-		if <-w.Wait; w.ReadCloser == nil {
-			return 0, io.ErrClosedPipe
-		}
+		return 0, io.ErrClosedPipe
 	}
 	return w.ReadCloser.Read(b)
 }

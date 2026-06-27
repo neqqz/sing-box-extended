@@ -49,6 +49,10 @@ func (w *platformInterfaceWrapper) AutoDetectInterfaceControl(fd int) error {
 	return w.iif.AutoDetectInterfaceControl(int32(fd))
 }
 
+func (w *platformInterfaceWrapper) BindInterfaceControl(fd int, interfaceName string) error {
+	return w.iif.BindInterfaceControl(int32(fd), interfaceName)
+}
+
 func (w *platformInterfaceWrapper) UsePlatformInterface() bool {
 	return true
 }

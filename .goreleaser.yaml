@@ -26,6 +26,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_snell
       - with_manager
       - with_admin_panel
       - with_profiler
@@ -64,6 +65,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_snell
       - with_profiler
       - badlinkname
       - tfogo_checklinkname0
@@ -123,6 +125,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_snell
       - with_manager
       - with_admin_panel
       - with_profiler
@@ -156,6 +159,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_snell
       - with_manager
       - with_admin_panel
       - with_profiler
@@ -189,6 +193,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_snell
       - with_manager
       - with_admin_panel
       - with_profiler
@@ -222,6 +227,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_snell
       - with_manager
       - with_admin_panel
       - with_profiler
@@ -255,6 +261,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_snell
       - with_manager
       - with_admin_panel
       - with_profiler
@@ -304,6 +311,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_snell
       - with_manager
       - with_admin_panel
       - with_profiler
@@ -361,6 +369,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_snell
       - with_profiler
       - badlinkname
       - tfogo_checklinkname0
@@ -433,6 +442,7 @@ builds:
       - with_openvpn
       - with_trusttunnel
       - with_sudoku
+      - with_snell
       - with_profiler
       - badlinkname
       - tfogo_checklinkname0

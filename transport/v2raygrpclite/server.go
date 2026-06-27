@@ -42,7 +42,7 @@ func NewServer(ctx context.Context, logger logger.ContextLogger, options option.
 		tlsConfig: tlsConfig,
 		logger:    logger,
 		handler:   handler,
-		path:      "/" + options.ServiceName + "/Tun",
+		path:      grpcPath(options.ServiceName),
 		h2Server: &http2.Server{
 			IdleTimeout: time.Duration(options.IdleTimeout),
 		},

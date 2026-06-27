@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sync"
 	"time"
 
-	connectip "github.com/Diniboy1123/connect-ip-go"
-	"github.com/sagernet/quic-go/http3"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -22,9 +21,8 @@ type Tunnel struct {
 	options TunnelOptions
 	device  Device
 
-	udpConn net.PacketConn
-	tr      *http3.Transport
-	ipConn  *connectip.Conn
+	closer io.Closer
+	ipConn IpConn
 
 	mtx sync.Mutex
 }
@@ -83,13 +81,11 @@ func (e *Tunnel) Close() error {
 	defer e.mtx.Unlock()
 	if e.ipConn != nil {
 		e.ipConn.Close()
-		if e.udpConn != nil {
-			e.udpConn.Close()
-		}
-		if e.tr != nil {
-			e.tr.Close()
+		if e.closer != nil {
+			e.closer.Close()
 		}
 		e.ipConn = nil
+		e.closer = nil
 	}
 	return e.device.Close()
 }
@@ -124,7 +120,7 @@ func (e *Tunnel) maintainTunnel() {
 			}
 			icmp, err := ipConn.WritePacket(packet)
 			if err != nil {
-				if errors.As(err, new(*connectip.CloseError)) {
+				if errors.Is(err, net.ErrClosed) {
 					if ok := e.closeIpConn(ipConn); ok {
 						e.logger.ErrorContext(e.ctx, fmt.Errorf("connection closed while writing to IP connection: %w", err))
 					}
@@ -135,7 +131,7 @@ func (e *Tunnel) maintainTunnel() {
 			}
 			if len(icmp) > 0 {
 				if _, err := e.device.Write([][]byte{icmp}, 0); err != nil {
-					if errors.As(err, new(*connectip.CloseError)) {
+					if errors.Is(err, net.ErrClosed) {
 						e.logger.ErrorContext(e.ctx, fmt.Errorf("connection closed while writing ICMP to TUN device: %v", err))
 						continue
 					}
@@ -145,15 +141,14 @@ func (e *Tunnel) maintainTunnel() {
 		}
 	}()
 	go func() {
-		buf := make([]byte, 1280)
 		for e.ctx.Err() == nil {
 			ipConn, err := e.getIpConn()
 			if err != nil {
 				return
 			}
-			n, err := ipConn.ReadPacket(buf, true)
+			packet, err := ipConn.ReadPacket()
 			if err != nil {
-				if e.options.UseHTTP2 || errors.As(err, new(*connectip.CloseError)) {
+				if e.options.UseHTTP2 || errors.Is(err, net.ErrClosed) {
 					if ok := e.closeIpConn(ipConn); ok {
 						e.logger.ErrorContext(e.ctx, fmt.Errorf("connection closed while reading from IP connection: %v", err))
 					}
@@ -162,7 +157,7 @@ func (e *Tunnel) maintainTunnel() {
 				e.logger.ErrorContext(e.ctx, fmt.Errorf("Error reading from IP connection: %v, continuine...", err))
 				continue
 			}
-			if _, err := e.device.Write([][]byte{buf[:n]}, 0); err != nil {
+			if _, err := e.device.Write([][]byte{packet}, 0); err != nil {
 				continue
 			}
 		}
@@ -170,7 +165,7 @@ func (e *Tunnel) maintainTunnel() {
 	<-e.ctx.Done()
 }
 
-func (e *Tunnel) getIpConn() (*connectip.Conn, error) {
+func (e *Tunnel) getIpConn() (IpConn, error) {
 	e.mtx.Lock()
 	defer e.mtx.Unlock()
 	if e.ctx.Err() != nil {
@@ -184,7 +179,7 @@ func (e *Tunnel) getIpConn() (*connectip.Conn, error) {
 	defer timer.Stop()
 	for {
 		e.logger.NoticeContext(e.ctx, fmt.Errorf("Establishing MASQUE connection to %s", e.options.Endpoint))
-		udpConn, tr, ipConn, rsp, err := ConnectTunnel(
+		closer, ipConn, rsp, err := ConnectTunnel(
 			e.ctx,
 			e.options.Dialer,
 			e.options.TLSConfig,
@@ -192,6 +187,7 @@ func (e *Tunnel) getIpConn() (*connectip.Conn, error) {
 			"https://cloudflareaccess.com",
 			e.options.Endpoint,
 			e.options.UseHTTP2,
+			e.options.CongestionControl,
 		)
 		if err != nil {
 			e.logger.ErrorContext(e.ctx, fmt.Errorf("Failed to connect tunnel: %v", err))
@@ -206,11 +202,8 @@ func (e *Tunnel) getIpConn() (*connectip.Conn, error) {
 		if rsp.StatusCode != 200 {
 			e.logger.ErrorContext(e.ctx, fmt.Errorf("Tunnel connection failed: %s", rsp.Status))
 			ipConn.Close()
-			if udpConn != nil {
-				udpConn.Close()
-			}
-			if tr != nil {
-				tr.Close()
+			if closer != nil {
+				closer.Close()
 			}
 			timer.Reset(e.options.ReconnectDelay)
 			select {
@@ -220,26 +213,23 @@ func (e *Tunnel) getIpConn() (*connectip.Conn, error) {
 			}
 			continue
 		}
-		e.udpConn = udpConn
-		e.tr = tr
+		e.closer = closer
 		e.ipConn = ipConn
 		e.logger.NoticeContext(e.ctx, "Connected to MASQUE server ", e.options.Endpoint)
 		return ipConn, nil
 	}
 }
 
-func (e *Tunnel) closeIpConn(ipConn *connectip.Conn) bool {
+func (e *Tunnel) closeIpConn(ipConn IpConn) bool {
 	e.mtx.Lock()
 	defer e.mtx.Unlock()
 	if ipConn == e.ipConn {
 		e.ipConn.Close()
-		if e.udpConn != nil {
-			e.udpConn.Close()
-		}
-		if e.tr != nil {
-			e.tr.Close()
+		if e.closer != nil {
+			e.closer.Close()
 		}
 		e.ipConn = nil
+		e.closer = nil
 		return true
 	}
 	return false

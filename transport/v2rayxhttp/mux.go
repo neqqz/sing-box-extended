@@ -19,8 +19,8 @@ type XmuxConn interface {
 
 type XmuxClient struct {
 	XmuxConn     XmuxConn
-	openUsage    int32
-	leftUsage    int32
+	openUsage    int
+	leftUsage    int
 	LeftRequests atomic.Int32
 	UnreusableAt time.Time
 
@@ -37,7 +37,7 @@ func (c *XmuxClient) Close() {
 	}
 }
 
-func (c *XmuxClient) AddOpenUsage(delta int32) {
+func (c *XmuxClient) AddOpenUsage(delta int) {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	c.openUsage += delta
@@ -46,7 +46,7 @@ func (c *XmuxClient) AddOpenUsage(delta int32) {
 	}
 }
 
-func (c *XmuxClient) GetOpenUsage() int32 {
+func (c *XmuxClient) GetOpenUsage() int {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	return c.openUsage
@@ -54,8 +54,8 @@ func (c *XmuxClient) GetOpenUsage() int32 {
 
 type XmuxManager struct {
 	options     option.V2RayXHTTPXmuxOptions
-	concurrency int32
-	connections int32
+	concurrency int
+	connections int
 	newConnFunc func() XmuxConn
 	xmuxClients []*XmuxClient
 	mtx         sync.Mutex
@@ -71,6 +71,15 @@ func NewXmuxManager(options option.V2RayXHTTPXmuxOptions, newConnFunc func() Xmu
 	}
 }
 
+func (m *XmuxManager) Close() {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	for _, xmuxClient := range m.xmuxClients {
+		xmuxClient.Close()
+	}
+	m.xmuxClients = m.xmuxClients[:0]
+}
+
 func (m *XmuxManager) newXmuxClient() *XmuxClient {
 	xmuxClient := &XmuxClient{
 		XmuxConn:  m.newConnFunc(),
@@ -81,7 +90,7 @@ func (m *XmuxManager) newXmuxClient() *XmuxClient {
 	}
 	xmuxClient.LeftRequests.Store(math.MaxInt32)
 	if x := m.options.GetNormalizedHMaxRequestTimes().Rand(); x > 0 {
-		xmuxClient.LeftRequests.Store(x)
+		xmuxClient.LeftRequests.Store(int32(x))
 	}
 	if x := m.options.GetNormalizedHMaxReusableSecs().Rand(); x > 0 {
 		xmuxClient.UnreusableAt = time.Now().Add(time.Duration(x) * time.Second)
@@ -112,7 +121,7 @@ func (m *XmuxManager) GetXmuxClient(ctx context.Context) *XmuxClient {
 	if len(m.xmuxClients) == 0 {
 		return m.newXmuxClient()
 	}
-	if m.connections > 0 && len(m.xmuxClients) < int(m.connections) {
+	if m.connections > 0 && len(m.xmuxClients) < m.connections {
 		return m.newXmuxClient()
 	}
 	xmuxClients := make([]*XmuxClient, 0)

@@ -11,6 +11,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
 	"github.com/sagernet/sing-box/common/cloudflare"
+	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
@@ -23,6 +24,7 @@ import (
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+	"github.com/sagernet/sing/common/ntp"
 	"github.com/sagernet/sing/service"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -100,7 +102,11 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			logger.ErrorContext(ctx, E.New("failed to generate cert: ", err))
 			return
 		}
-		tlsConfig, err := tls.NewMASQUEClient(ctx, logger, "consumer-masque.cloudflareclient.com", cert, privKey, peerPubKey, common.PtrValueOrDefault(options.TLS))
+		serverName := cloudflare.ConnectSNI
+		if options.TLS != nil && options.TLS.ServerName != "" {
+			serverName = options.TLS.ServerName
+		}
+		tlsConfig, err := tls.NewMASQUEClient(ctx, logger, serverName, cert, privKey, peerPubKey, common.PtrValueOrDefault(options.TLS))
 		if err != nil {
 			logger.ErrorContext(ctx, E.New("failed to prepare TLS config: ", err))
 			return
@@ -132,6 +138,15 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 			logger.ErrorContext(ctx, err)
 			return
 		}
+		congestionControl, err := congestion.NewCongestionControl(
+			options.CongestionController,
+			options.CWND,
+			ntp.TimeFuncFromContext(ctx),
+		)
+		if err != nil {
+			logger.ErrorContext(ctx, err)
+			return
+		}
 		tunnel, err := masque.NewTunnel(
 			ctx,
 			logger,
@@ -156,6 +171,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 				UDPKeepalivePeriod:   udpKeepalivePeriod,
 				UDPInitialPacketSize: options.UDPInitialPacketSize,
 				ReconnectDelay:       options.ReconnectDelay.Build(),
+				CongestionControl:    congestionControl,
 			},
 		)
 		if err != nil {

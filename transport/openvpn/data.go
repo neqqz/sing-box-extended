@@ -8,15 +8,21 @@ import (
 
 const (
 	PeerIDUnset uint32 = 0xffffff
+
+	dataChannelReplayWindow = 64
 )
 
 type DataChannel struct {
-	cipher       DataCipher
-	keyID        uint8
-	peerID       uint32
-	compLZO      bool
+	cipher  DataCipher
+	keyID   uint8
+	peerID  uint32
+	compLZO bool
+
 	mu           sync.Mutex
 	sendPacketID uint32
+	recvHighest  uint32
+	recvWindow   uint64
+	recvSeen     bool
 }
 
 func NewDataChannel(cipher DataCipher, peerID uint32, compLZO bool) *DataChannel {
@@ -29,10 +35,11 @@ func NewDataChannel(cipher DataCipher, peerID uint32, compLZO bool) *DataChannel
 
 func (d *DataChannel) Encrypt(packet []byte) ([]byte, error) {
 	if d.compLZO {
-		p := make([]byte, 1+len(packet))
-		p[0] = 0xFA
-		copy(p[1:], packet)
-		packet = p
+		compressed, err := lzo1xCompressSafe(packet)
+		if err != nil {
+			return nil, err
+		}
+		packet = compressed
 	}
 	d.mu.Lock()
 	d.sendPacketID++
@@ -50,18 +57,15 @@ func (d *DataChannel) Decrypt(packet []byte) ([]byte, error) {
 	if opcode == PDataV2 {
 		headerSize = 4
 	}
-	plain, err := d.cipher.Decrypt(packet, headerSize)
+	plain, packetID, err := d.cipher.Decrypt(packet, headerSize)
 	if err != nil {
 		return nil, err
 	}
+	if err := d.acceptPacketID(packetID); err != nil {
+		return nil, err
+	}
 	if d.compLZO {
-		if len(plain) < 1 {
-			return nil, errors.New("openvpn comp-lzo packet too short")
-		}
-		if plain[0] != 0xFA {
-			return nil, fmt.Errorf("openvpn compressed packet not supported (byte: 0x%02x)", plain[0])
-		}
-		plain = plain[1:]
+		return lzo1xDecompressSafe(plain)
 	}
 	return plain, nil
 }
@@ -76,6 +80,40 @@ func (d *DataChannel) dataHeader() []byte {
 		}
 	}
 	return []byte{opcodeKeyID(PDataV1, d.keyID)}
+}
+
+func (d *DataChannel) acceptPacketID(packetID uint32) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if !d.recvSeen {
+		d.recvHighest = packetID
+		d.recvWindow = 1
+		d.recvSeen = true
+		return nil
+	}
+
+	if packetID > d.recvHighest {
+		shift := packetID - d.recvHighest
+		if shift >= dataChannelReplayWindow {
+			d.recvWindow = 1
+		} else {
+			d.recvWindow = d.recvWindow<<shift | 1
+		}
+		d.recvHighest = packetID
+		return nil
+	}
+
+	diff := d.recvHighest - packetID
+	if diff >= dataChannelReplayWindow {
+		return fmt.Errorf("openvpn replayed data packet id %d", packetID)
+	}
+	mask := uint64(1) << diff
+	if d.recvWindow&mask != 0 {
+		return fmt.Errorf("openvpn replayed data packet id %d", packetID)
+	}
+	d.recvWindow |= mask
+	return nil
 }
 
 func ParsePeerID(options string) uint32 {

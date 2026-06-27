@@ -20,6 +20,7 @@ const (
 	CipherAES256CBC    = "AES-256-CBC"
 	CipherCHACHA20POLY = "CHACHA20-POLY1305"
 
+	AuthMD5    = "MD5"
 	AuthSHA1   = "SHA1"
 	AuthSHA256 = "SHA256"
 	AuthSHA384 = "SHA384"
@@ -107,7 +108,7 @@ func isValidCipher(cipher string) bool {
 
 func isValidAuth(auth string) bool {
 	switch auth {
-	case AuthSHA1, AuthSHA256, AuthSHA384, AuthSHA512:
+	case AuthMD5, AuthSHA1, AuthSHA256, AuthSHA384, AuthSHA512:
 		return true
 	}
 	return false

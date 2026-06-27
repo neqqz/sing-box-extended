@@ -69,3 +69,8 @@ type RateLimiterUser struct {
 	Count          uint32             `json:"count"`
 	Interval       badoption.Duration `json:"interval"`
 }
+
+type FairQueueOutboundOptions struct {
+	FlowKeys []string `json:"flow_keys,omitempty"`
+	Outbound string   `json:"outbound"`
+}

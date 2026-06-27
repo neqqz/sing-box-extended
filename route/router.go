@@ -44,7 +44,7 @@ type Router struct {
 	pauseManager      pause.Manager
 	trackers          []adapter.ConnectionTracker
 	platformInterface adapter.PlatformInterface
-	started           bool
+	started           chan struct{}
 }
 
 func NewRouter(ctx context.Context, logFactory log.Factory, options option.RouteOptions, dnsOptions option.DNSOptions) *Router {
@@ -63,6 +63,7 @@ func NewRouter(ctx context.Context, logFactory log.Factory, options option.Route
 		needFindProcess:   hasRule(options.Rules, isProcessRule) || hasDNSRule(dnsOptions.Rules, isProcessDNSRule) || options.FindProcess,
 		pauseManager:      service.FromContext[pause.Manager](ctx),
 		platformInterface: service.FromContext[adapter.PlatformInterface](ctx),
+		started:           make(chan struct{}),
 	}
 }
 
@@ -180,7 +181,7 @@ func (r *Router) Start(stage adapter.StartStage) error {
 		} else {
 			r.defaultOutbound = r.outbound.Default()
 		}
-		r.started = true
+		close(r.started)
 		return nil
 	case adapter.StartStateStarted:
 		for _, ruleSet := range r.ruleSets {

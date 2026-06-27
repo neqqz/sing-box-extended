@@ -4,16 +4,49 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 
 	"github.com/sagernet/sing-box/common/xray/buf"
 	"github.com/sagernet/sing-box/common/xray/utils"
+	"github.com/sagernet/sing-box/common/xray/uuid"
 	"github.com/sagernet/sing-box/option"
 )
 
+// PredefinedTable maps named charsets to their alphabets for session ID generation.
+
+var PredefinedTable = map[string]string{
+	"ALPHABET": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+	"Alphabet": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+	"BASE36":   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+	"Base62":   "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+	"HEX":      "0123456789ABCDEF",
+	"alphabet": "abcdefghijklmnopqrstuvwxyz",
+	"base36":   "0123456789abcdefghijklmnopqrstuvwxyz",
+	"hex":      "0123456789abcdef",
+	"number":   "0123456789",
+}
+
+func GenerateSessionID(options *option.V2RayXHTTPBaseOptions) string {
+	length := options.SessionIDLength.Rand()
+	table := options.SessionIDTable
+	if predefined, ok := PredefinedTable[table]; ok {
+		table = predefined
+	}
+	if table != "" && length > 0 {
+		id := make([]byte, length)
+		for i := range id {
+			id[i] = table[rand.N(len(table))]
+		}
+		return string(id)
+	}
+	newUUID := uuid.New()
+	return newUUID.String()
+}
+
 func FillStreamRequest(request *http.Request, sessionId string, seqStr string, options *option.V2RayXHTTPBaseOptions) {
 	request.Header = options.GetRequestHeader()
-	length := int(options.GetNormalizedXPaddingBytes().Rand())
+	length := options.GetNormalizedXPaddingBytes().Rand()
 	config := XPaddingConfig{Length: length}
 	if options.XPaddingObfsMode {
 		config.Placement = XPaddingPlacement{
@@ -58,7 +91,7 @@ func FillPacketRequest(request *http.Request, sessionId string, seqStr string, p
 			}
 		}
 	}
-	length := int(options.GetNormalizedXPaddingBytes().Rand())
+	length := options.GetNormalizedXPaddingBytes().Rand()
 	config := XPaddingConfig{Length: length}
 	if options.XPaddingObfsMode {
 		config.Placement = XPaddingPlacement{
@@ -125,7 +158,7 @@ func GetRequestHeaderWithPayload(payload []byte, options *option.V2RayXHTTPBaseO
 	key := options.UplinkDataKey
 	encodedData := base64.RawURLEncoding.EncodeToString(payload)
 	for i := 0; len(encodedData) > 0; i++ {
-		chunkSize := min(int(options.GetNormalizedUplinkChunkSize().Rand()), len(encodedData))
+		chunkSize := min(options.GetNormalizedUplinkChunkSize().Rand(), len(encodedData))
 		chunk := encodedData[:chunkSize]
 		encodedData = encodedData[chunkSize:]
 		headerKey := fmt.Sprintf("%s-%d", key, i)
@@ -140,7 +173,7 @@ func GetRequestCookiesWithPayload(payload []byte, options *option.V2RayXHTTPBase
 	key := options.UplinkDataKey
 	encodedData := base64.RawURLEncoding.EncodeToString(payload)
 	for i := 0; len(encodedData) > 0; i++ {
-		chunkSize := min(int(options.GetNormalizedUplinkChunkSize().Rand()), len(encodedData))
+		chunkSize := min(options.GetNormalizedUplinkChunkSize().Rand(), len(encodedData))
 		chunk := encodedData[:chunkSize]
 		encodedData = encodedData[chunkSize:]
 		cookieName := fmt.Sprintf("%s_%d", key, i)

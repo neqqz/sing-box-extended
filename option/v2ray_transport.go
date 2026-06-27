@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 
-	Xbadoption "github.com/sagernet/sing-box/common/xray/json/badoption"
 	"github.com/sagernet/sing-box/common/xray/utils"
 	C "github.com/sagernet/sing-box/constant"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -119,13 +118,13 @@ type V2RayXHTTPBaseOptions struct {
 	Path                 string                     `json:"path,omitempty"`
 	Headers              map[string]string          `json:"headers,omitempty"`
 	DomainStrategy       DomainStrategy             `json:"domain_strategy,omitempty"`
-	XPaddingBytes        Xbadoption.Range           `json:"x_padding_bytes"`
+	XPaddingBytes        badoption.Range[int]    `json:"x_padding_bytes"`
 	NoGRPCHeader         bool                       `json:"no_grpc_header,omitempty"`
 	NoSSEHeader          bool                       `json:"no_sse_header,omitempty"`
-	ScMaxEachPostBytes   *Xbadoption.Range          `json:"sc_max_each_post_bytes"`
-	ScMinPostsIntervalMs *Xbadoption.Range          `json:"sc_min_posts_interval_ms"`
+	ScMaxEachPostBytes   *badoption.Range[int]   `json:"sc_max_each_post_bytes"`
+	ScMinPostsIntervalMs *badoption.Range[int]   `json:"sc_min_posts_interval_ms"`
 	ScMaxBufferedPosts   int64                      `json:"sc_max_buffered_posts,omitempty"`
-	ScStreamUpServerSecs *Xbadoption.Range          `json:"sc_stream_up_server_secs"`
+	ScStreamUpServerSecs *badoption.Range[int]   `json:"sc_stream_up_server_secs"`
 	ServerMaxHeaderBytes int                        `json:"server_max_header_bytes"`
 	TrustedXForwardedFor badoption.Listable[string] `json:"trusted_x_forwarded_for,omitempty"`
 	Xmux                 *V2RayXHTTPXmuxOptions     `json:"xmux"`
@@ -141,7 +140,11 @@ type V2RayXHTTPBaseOptions struct {
 	SeqKey               string                     `json:"seq_key,omitempty"`
 	UplinkDataPlacement  string                     `json:"uplink_data_placement,omitempty"`
 	UplinkDataKey        string                     `json:"uplink_data_key,omitempty"`
-	UplinkChunkSize      *Xbadoption.Range          `json:"uplink_chunk_size,omitempty"`
+	UplinkChunkSize      *badoption.Range[int]   `json:"uplink_chunk_size,omitempty"`
+	SessionIDTable       string                     `json:"session_id_table,omitempty"`
+	SessionIDLength      badoption.Range[int]    `json:"session_id_length,omitempty"`
+	CongestionController string                     `json:"congestion_controller,omitempty"`
+	CWND                 int                        `json:"cwnd,omitempty"`
 }
 
 type _V2RayXHTTPOptions struct {
@@ -302,6 +305,10 @@ func checkV2RayXHTTPBaseOptions(mode string, options *V2RayXHTTPBaseOptions) err
 		return E.New("invalid negative value of maxHeaderBytes")
 	}
 
+	if mode != "stream-one" && mode != "stream-up" && options.GetNormalizedScMaxEachPostBytes().From <= 0 {
+		return E.New("`scMaxEachPostBytes` should be bigger than 0")
+	}
+
 	if options.Xmux == nil {
 		options.Xmux = &V2RayXHTTPXmuxOptions{}
 		options.Xmux.MaxConcurrency.From = 1
@@ -346,9 +353,9 @@ func (c *V2RayXHTTPBaseOptions) GetRequestHeader() http.Header {
 	return header
 }
 
-func (c *V2RayXHTTPBaseOptions) GetNormalizedXPaddingBytes() Xbadoption.Range {
+func (c *V2RayXHTTPBaseOptions) GetNormalizedXPaddingBytes() badoption.Range[int] {
 	if c.XPaddingBytes.To == 0 {
-		return Xbadoption.Range{
+		return badoption.Range[int]{
 			From: 100,
 			To:   1000,
 		}
@@ -363,9 +370,9 @@ func (c *V2RayXHTTPBaseOptions) GetNormalizedUplinkHTTPMethod() string {
 	return c.UplinkHTTPMethod
 }
 
-func (c *V2RayXHTTPBaseOptions) GetNormalizedScMaxEachPostBytes() Xbadoption.Range {
+func (c *V2RayXHTTPBaseOptions) GetNormalizedScMaxEachPostBytes() badoption.Range[int] {
 	if c.ScMaxEachPostBytes == nil {
-		return Xbadoption.Range{
+		return badoption.Range[int]{
 			From: 1000000,
 			To:   1000000,
 		}
@@ -373,9 +380,9 @@ func (c *V2RayXHTTPBaseOptions) GetNormalizedScMaxEachPostBytes() Xbadoption.Ran
 	return *c.ScMaxEachPostBytes
 }
 
-func (c *V2RayXHTTPBaseOptions) GetNormalizedScMinPostsIntervalMs() Xbadoption.Range {
+func (c *V2RayXHTTPBaseOptions) GetNormalizedScMinPostsIntervalMs() badoption.Range[int] {
 	if c.ScMinPostsIntervalMs == nil {
-		return Xbadoption.Range{
+		return badoption.Range[int]{
 			From: 30,
 			To:   30,
 		}
@@ -391,9 +398,9 @@ func (c *V2RayXHTTPBaseOptions) GetNormalizedScMaxBufferedPosts() int {
 	return int(c.ScMaxBufferedPosts)
 }
 
-func (c *V2RayXHTTPBaseOptions) GetNormalizedScStreamUpServerSecs() Xbadoption.Range {
+func (c *V2RayXHTTPBaseOptions) GetNormalizedScStreamUpServerSecs() badoption.Range[int] {
 	if c.ScStreamUpServerSecs == nil {
-		return Xbadoption.Range{
+		return badoption.Range[int]{
 			From: 20,
 			To:   80,
 		}
@@ -401,16 +408,16 @@ func (c *V2RayXHTTPBaseOptions) GetNormalizedScStreamUpServerSecs() Xbadoption.R
 	return *c.ScStreamUpServerSecs
 }
 
-func (c *V2RayXHTTPBaseOptions) GetNormalizedUplinkChunkSize() Xbadoption.Range {
+func (c *V2RayXHTTPBaseOptions) GetNormalizedUplinkChunkSize() badoption.Range[int] {
 	if c.UplinkChunkSize == nil || c.UplinkChunkSize.To == 0 {
 		switch c.UplinkDataPlacement {
 		case PlacementCookie:
-			return Xbadoption.Range{
+			return badoption.Range[int]{
 				From: 2 * 1024, // 2 KiB
 				To:   3 * 1024, // 3 KiB
 			}
 		case PlacementHeader:
-			return Xbadoption.Range{
+			return badoption.Range[int]{
 				From: 3 * 1000, // 3 KB
 				To:   4 * 1000, // 4 KB
 			}
@@ -418,7 +425,7 @@ func (c *V2RayXHTTPBaseOptions) GetNormalizedUplinkChunkSize() Xbadoption.Range 
 			return c.GetNormalizedScMaxEachPostBytes()
 		}
 	} else if c.UplinkChunkSize.From < 64 {
-		return Xbadoption.Range{
+		return badoption.Range[int]{
 			From: 64,
 			To:   max(64, c.UplinkChunkSize.To),
 		}
@@ -485,31 +492,31 @@ func (c *V2RayXHTTPBaseOptions) GetNormalizedSeqKey() string {
 }
 
 type V2RayXHTTPXmuxOptions struct {
-	MaxConcurrency   Xbadoption.Range `json:"max_concurrency"`
-	MaxConnections   Xbadoption.Range `json:"max_connections"`
-	CMaxReuseTimes   Xbadoption.Range `json:"c_max_reuse_times"`
-	HMaxRequestTimes Xbadoption.Range `json:"h_max_request_times"`
-	HMaxReusableSecs Xbadoption.Range `json:"h_max_reusable_secs"`
-	HKeepAlivePeriod int64            `json:"h_keep_alive_period"`
+	MaxConcurrency   badoption.Range[int] `json:"max_concurrency"`
+	MaxConnections   badoption.Range[int] `json:"max_connections"`
+	CMaxReuseTimes   badoption.Range[int] `json:"c_max_reuse_times"`
+	HMaxRequestTimes badoption.Range[int] `json:"h_max_request_times"`
+	HMaxReusableSecs badoption.Range[int] `json:"h_max_reusable_secs"`
+	HKeepAlivePeriod int64                   `json:"h_keep_alive_period"`
 }
 
-func (m *V2RayXHTTPXmuxOptions) GetNormalizedMaxConcurrency() Xbadoption.Range {
+func (m *V2RayXHTTPXmuxOptions) GetNormalizedMaxConcurrency() badoption.Range[int] {
 	return m.MaxConcurrency
 }
 
-func (m *V2RayXHTTPXmuxOptions) GetNormalizedMaxConnections() Xbadoption.Range {
+func (m *V2RayXHTTPXmuxOptions) GetNormalizedMaxConnections() badoption.Range[int] {
 	return m.MaxConnections
 }
 
-func (m *V2RayXHTTPXmuxOptions) GetNormalizedCMaxReuseTimes() Xbadoption.Range {
+func (m *V2RayXHTTPXmuxOptions) GetNormalizedCMaxReuseTimes() badoption.Range[int] {
 	return m.CMaxReuseTimes
 }
 
-func (m *V2RayXHTTPXmuxOptions) GetNormalizedHMaxRequestTimes() Xbadoption.Range {
+func (m *V2RayXHTTPXmuxOptions) GetNormalizedHMaxRequestTimes() badoption.Range[int] {
 	return m.HMaxRequestTimes
 }
 
-func (m *V2RayXHTTPXmuxOptions) GetNormalizedHMaxReusableSecs() Xbadoption.Range {
+func (m *V2RayXHTTPXmuxOptions) GetNormalizedHMaxReusableSecs() badoption.Range[int] {
 	return m.HMaxReusableSecs
 }
 

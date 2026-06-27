@@ -13,6 +13,7 @@ type PlatformInterface interface {
 
 	UsePlatformAutoDetectInterfaceControl() bool
 	AutoDetectInterfaceControl(fd int) error
+	BindInterfaceControl(fd int, interfaceName string) error
 
 	UsePlatformInterface() bool
 	OpenInterface(options *tun.Options, platformOptions option.TunPlatformOptions) (tun.Tun, error)

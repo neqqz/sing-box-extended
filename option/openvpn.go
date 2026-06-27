@@ -25,6 +25,7 @@ type OpenVPNOutboundOptions struct {
 	KeyDirection   int                              `json:"key_direction,omitempty"`
 	ReconnectDelay badoption.Duration               `json:"reconnect_delay,omitempty"`
 	PingInterval   badoption.Duration               `json:"ping_interval,omitempty"`
+	PingRestart    badoption.Duration               `json:"ping_restart,omitempty"`
 	OpenVPNOutboundTLSOptionsContainer
 }
 

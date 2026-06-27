@@ -1,6 +1,6 @@
 module test
 
-go 1.26.1
+go 1.26.4
 
 require github.com/sagernet/sing-box v0.0.0
 
@@ -14,15 +14,17 @@ replace github.com/sagernet/sing-mux => github.com/shtorm-7/sing-mux v0.3.4-exte
 
 replace github.com/ameshkov/dnscrypt/v2 => github.com/shtorm-7/dnscrypt/v2 v2.4.0-extended-1.0.0
 
-replace github.com/sagernet/sing-vmess => github.com/starifly/sing-vmess v0.2.7-mod.9
+replace github.com/sagernet/sing-vmess => github.com/shtorm-7/sing-vmess v0.2.7-extended-1.0.0
 
-replace github.com/sagernet/sing => github.com/shtorm-7/sing v0.8.10-extended-1.0.0
+replace github.com/sagernet/sing => /home/shtorm/Projects/shtorm-7/sing
 
-replace github.com/dolonet/mtg-multi => github.com/shtorm-7/mtg-multi v1.8.0-extended-1.0.1
+replace github.com/dolonet/mtg-multi => github.com/shtorm-7/mtg-multi v1.11.0-extended-1.0.0
 
 replace github.com/Diniboy1123/connect-ip-go => github.com/shtorm-7/connect-ip-go v1.0.0-extended-1.0.0
 
-replace github.com/shtorm-7/go-cache/v2 => github.com/shtorm-7/go-cache/v2 v2.1.0-extended-1.1.0
+replace github.com/shtorm-7/go-cache/v2 => /home/shtorm/Projects/shtorm-7/go-cache
+
+replace github.com/sagernet/smux => /home/shtorm/Projects/shtorm-7/smux
 
 require (
 	github.com/docker/docker v28.5.2+incompatible
@@ -36,7 +38,6 @@ require (
 	github.com/spyzhov/ajson v0.9.4
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/goleak v1.3.0
-	golang.org/x/crypto v0.49.0
 	golang.org/x/net v0.52.0
 )
 
@@ -221,6 +222,7 @@ require (
 	go.uber.org/zap/exp v0.3.0 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
+	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/exp v0.0.0-20260312153236-7ab1446f8b90 // indirect
 	golang.org/x/mod v0.34.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect

@@ -80,6 +80,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 }
 
 func (h *Inbound) Close() error {
+	h.conns.Close()
 	errs := make([]error, 0)
 	for _, inbound := range h.inbounds {
 		err := inbound.Close()

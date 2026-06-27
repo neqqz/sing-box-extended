@@ -1,4 +1,4 @@
-package trusttunnel
+package congestion
 
 import (
 	"time"
@@ -12,7 +12,7 @@ import (
 	E "github.com/sagernet/sing/common/exceptions"
 )
 
-func NewCongestionControl(name string, cwnd int, bbrProfile string, timeFunc func() time.Time) (func(conn *quic.Conn) congestion.CongestionControl, error) {
+func NewCongestionControl(name string, cwnd int, timeFunc func() time.Time) (func(conn *quic.Conn) congestion.CongestionControl, error) {
 	if timeFunc == nil {
 		timeFunc = time.Now
 	}

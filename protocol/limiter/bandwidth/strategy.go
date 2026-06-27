@@ -357,7 +357,7 @@ func createSpeedLimiter(speed uint64, flowKeys []string) (BandwidthLimiter, erro
 		if err != nil {
 			return nil, err
 		}
-		limiter = NewFlowKeysLimiter(getter, limiter)
+		limiter = NewFairQueueLimiter(getter, limiter)
 	}
 	return limiter, nil
 }

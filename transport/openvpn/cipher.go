@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -23,7 +24,7 @@ const (
 
 type DataCipher interface {
 	Encrypt(header []byte, packetID uint32, payload []byte) ([]byte, error)
-	Decrypt(packet []byte, headerSize int) ([]byte, error)
+	Decrypt(packet []byte, headerSize int) (plaintext []byte, packetID uint32, err error)
 }
 
 type AEADDataCipher struct {
@@ -86,9 +87,9 @@ func (g *AEADDataCipher) Encrypt(header []byte, packetID uint32, payload []byte)
 	return out, nil
 }
 
-func (g *AEADDataCipher) Decrypt(packet []byte, headerSize int) ([]byte, error) {
+func (g *AEADDataCipher) Decrypt(packet []byte, headerSize int) ([]byte, uint32, error) {
 	if len(packet) < headerSize+4+AESGCMTagSize+1 {
-		return nil, errors.New("openvpn gcm data packet too short")
+		return nil, 0, errors.New("openvpn gcm data packet too short")
 	}
 	header := packet[:headerSize]
 	pidBytes := packet[headerSize : headerSize+4]
@@ -96,8 +97,13 @@ func (g *AEADDataCipher) Decrypt(packet []byte, headerSize int) ([]byte, error) 
 	ciphertext := packet[headerSize+4+AESGCMTagSize:]
 	combined := append(ciphertext, tag...)
 	ad := append(header, pidBytes...)
-	nonce := g.nonce(binary.BigEndian.Uint32(pidBytes), g.recvImplicitIV)
-	return g.recv.Open(nil, nonce[:], combined, ad)
+	packetID := binary.BigEndian.Uint32(pidBytes)
+	nonce := g.nonce(packetID, g.recvImplicitIV)
+	plain, err := g.recv.Open(nil, nonce[:], combined, ad)
+	if err != nil {
+		return nil, 0, err
+	}
+	return plain, packetID, nil
 }
 
 func (g *AEADDataCipher) nonce(packetID uint32, implicit [AESGCMIVSize]byte) [AESGCMIVSize]byte {
@@ -127,6 +133,9 @@ func NewCBCCipher(keys *KeyMaterial, auth string) (*CBCDataCipher, error) {
 	var newHash func() hash.Hash
 	var hmacSize int
 	switch auth {
+	case AuthMD5:
+		newHash = md5.New
+		hmacSize = md5.Size
 	case AuthSHA256:
 		newHash = sha256.New
 		hmacSize = sha256.Size
@@ -176,34 +185,35 @@ func (c *CBCDataCipher) Encrypt(header []byte, packetID uint32, payload []byte) 
 	return out, nil
 }
 
-func (c *CBCDataCipher) Decrypt(packet []byte, headerSize int) ([]byte, error) {
+func (c *CBCDataCipher) Decrypt(packet []byte, headerSize int) ([]byte, uint32, error) {
 	minSize := headerSize + c.hmacSize + CBCIVSize + aes.BlockSize
 	if len(packet) < minSize {
-		return nil, errors.New("openvpn cbc data packet too short")
+		return nil, 0, errors.New("openvpn cbc data packet too short")
 	}
 	tag := packet[headerSize : headerSize+c.hmacSize]
 	iv := packet[headerSize+c.hmacSize : headerSize+c.hmacSize+CBCIVSize]
 	ct := packet[headerSize+c.hmacSize+CBCIVSize:]
 	if len(ct)%aes.BlockSize != 0 {
-		return nil, errors.New("openvpn cbc ciphertext not block-aligned")
+		return nil, 0, errors.New("openvpn cbc ciphertext not block-aligned")
 	}
 	mac := hmac.New(c.newHash, c.recvHMAC)
 	mac.Write(iv)
 	mac.Write(ct)
 	if !hmac.Equal(tag, mac.Sum(nil)) {
-		return nil, errors.New("openvpn cbc hmac verification failed")
+		return nil, 0, errors.New("openvpn cbc hmac verification failed")
 	}
 	plain := make([]byte, len(ct))
 	cipher.NewCBCDecrypter(c.recvBlock, iv).CryptBlocks(plain, ct)
 	padLen := int(plain[len(plain)-1])
 	if padLen < 1 || padLen > aes.BlockSize {
-		return nil, errors.New("openvpn cbc invalid padding")
+		return nil, 0, errors.New("openvpn cbc invalid padding")
 	}
 	plain = plain[:len(plain)-padLen]
 	if len(plain) < 4 {
-		return nil, errors.New("openvpn cbc payload too short")
+		return nil, 0, errors.New("openvpn cbc payload too short")
 	}
-	return plain[4:], nil
+	packetID := binary.BigEndian.Uint32(plain[:4])
+	return plain[4:], packetID, nil
 }
 
 func CipherKeyLength(cipher string) int {

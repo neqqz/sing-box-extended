@@ -53,10 +53,9 @@ func NewClient(ctx context.Context, dialer N.Dialer, serverAddr M.Socksaddr, opt
 			DisableCompression: true,
 		},
 		url: &url.URL{
-			Scheme:  "https",
-			Host:    serverAddr.String(),
-			Path:    "/" + options.ServiceName + "/Tun",
-			RawPath: "/" + url.PathEscape(options.ServiceName) + "/Tun",
+			Scheme: "https",
+			Host:   serverAddr.String(),
+			Path:   grpcPath(options.ServiceName),
 		},
 		host: host,
 	}
