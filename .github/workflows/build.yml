@@ -23,11 +23,11 @@ on:
           - tvOS
           - macOS-standalone
           - publish-android
-  push:
-    branches:
-      - stable
-      - testing
-      - unstable
+  #push:
+    #branches:
+      #- stable
+      #- testing
+      #- unstable
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ inputs.build }}
