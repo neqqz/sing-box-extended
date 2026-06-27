@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"math/rand"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -28,7 +29,6 @@ import (
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/http3"
 	M "github.com/sagernet/sing/common/metadata"
-	"net/http"
 )
 
 type UTLSClientConfig struct {
@@ -133,9 +133,7 @@ func (c *UTLSClientConfig) SetECHConfigList(EncryptedClientHelloConfigList []byt
 	c.config.EncryptedClientHelloConfigList = EncryptedClientHelloConfigList
 }
 
-// Dial, DialEarly, CreateTransport implement the qtls.Config interface
-// so that QUIC transport can use UTLSClientConfig directly without
-// calling STDConfig() which is unsupported for uTLS.
+// stdTLSConfig строит crypto/tls.Config для QUIC (utls не используется напрямую в QUIC).
 func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
 	cfg := &tls.Config{
 		ServerName:         c.config.ServerName,
@@ -145,8 +143,6 @@ func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
 		MinVersion:         c.config.MinVersion,
 		MaxVersion:         c.config.MaxVersion,
 	}
-	// Если задан certDomain — верифицируем сертификат по нему, а не по ServerName.
-	// Это нужно для QUIC так же как и для TCP (certDomain фича).
 	if c.certDomain != "" {
 		cfg.InsecureSkipVerify = true
 		certDomain := c.certDomain
@@ -266,8 +262,7 @@ func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
 				}
 			}
 		}
-		// Патч ClientHello.Random — применяем prefix с маской
-		// Логика идентична TrustTunnel C++: result[i] = (prefix[i] & mask[i]) | (random[i] & ~mask[i])
+		// Патч ClientHello.Random — применяем prefix с маской (in-place)
 		if len(c.clientRandomPrefix) > 0 {
 			hello := c.HandshakeState.Hello
 			if hello != nil && len(hello.Random) == 32 {
@@ -286,7 +281,6 @@ func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
 				if len(hello.Raw) >= 38 {
 					copy(hello.Raw[6:38], hello.Random)
 				}
-
 			}
 		}
 	}
@@ -406,7 +400,7 @@ func NewUTLSClient(ctx context.Context, logger logger.ContextLogger, serverAddre
 	if err != nil {
 		return nil, err
 	}
-	// Парсим client_random_prefix: формат "hex" или "hex/mask_hex" (как в TrustTunnel)
+	// Парсим client_random_prefix: формат "hex" или "hex/mask_hex"
 	var clientRandomPrefix, clientRandomMask []byte
 	if options.ClientRandomPrefix != "" {
 		parts := strings.SplitN(options.ClientRandomPrefix, "/", 2)
