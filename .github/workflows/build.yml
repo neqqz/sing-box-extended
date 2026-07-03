@@ -220,6 +220,17 @@ jobs:
       - name: Set shared ldflags
         run: |
           echo "LDFLAGS_SHARED=$(cat release/LDFLAGS)" >> "${GITHUB_ENV}"
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # Укажи версию, которая нужна для вашего Vite/React проекта
+
+      - name: Build admin panel frontend
+        run: |
+          cd service/admin_panel/web
+          npm ci
+          npm run build
+    
       - name: Build (purego)
         if: matrix.variant == 'purego'
         run: |
