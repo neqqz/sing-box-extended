@@ -7,6 +7,8 @@ type TrustTunnelInboundOptions struct {
 	Network              NetworkList       `json:"network,omitempty"`
 	CongestionController string            `json:"congestion_controller,omitempty"`
 	CWND                 int               `json:"cwnd,omitempty"`
+	ClientRandomPrefix   string            `json:"client_random_prefix,omitempty"`
+	AllowedSNI           []string          `json:"allowed_sni,omitempty"`
 }
 
 type TrustTunnelUser struct {
@@ -17,8 +19,8 @@ type TrustTunnelUser struct {
 type TrustTunnelMultiplexOptions struct {
 	Enabled        bool `json:"enabled,omitempty"`
 	MaxConnections int  `json:"max_connections,omitempty"`
-	MinStreams     int  `json:"min_streams,omitempty"`
-	MaxStreams     int  `json:"max_streams,omitempty"`
+	MinStreams      int  `json:"min_streams,omitempty"`
+	MaxStreams      int  `json:"max_streams,omitempty"`
 }
 
 type TrustTunnelOutboundOptions struct {
