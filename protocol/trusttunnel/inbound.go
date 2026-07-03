@@ -1,10 +1,14 @@
 package trusttunnel
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/http3"
@@ -34,6 +38,67 @@ func RegisterInbound(registry *inbound.Registry) {
 	inbound.Register[option.TrustTunnelInboundOptions](registry, C.TypeTrustTunnel, NewInbound)
 }
 
+// parseRandomPrefix парсит "hex" или "hex/mask_hex" → (prefix, mask, err).
+// Возвращает nil, nil, nil если строка пустая.
+func parseRandomPrefix(raw string) (prefix, mask []byte, err error) {
+	if raw == "" {
+		return nil, nil, nil
+	}
+	parts := strings.SplitN(raw, "/", 2)
+	prefix, err = hex.DecodeString(parts[0])
+	if err != nil {
+		return nil, nil, errors.New("client_random_prefix: invalid hex: " + err.Error())
+	}
+	if len(prefix) == 0 || len(prefix) > 32 {
+		return nil, nil, errors.New("client_random_prefix: must be 1–32 bytes")
+	}
+	if len(parts) == 2 {
+		mask, err = hex.DecodeString(parts[1])
+		if err != nil {
+			return nil, nil, errors.New("client_random_prefix: invalid mask hex: " + err.Error())
+		}
+		if len(mask) != len(prefix) {
+			return nil, nil, errors.New("client_random_prefix: mask length must equal prefix length")
+		}
+	} else {
+		mask = bytes.Repeat([]byte{0xff}, len(prefix))
+	}
+	return prefix, mask, nil
+}
+
+// sniMiddleware отклоняет запросы, SNI которых не входит в allowedSNI.
+// Работает одинаково для H2 (r.TLS.ServerName) и H3 (то же поле).
+// Если allowedSNI пуст — пропускает всё.
+type sniMiddleware struct {
+	next       http.Handler
+	allowedSNI map[string]struct{}
+	logger     logger.ContextLogger
+}
+
+func newSNIMiddleware(next http.Handler, allowed []string, log logger.ContextLogger) http.Handler {
+	if len(allowed) == 0 {
+		return next
+	}
+	m := make(map[string]struct{}, len(allowed))
+	for _, sni := range allowed {
+		m[sni] = struct{}{}
+	}
+	return &sniMiddleware{next: next, allowedSNI: m, logger: log}
+}
+
+func (m *sniMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	sni := ""
+	if r.TLS != nil {
+		sni = r.TLS.ServerName
+	}
+	if _, ok := m.allowedSNI[sni]; !ok {
+		m.logger.Debug("trusttunnel: rejected SNI: ", sni)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	m.next.ServeHTTP(w, r)
+}
+
 type Inbound struct {
 	inbound.Adapter
 	ctx            context.Context
@@ -47,17 +112,23 @@ type Inbound struct {
 	httpTLSConfig  tls.ServerConfig
 	http3TLSConfig tls.ServerConfig
 	network        []string
+	randomPrefix   []byte
+	randomMask     []byte
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrustTunnelInboundOptions) (adapter.Inbound, error) {
 	if options.TLS == nil || !options.TLS.Enabled {
 		return nil, C.ErrTLSRequired
 	}
+	prefix, mask, err := parseRandomPrefix(options.ClientRandomPrefix)
+	if err != nil {
+		return nil, err
+	}
 	networkList := options.Network.Build()
 	if len(networkList) == 0 {
 		networkList = []string{N.NetworkTCP}
 	}
-	inbound := &Inbound{
+	h := &Inbound{
 		Adapter: inbound.NewAdapter(C.TypeTrustTunnel, tag),
 		ctx:     ctx,
 		router:  router,
@@ -69,27 +140,34 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 			Logger:  logger,
 			Listen:  options.ListenOptions,
 		}),
+		randomPrefix: prefix,
+		randomMask:   mask,
 	}
 	service := trusttunnel.NewService(trusttunnel.ServiceOptions{
 		Ctx:     ctx,
 		Logger:  logger,
-		Handler: (*inboundHandler)(inbound),
+		Handler: (*inboundHandler)(h),
 	})
 	userMap := make(map[string]string, len(options.Users))
 	for _, u := range options.Users {
 		userMap[u.Name] = u.Password
 	}
 	service.UpdateUsers(userMap)
-	inbound.service = service
-	return inbound, nil
+	h.service = service
+	return h, nil
 }
 
 func (h *Inbound) Start(stage adapter.StartStage) error {
 	if stage != adapter.StartStateStart {
 		return nil
 	}
-	var err error
+
+	// Оборачиваем сервис в SNI-middleware (no-op если AllowedSNI пуст).
+	handler := newSNIMiddleware(h.service, h.options.AllowedSNI, h.logger)
+
+	// ── TCP / HTTP2 ────────────────────────────────────────────────────
 	if common.Contains(h.network, N.NetworkTCP) {
+		var err error
 		h.httpTLSConfig, err = tls.NewServer(h.ctx, h.logger, common.PtrValueOrDefault(h.options.TLS))
 		if err != nil {
 			return err
@@ -99,38 +177,47 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		} else if !common.Contains(h.httpTLSConfig.NextProtos(), http2.NextProtoTLS) {
 			h.httpTLSConfig.SetNextProtos(append([]string{http2.NextProtoTLS}, h.httpTLSConfig.NextProtos()...))
 		}
-		listener, err := h.listener.ListenTCP()
+
+		rawListener, err := h.listener.ListenTCP()
 		if err != nil {
 			return err
 		}
+		// TCP: pre-TLS peek, проверяем bytes[11:43] ClientHello.Random до хендшейка.
+		checkedListener, err := trusttunnel.NewPrefixListener(rawListener, h.options.ClientRandomPrefix, h.logger)
+		if err != nil {
+			return err
+		}
+		if err = h.httpTLSConfig.Start(); err != nil {
+			return err
+		}
+		tlsListener := aTLS.NewListener(checkedListener, h.httpTLSConfig)
+
 		h.httpServer = &http.Server{
-			Handler: h2c.NewHandler(h.service, &http2.Server{}),
-			BaseContext: func(net.Listener) context.Context {
-				return h.ctx
-			},
+			Handler: h2c.NewHandler(handler, &http2.Server{
+				IdleTimeout: trusttunnel.DefaultSessionTimeout * 2,
+			}),
+			BaseContext:       func(net.Listener) context.Context { return h.ctx },
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       trusttunnel.DefaultSessionTimeout*2 + 10*time.Second,
 		}
-		err = h.httpTLSConfig.Start()
-		if err != nil {
-			return err
-		}
-		listener = aTLS.NewListener(listener, h.httpTLSConfig)
 		go func() {
-			sErr := h.httpServer.Serve(listener)
-			if sErr != nil && !errors.Is(sErr, http.ErrServerClosed) {
-				h.logger.Error("HTTP server error: ", sErr)
+			if sErr := h.httpServer.Serve(tlsListener); sErr != nil && !errors.Is(sErr, http.ErrServerClosed) {
+				h.logger.Error("trusttunnel H2 server: ", sErr)
 			}
 		}()
 	}
+
+	// ── UDP / HTTP3 (QUIC) ─────────────────────────────────────────────
 	if common.Contains(h.network, N.NetworkUDP) {
+		var err error
 		h.http3TLSConfig, err = tls.NewServer(h.ctx, h.logger, common.PtrValueOrDefault(h.options.TLS))
 		if err != nil {
 			return err
 		}
-		if err := qtls.ConfigureHTTP3(h.http3TLSConfig); err != nil {
+		if err = qtls.ConfigureHTTP3(h.http3TLSConfig); err != nil {
 			return err
 		}
-		err = h.http3TLSConfig.Start()
-		if err != nil {
+		if err = h.http3TLSConfig.Start(); err != nil {
 			return err
 		}
 		udpConn, err := h.listener.ListenUDP()
@@ -138,32 +225,34 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			return err
 		}
 		congestionControlFactory, err := congestion.NewCongestionControl(
-			h.options.CongestionController,
-			h.options.CWND,
-			ntp.TimeFuncFromContext(h.ctx),
+			h.options.CongestionController, h.options.CWND, ntp.TimeFuncFromContext(h.ctx),
 		)
 		if err != nil {
 			return err
 		}
 		h.http3Server = &http3.Server{
-			Handler: h.service,
+			Handler: handler,
 			ConnContext: func(ctx context.Context, conn *quic.Conn) context.Context {
 				conn.SetCongestionControl(congestionControlFactory(conn))
 				return ctx
 			},
 		}
 		quicListener, err := qtls.ListenEarly(udpConn, h.http3TLSConfig, &quic.Config{
-			MaxIdleTimeout:     trusttunnel.DefaultSessionTimeout * 2,
-			MaxIncomingStreams: 1 << 60,
-			Allow0RTT:          true,
+			MaxIdleTimeout:  trusttunnel.DefaultSessionTimeout * 2,
+			KeepAlivePeriod: trusttunnel.DefaultHealthCheckTimeout,
+			// QUIC: client_random_prefix проверяется в sagernet/quic-go
+			// на уровне cryptoSetup.handleMessage (NewCryptoSetupServer).
+			ServerClientRandomPrefix: h.randomPrefix,
+			ServerClientRandomMask:   h.randomMask,
+			MaxIncomingStreams:        1 << 60,
+			Allow0RTT:                true,
 		})
 		if err != nil {
 			return err
 		}
-		go func() {
-			_ = h.http3Server.ServeListener(quicListener)
-		}()
+		go func() { _ = h.http3Server.ServeListener(quicListener) }()
 	}
+
 	return nil
 }
 
