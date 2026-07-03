@@ -59,6 +59,7 @@ type ProviderRemote struct {
 	updateInterval time.Duration
 	exclude        *regexp.Regexp
 	include        *regexp.Regexp
+	headers        http.Header
 }
 
 func NewProviderRemote(ctx context.Context, router adapter.Router, logFactory log.Factory, tag string, options option.ProviderRemoteOptions) (adapter.Provider, error) {
@@ -94,6 +95,7 @@ func NewProviderRemote(ctx context.Context, router adapter.Router, logFactory lo
 		url:            options.URL,
 		userAgent:      userAgent,
 		downloadDetour: options.DownloadDetour,
+		headers:        options.Headers.Build(),
 		updateInterval: updateInterval,
 		exclude:        (*regexp.Regexp)(options.Exclude),
 		include:        (*regexp.Regexp)(options.Include),
@@ -191,6 +193,9 @@ func (s *ProviderRemote) fetch(ctx context.Context) error {
 		req.Header.Set("If-None-Match", s.lastEtag)
 	}
 	req.Header.Set("User-Agent", s.userAgent)
+	for name, values := range s.headers {
+		req.Header[name] = values
+	}
 	resp, err := client.Do(req.WithContext(ctx))
 	if err != nil {
 		return err

@@ -47,6 +47,30 @@
       // shareable links, or plain link list.
       "url": "https://example.com/subscription.txt",
       "user_agent": "sing-box",
+      // Custom HTTP headers sent with each subscription request.
+      // Some subscription panels (e.g. Remnawave with incy/happ
+      // integration) require device-identification headers to
+      // return the real server list instead of a dummy config.
+      //
+      // !!! DO NOT COPY THE VALUE BELOW !!!
+      // x-hwid must be generated per-device. A random UUID will
+      // be rejected by the panel. Generate yours on Linux:
+      //
+      //   python3 -c "import hashlib,socket,getpass;m=open('/etc/machine-id').read().strip();d=hashlib.sha256(f'{m}|{socket.gethostname()}|Linux|amd64|{getpass.getuser()}'.encode()).hexdigest();h=hashlib.sha256(('incy_hwid_'+d).encode()).hexdigest();print(f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}'.upper())"
+      //
+      // Algorithm: SHA256("incy_hwid_" + SHA256(deviceId))
+      // Linux deviceId: "machineId|hostname|Linux|amd64|user"
+      // Android deviceId: "androidId|manufacturer|model|brand|device|product|board|hardware"
+      // Ref: https://github.com/INCY-DEV/incy-docs/blob/main/ru/dev-docs/hwid.md
+      "headers": {
+        "x-hwid": ["REPLACE_WITH_GENERATED_HWID"],
+        // Platform: linux, android, ios, windows, macos
+        "x-device-os": ["linux"],
+        // OS version — on Linux: uname -r
+        "x-ver-os": ["6.12.0-arch1-1"],
+        // Device model — on Linux: uname -m
+        "x-device-model": ["x86_64"]
+      },
       // Fetch the subscription through this outbound instead of the
       // default route (useful when the subscription host is blocked).
       "download_detour": "direct",
