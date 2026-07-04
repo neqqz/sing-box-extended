@@ -18,6 +18,7 @@ import (
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+	"github.com/sagernet/sing/service" // <--- Добавлен импорт для DI
 )
 
 func RegisterOutbound(registry *outbound.Registry) {
@@ -26,9 +27,10 @@ func RegisterOutbound(registry *outbound.Registry) {
 
 type Outbound struct {
 	outbound.Adapter
-	logger logger.ContextLogger
-	router adapter.Router
-	client trusttunnel.Dialer
+	logger    logger.ContextLogger
+	router    adapter.Router
+	dnsRouter adapter.DNSRouter // <--- Добавлено поле для DNS роутера
+	client    trusttunnel.Dialer
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrustTunnelOutboundOptions) (adapter.Outbound, error) {
@@ -70,10 +72,11 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		return nil, err
 	}
 	return &Outbound{
-		Adapter: outbound.NewAdapterWithDialerOptions(C.TypeTrustTunnel, tag, networkList, options.DialerOptions),
-		logger:  logger,
-		router:  router,
-		client:  client,
+		Adapter:   outbound.NewAdapterWithDialerOptions(C.TypeTrustTunnel, tag, networkList, options.DialerOptions),
+		logger:    logger,
+		router:    router,
+		dnsRouter: service.FromContext[adapter.DNSRouter](ctx), // <--- Инициализация через внедрение зависимостей
+		client:    client,
 	}, nil
 }
 
@@ -87,7 +90,10 @@ func (h *Outbound) resolveDestination(ctx context.Context, destination M.Socksad
 	if destination.Addr.IsValid() || !destination.IsFqdn() {
 		return destination, nil
 	}
-	addresses, err := h.router.Lookup(ctx, destination.Fqdn, adapter.DNSQueryOptions{})
+	
+	// <--- Исправлено обращение к роутеру (используем dnsRouter)
+	addresses, err := h.dnsRouter.Lookup(ctx, destination.Fqdn, adapter.DNSQueryOptions{})
+	
 	if err != nil {
 		return M.Socksaddr{}, E.Cause(err, "resolve ", destination.Fqdn)
 	}
