@@ -31,7 +31,6 @@ import (
 	aTLS "github.com/sagernet/sing/common/tls"
 
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 )
 
 func RegisterInbound(registry *inbound.Registry) {
@@ -193,12 +192,17 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		tlsListener := aTLS.NewListener(checkedListener, h.httpTLSConfig)
 
 		h.httpServer = &http.Server{
-			Handler: h2c.NewHandler(handler, &http2.Server{
-				IdleTimeout: trusttunnel.DefaultSessionTimeout * 2,
-			}),
+			Handler:           handler,
 			BaseContext:       func(net.Listener) context.Context { return h.ctx },
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       trusttunnel.DefaultSessionTimeout*2 + 10*time.Second,
+		}
+		// ConfigureServer регистрирует HTTP/2 через ALPN-согласование для TLS.
+		// h2c.NewHandler здесь НЕПРАВИЛЬНЫЙ выбор — он для cleartext h2c, а не TLS.
+		if err = http2.ConfigureServer(h.httpServer, &http2.Server{
+			IdleTimeout: trusttunnel.DefaultSessionTimeout * 2,
+		}); err != nil {
+			return err
 		}
 		go func() {
 			if sErr := h.httpServer.Serve(tlsListener); sErr != nil && !errors.Is(sErr, http.ErrServerClosed) {
