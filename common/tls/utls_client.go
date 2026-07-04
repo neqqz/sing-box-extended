@@ -142,6 +142,15 @@ func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
 		InsecureSkipVerify: c.config.InsecureSkipVerify,
 		MinVersion:         c.config.MinVersion,
 		MaxVersion:         c.config.MaxVersion,
+		// Явно исключаем X25519MLKEM768 (Go 1.24+): без этого ClientHello весит
+		// ~1479 байт, QUIC-пакет не влезает в TUN MTU 1280 → EINVAL на Android.
+		// Если пользователь задал CurvePreferences явно — уважаем его выбор.
+		CurvePreferences: func() []tls.CurveID {
+			if len(c.config.CurvePreferences) > 0 {
+				return c.config.CurvePreferences
+			}
+			return []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384, tls.CurveP521}
+		}(),
 	}
 	if c.certDomain != "" {
 		cfg.InsecureSkipVerify = true
