@@ -47,7 +47,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: ~1.25.10
+          go-version: 'stable'
       - name: Check input version
         if: github.event_name == 'workflow_dispatch'
         run: |-
@@ -125,7 +125,7 @@ jobs:
         if: ${{ ! matrix.legacy_win7 }}
         uses: actions/setup-go@v6
         with:
-          go-version: ~1.25.10
+          go-version: 'stable'
       - name: Cache Go for Windows 7
         if: matrix.legacy_win7
         id: cache-go-for-windows7
@@ -472,7 +472,7 @@ jobs:
         if: ${{ ! matrix.legacy_osx }}
         uses: actions/setup-go@v6
         with:
-          go-version: ^1.25.3
+          go-version: 'stable'
       - name: Cache Go for macOS 10.13
         if: matrix.legacy_osx
         id: cache-go-for-macos1013
@@ -580,7 +580,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: ^1.25.4
+          go-version: 'stable'
           
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -687,7 +687,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: ~1.25.10
+          go-version: 'stable'
       - name: Setup Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
@@ -786,7 +786,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: ~1.25.10
+          go-version: 'stable'
       - name: Setup Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
@@ -890,7 +890,7 @@ jobs:
         if: matrix.if
         uses: actions/setup-go@v6
         with:
-          go-version: ~1.25.10
+          go-version: 'stable'
       - name: Set tag
         if: matrix.if
         run: |-
