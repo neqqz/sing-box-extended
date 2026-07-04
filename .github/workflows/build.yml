@@ -186,7 +186,7 @@ jobs:
 
       - name: Install frontend deps
         working-directory: service/admin_panel
-        run: npm ci
+        run: npm install
 
       - name: Build frontend
         working-directory: service/admin_panel
