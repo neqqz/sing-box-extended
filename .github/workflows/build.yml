@@ -721,7 +721,7 @@ jobs:
         run: |-
           mkdir -p dist
           #cp clients/android/app/build/outputs/apk/play/release/*.apk dist
-          cp clients/android/app/build/outputs/apk/other/release/*.apk dist
+          cp clients/android/app/build/outputs/apk/other/release/*v8a.apk dist
           #cp clients/android/app/build/outputs/apk/otherLegacy/release/*.apk dist
           VERSION_CODE=$(grep VERSION_CODE clients/android/version.properties | cut -d= -f2)
           VERSION_NAME=$(grep VERSION_NAME clients/android/version.properties | cut -d= -f2)
