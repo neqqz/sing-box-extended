@@ -163,8 +163,11 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		return nil
 	}
 
-	// Оборачиваем сервис в SNI-middleware (no-op если AllowedSNI пуст).
-	handler := newSNIMiddleware(h.service, h.options.AllowedSNI, h.logger)
+	// Для TCP SNI проверяется вручную в serveConn (см. ниже) — там надёжный
+	// источник данных (tlsConn.ConnectionState()), в отличие от r.TLS в
+	// net/http. sniMiddleware держим только для QUIC/H3: там r.TLS заполняет
+	// сам quic-go/http3, и это надёжно.
+	h3Handler := newSNIMiddleware(h.service, h.options.AllowedSNI, h.logger)
 
 	// ── TCP / HTTP2 ────────────────────────────────────────────────────
 	if common.Contains(h.network, N.NetworkTCP) {
@@ -193,7 +196,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		}
 
 		h.httpServer = &http.Server{
-			Handler:           handler,
+			Handler:           h.service,
 			BaseContext:       func(net.Listener) context.Context { return h.ctx },
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       trusttunnel.DefaultSessionTimeout*2 + 10*time.Second,
@@ -209,7 +212,9 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		// молча не срабатывает и всё уходит в HTTP/1.1, даже если клиент
 		// согласовал h2 на TLS-уровне. Поэтому здесь TLS-хендшейк и ALPN
 		// разбираются вручную, минуя http.Server для h2-соединений.
-		go h.acceptLoop(checkedListener, handler)
+		// SNI для этого пути проверяется в serveConn, поэтому передаём
+		// h.service напрямую, без sniMiddleware.
+		go h.acceptLoop(checkedListener, h.service)
 	}
 
 	// ── UDP / HTTP3 (QUIC) ─────────────────────────────────────────────
@@ -236,7 +241,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			return err
 		}
 		h.http3Server = &http3.Server{
-			Handler: handler,
+			Handler: h3Handler,
 			ConnContext: func(ctx context.Context, conn *quic.Conn) context.Context {
 				conn.SetCongestionControl(congestionControlFactory(conn))
 				return ctx
@@ -297,6 +302,17 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 		h.logger.Debug("trusttunnel: TLS handshake failed: ", err)
 		rawConn.Close()
 		return
+	}
+	// SNI — свойство TLS-сессии, проверяем его один раз на всё соединение,
+	// не полагаясь на r.TLS в net/http (он ненадёжно прокидывается через
+	// обёртки badtls/ReadWaitConn и рвёт часть легитимных соединений).
+	if len(h.options.AllowedSNI) > 0 {
+		sni := tlsConn.ConnectionState().ServerName
+		if !common.Contains(h.options.AllowedSNI, sni) {
+			h.logger.Debug("trusttunnel: rejected SNI: ", sni)
+			tlsConn.Close()
+			return
+		}
 	}
 	switch tlsConn.ConnectionState().NegotiatedProtocol {
 	case http2.NextProtoTLS:
