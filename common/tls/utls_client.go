@@ -147,7 +147,11 @@ func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
 		// Если пользователь задал CurvePreferences явно — уважаем его выбор.
 		CurvePreferences: func() []tls.CurveID {
 			if len(c.config.CurvePreferences) > 0 {
-				return c.config.CurvePreferences
+				out := make([]tls.CurveID, len(c.config.CurvePreferences))
+				for i, id := range c.config.CurvePreferences {
+					out[i] = tls.CurveID(id)
+				}
+				return out
 			}
 			return []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384, tls.CurveP521}
 		}(),
