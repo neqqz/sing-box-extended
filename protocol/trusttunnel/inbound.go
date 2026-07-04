@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sagernet/quic-go"
@@ -28,7 +30,6 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/ntp"
-	aTLS "github.com/sagernet/sing/common/tls"
 
 	"golang.org/x/net/http2"
 )
@@ -107,6 +108,7 @@ type Inbound struct {
 	listener       *listener.Listener
 	service        *trusttunnel.Service
 	httpServer     *http.Server
+	h2Server       *http2.Server
 	http3Server    *http3.Server
 	httpTLSConfig  tls.ServerConfig
 	http3TLSConfig tls.ServerConfig
@@ -189,7 +191,6 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		if err = h.httpTLSConfig.Start(); err != nil {
 			return err
 		}
-		tlsListener := aTLS.NewListener(checkedListener, h.httpTLSConfig)
 
 		h.httpServer = &http.Server{
 			Handler:           handler,
@@ -197,18 +198,18 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       trusttunnel.DefaultSessionTimeout*2 + 10*time.Second,
 		}
-		// ConfigureServer регистрирует HTTP/2 через ALPN-согласование для TLS.
-		// h2c.NewHandler здесь НЕПРАВИЛЬНЫЙ выбор — он для cleartext h2c, а не TLS.
-		if err = http2.ConfigureServer(h.httpServer, &http2.Server{
+		h.h2Server = &http2.Server{
 			IdleTimeout: trusttunnel.DefaultSessionTimeout * 2,
-		}); err != nil {
-			return err
 		}
-		go func() {
-			if sErr := h.httpServer.Serve(tlsListener); sErr != nil && !errors.Is(sErr, http.ErrServerClosed) {
-				h.logger.Error("trusttunnel H2 server: ", sErr)
-			}
-		}()
+		// ВАЖНО: net/http.Server.Serve() определяет ALPN-протокол и решает,
+		// звать ли http2.Server, через жёсткий type assertion c.rwc.(*tls.Conn)
+		// (см. net/http/server.go, conn.serve()). aTLS.NewListener оборачивает
+		// сырое соединение в *aTLS.LazyConn — это НЕ *tls.Conn и не реализует
+		// ConnectionState(), поэтому stdlib ALPN-диспатч на такой обёртке
+		// молча не срабатывает и всё уходит в HTTP/1.1, даже если клиент
+		// согласовал h2 на TLS-уровне. Поэтому здесь TLS-хендшейк и ALPN
+		// разбираются вручную, минуя http.Server для h2-соединений.
+		go h.acceptLoop(checkedListener, handler)
 	}
 
 	// ── UDP / HTTP3 (QUIC) ─────────────────────────────────────────────
@@ -269,6 +270,79 @@ func (h *Inbound) Close() error {
 		h.http3TLSConfig,
 	)
 }
+
+// acceptLoop принимает TCP-соединения, прошедшие prefix-check, выполняет TLS
+// хендшейк вручную и диспетчеризует по согласованному ALPN: h2 идёт прямиком
+// в http2.Server.ServeConn, всё остальное — в http.Server через одноразовый
+// listener. Это обходит жёсткий type assertion c.rwc.(*tls.Conn) в net/http,
+// который никогда не срабатывает на *aTLS.LazyConn.
+func (h *Inbound) acceptLoop(rawListener net.Listener, handler http.Handler) {
+	for {
+		rawConn, err := rawListener.Accept()
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) {
+				h.logger.Error("trusttunnel: accept: ", err)
+			}
+			return
+		}
+		go h.serveConn(rawConn, handler)
+	}
+}
+
+func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
+	ctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
+	defer cancel()
+	tlsConn, err := tls.ServerHandshake(ctx, rawConn, h.httpTLSConfig)
+	if err != nil {
+		h.logger.Debug("trusttunnel: TLS handshake failed: ", err)
+		rawConn.Close()
+		return
+	}
+	switch tlsConn.ConnectionState().NegotiatedProtocol {
+	case http2.NextProtoTLS:
+		h.h2Server.ServeConn(tlsConn, &http2.ServeConnOpts{
+			Context: h.ctx,
+			Handler: handler,
+		})
+	default:
+		if sErr := h.httpServer.Serve(newSingleConnListener(tlsConn)); sErr != nil && !errors.Is(sErr, http.ErrServerClosed) && !errors.Is(sErr, io.EOF) {
+			h.logger.Debug("trusttunnel: H1 conn: ", sErr)
+		}
+	}
+}
+
+// singleConnListener отдаёт ровно одно уже установленное соединение,
+// чтобы прогнать его через стандартный http.Server как HTTP/1.1.
+type singleConnListener struct {
+	conn net.Conn
+	once sync.Once
+	done chan struct{}
+}
+
+func newSingleConnListener(conn net.Conn) *singleConnListener {
+	return &singleConnListener{conn: conn, done: make(chan struct{})}
+}
+
+func (l *singleConnListener) Accept() (net.Conn, error) {
+	var c net.Conn
+	l.once.Do(func() { c = l.conn })
+	if c == nil {
+		<-l.done
+		return nil, io.EOF
+	}
+	return c, nil
+}
+
+func (l *singleConnListener) Close() error {
+	select {
+	case <-l.done:
+	default:
+		close(l.done)
+	}
+	return nil
+}
+
+func (l *singleConnListener) Addr() net.Addr { return l.conn.LocalAddr() }
 
 func (h *Inbound) UpdateUsers(users []option.TrustTunnelUser) {
 	userMap := make(map[string]string, len(users))
