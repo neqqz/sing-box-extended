@@ -183,13 +183,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: service/admin_panel/web/package-lock.json
 
       - name: Install frontend deps
-        working-directory: service/admin_panel
+        working-directory: service/admin_panel/web
         run: npm install
 
       - name: Build frontend
-        working-directory: service/admin_panel
+        working-directory: service/admin_panel/web
         run: npm run build
         
       - name: Download Chromium toolchain
