@@ -125,6 +125,12 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				return tlsDialer.DialContext(ctx, network, client.server)
 			},
 			AllowHTTP: true,
+			// Без этого http2.Transport не шлёт PING в простое соединения:
+			// на мобильной сети carrier NAT сам рвёт неактивный TCP-маппинг
+			// (в отличие от QUIC, где ниже явно задан KeepAlivePeriod), и
+			// разрыв обнаруживается только при следующей попытке отправки.
+			ReadIdleTimeout: DefaultHealthCheckTimeout,
+			PingTimeout:     DefaultHealthCheckTimeout,
 		}
 	}
 	return client, nil
