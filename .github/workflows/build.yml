@@ -487,6 +487,22 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |-
           .github/setup_go_for_macos1013.sh
+          
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: service/admin_panel/web/package-lock.json
+          
+      - name: Install frontend deps
+        working-directory: service/admin_panel/web
+        run: npm install
+      - name: Build frontend
+      
+        working-directory: service/admin_panel/web
+        run: npm run build
+        
       - name: Setup Go for macOS 10.13
         if: matrix.legacy_osx
         run: |-
@@ -565,6 +581,22 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ^1.25.4
+          
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: service/admin_panel/web/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: service/admin_panel/web
+        run: npm install
+
+      - name: Build frontend
+        working-directory: service/admin_panel/web
+        run: npm run build
+        
       - name: Set tag
         run: |-
           git ls-remote --exit-code --tags origin v${{ needs.calculate_version.outputs.version }} || echo "PUBLISHED=false" >> "$env:GITHUB_ENV"
