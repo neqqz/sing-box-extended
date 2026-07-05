@@ -59,18 +59,19 @@ func buildPaddingIP(addr netip.Addr) (buffer [16]byte) {
 }
 
 type httpConn struct {
-	writer     io.Writer
-	flusher    http.Flusher
-	body       io.ReadCloser
-	setupOnce  sync.Once
-	created    chan struct{}
-	createErr  error
-	cancelFn   func()
-	closeFn    func()
-	remoteAddr net.Addr
-	localAddr  net.Addr
-	deadline   *time.Timer
-	done       chan struct{}
+	writer       io.Writer
+	flusher      http.Flusher
+	body         io.ReadCloser
+	setupOnce    sync.Once
+	created      chan struct{}
+	createErr    error
+	cancelFn     func()
+	closeFn      func()
+	remoteAddr   net.Addr
+	localAddr    net.Addr
+	deadline     *time.Timer
+	deadlineLock sync.Mutex
+	done         chan struct{}
 }
 
 func (h *httpConn) setup(body io.ReadCloser, err error) {
@@ -139,6 +140,8 @@ func (h *httpConn) LocalAddr() net.Addr {
 }
 
 func (h *httpConn) SetDeadline(t time.Time) error {
+	h.deadlineLock.Lock()
+	defer h.deadlineLock.Unlock()
 	if t.IsZero() {
 		if h.deadline != nil {
 			h.deadline.Stop()
