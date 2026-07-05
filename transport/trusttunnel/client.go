@@ -342,10 +342,35 @@ func (c *MultiplexClient) getClient() (*Client, error) {
 }
 
 func (c *MultiplexClient) newClientLocked() (*Client, error) {
+	// Без этого список клиентов только растёт: при переключении сети
+	// (WiFi<->cellular) старые *Client становятся простаивающими (count==0),
+	// но никогда не закрываются и не убираются из пула — копятся навечно,
+	// каждый со своим health-check таймером и открытым (или уже мёртвым)
+	// TCP/TLS-соединением. Оставляем максимум один простаивающий про запас,
+	// остальные простаивающие закрываем перед добавлением нового.
+	c.clients = pruneIdleClients(c.clients)
 	t, err := NewClient(c.ctx, c.options)
 	if err != nil {
 		return nil, err
 	}
 	c.clients = append(c.clients, t)
 	return t, nil
+}
+
+// pruneIdleClients оставляет не более одного простаивающего (count==0)
+// клиента, закрывая остальные, и возвращает обновлённый список.
+func pruneIdleClients(clients []*Client) []*Client {
+	kept := make([]*Client, 0, len(clients))
+	idleKept := false
+	for _, t := range clients {
+		if t.count.Load() > 0 || !idleKept {
+			kept = append(kept, t)
+			if t.count.Load() == 0 {
+				idleKept = true
+			}
+			continue
+		}
+		_ = t.Close()
+	}
+	return kept
 }
