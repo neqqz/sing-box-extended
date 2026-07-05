@@ -262,16 +262,6 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// fallbackDelay — сколько ждём ответа от уже существующего соединения,
-// прежде чем параллельно попробовать заведомо новое. Пассивное обнаружение
-// мёртвого TCP/H2-соединения (ReadIdleTimeout+PingTimeout) может занимать
-// десятки секунд — именно это ощущается как "недоступно, потом через время
-// доступно" при смене сети (WiFi<->cellular, WiFi<->WiFi). Гонка по образцу
-// Happy Eyeballs не отменяет первую попытку (вдруг она жива и просто
-// медленная), но не заставляет ждать её полного тайм-аута, если есть шанс,
-// что параллельная попытка на свежем соединении отработает быстрее.
-const fallbackDelay = 600 * time.Millisecond
-
 type MultiplexClient struct {
 	mutex          sync.Mutex
 	maxConnections int
@@ -304,77 +294,31 @@ func NewMultiplexClient(ctx context.Context, options ClientOptions) (*MultiplexC
 	}, nil
 }
 
-// raceResult — обёртка результата одной из гонящихся попыток.
-type raceResult[T any] struct {
-	conn T
-	err  error
-}
-
-// raceDial запускает primary немедленно и, если тот не ответил за
-// fallbackDelay, параллельно запускает fallback на гарантированно новом
-// клиенте. Возвращает первый успешный результат; если оба провалились —
-// ошибку той попытки, что завершилась последней (обычно информативнее).
-func raceDial[T any](
-	primary func() (T, error),
-	fallback func() (T, error),
-) (T, error) {
-	results := make(chan raceResult[T], 2)
-	go func() {
-		conn, err := primary()
-		results <- raceResult[T]{conn, err}
-	}()
-
-	timer := time.NewTimer(fallbackDelay)
-	defer timer.Stop()
-
-	select {
-	case res := <-results:
-		if res.err == nil {
-			return res.conn, nil
-		}
-		// primary уже провалился быстрее fallbackDelay — сразу пробуем
-		// свежий клиент синхронно, гонка тут не нужна.
-		return fallback()
-	case <-timer.C:
-	}
-
-	go func() {
-		conn, err := fallback()
-		results <- raceResult[T]{conn, err}
-	}()
-
-	first := <-results
-	if first.err == nil {
-		return first.conn, nil
-	}
-	second := <-results
-	if second.err == nil {
-		return second.conn, nil
-	}
-	return second.conn, second.err
-}
+// Dial и ListenPacket НЕ гонят primary против свежего клиента по таймеру —
+// на мультиплексированном транспорте это было ошибкой: под легитимной
+// параллельной нагрузкой (много одновременных потоков в одном приложении)
+// отдельные запросы могут отвечать дольше произвольного порога без того,
+// чтобы транспорт был мёртв. Гонка по таймеру в такой ситуации массово
+// поднимала новые TCP+TLS соединения на КАЖДЫЙ чуть подзадержавшийся вызов
+// одновременно — сервер захлёбывался недохендшейканными соединениями
+// (пока клиент их же и бросал, как только primary всё-таки отвечал).
+// Новый клиент создаётся только когда старый вернул РЕАЛЬНУЮ ошибку.
 
 func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, error) {
 	primary, err := c.getClient()
 	if err != nil {
 		return nil, err
 	}
-	return raceDial(
-		func() (net.Conn, error) {
-			conn, dialErr := primary.Dial(ctx, host)
-			if dialErr != nil {
-				c.removeClient(primary)
-			}
-			return conn, dialErr
-		},
-		func() (net.Conn, error) {
-			fresh, fErr := c.forceNewClient()
-			if fErr != nil {
-				return nil, fErr
-			}
-			return fresh.Dial(ctx, host)
-		},
-	)
+	conn, err := primary.Dial(ctx, host)
+	if err == nil {
+		return conn, nil
+	}
+	c.removeClient(primary)
+	fresh, freshErr := c.forceNewClient()
+	if freshErr != nil {
+		return nil, err
+	}
+	return fresh.Dial(ctx, host)
 }
 
 func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, error) {
@@ -382,22 +326,16 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 	if err != nil {
 		return nil, err
 	}
-	return raceDial(
-		func() (net.PacketConn, error) {
-			conn, dialErr := primary.ListenPacket(ctx)
-			if dialErr != nil {
-				c.removeClient(primary)
-			}
-			return conn, dialErr
-		},
-		func() (net.PacketConn, error) {
-			fresh, fErr := c.forceNewClient()
-			if fErr != nil {
-				return nil, fErr
-			}
-			return fresh.ListenPacket(ctx)
-		},
-	)
+	conn, err := primary.ListenPacket(ctx)
+	if err == nil {
+		return conn, nil
+	}
+	c.removeClient(primary)
+	fresh, freshErr := c.forceNewClient()
+	if freshErr != nil {
+		return nil, err
+	}
+	return fresh.ListenPacket(ctx)
 }
 
 // removeClient убирает t из пула сразу при первой неудаче Dial/ListenPacket
