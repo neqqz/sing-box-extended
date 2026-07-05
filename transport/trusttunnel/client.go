@@ -128,8 +128,17 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			// на мобильной сети carrier NAT сам рвёт неактивный TCP-маппинг
 			// (в отличие от QUIC, где ниже явно задан KeepAlivePeriod), и
 			// разрыв обнаруживается только при следующей попытке отправки.
+			//
+			// ReadIdleTimeout=PingTimeout=DefaultHealthCheckTimeout (7s) был
+			// слишком агрессивным: суммарное окно терпимости ~14с — любой
+			// скачок RTT на мобильной сети (переключение вышки, кратковре-
+			// менный провал) укладывал живое соединение с "client connection
+			// lost". ReadIdleTimeout держим прежним (не пинговать реже, чем
+			// раз в DefaultHealthCheckTimeout, — этого достаточно для NAT),
+			// а PingTimeout увеличиваем — терпимость к задержке ACK на пинг,
+			// а не к общей неактивности.
 			ReadIdleTimeout: DefaultHealthCheckTimeout,
-			PingTimeout:     DefaultHealthCheckTimeout,
+			PingTimeout:     DefaultSessionTimeout,
 		}
 	}
 	return client, nil
