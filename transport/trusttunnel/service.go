@@ -113,17 +113,18 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			},
 		}
 		conn.setup(request.Body, nil)
+		s.trackConn(username, conn)
 		firstPacket := buf.NewPacket()
 		destination, err := conn.ReadPacket(firstPacket)
 		if err != nil {
 			firstPacket.Release()
+			s.untrackConn(username, conn)
 			_ = conn.Close()
 			s.logger.ErrorContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
 			return
 		}
 		destination = destination.Unwrap()
 		cachedConn := bufio.NewCachedPacketConn(conn, firstPacket, destination)
-		s.trackConn(username, conn)
 		_ = s.handler.NewPacketConnection(ctx, cachedConn, M.Metadata{
 			Protocol:    "trusttunnel",
 			Source:      M.ParseSocksaddr(request.RemoteAddr),
