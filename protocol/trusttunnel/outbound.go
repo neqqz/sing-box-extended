@@ -20,6 +20,7 @@ import (
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+	"github.com/sagernet/sing/service"
 )
 
 // resolveCacheTTL — сколько держим резолв домена без повторного запроса к
@@ -41,7 +42,7 @@ type resolveCacheEntry struct {
 type Outbound struct {
 	outbound.Adapter
 	logger       logger.ContextLogger
-	router       adapter.Router
+	dnsRouter    adapter.DNSRouter
 	client       trusttunnel.Dialer
 	resolveMu    sync.Mutex
 	resolveCache map[string]resolveCacheEntry
@@ -88,7 +89,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	return &Outbound{
 		Adapter:      outbound.NewAdapterWithDialerOptions(C.TypeTrustTunnel, tag, networkList, options.DialerOptions),
 		logger:       logger,
-		router:       router,
+		dnsRouter:    service.FromContext[adapter.DNSRouter](ctx),
 		client:       client,
 		resolveCache: make(map[string]resolveCacheEntry),
 	}, nil
@@ -113,7 +114,7 @@ func (h *Outbound) resolveDestination(ctx context.Context, destination M.Socksad
 	}
 	h.resolveMu.Unlock()
 
-	addresses, err := h.router.Lookup(ctx, destination.Fqdn, adapter.DNSQueryOptions{})
+	addresses, err := h.dnsRouter.Lookup(ctx, destination.Fqdn, adapter.DNSQueryOptions{})
 	if err != nil {
 		return M.Socksaddr{}, E.Cause(err, "resolve ", destination.Fqdn)
 	}
