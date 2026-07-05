@@ -3,6 +3,8 @@ package trusttunnel
 import (
 	"context"
 	"net"
+	"sync"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
@@ -18,19 +20,31 @@ import (
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-	"github.com/sagernet/sing/service" // <--- Добавлен импорт для DI
 )
+
+// resolveCacheTTL — сколько держим резолв домена без повторного запроса к
+// DNS. Короткий TTL: в горячем UDP-потоке (QUIC-датаграммы) один и тот же
+// Fqdn может встречаться десятки раз в секунду, а резолвить его на каждый
+// пакет — лишняя задержка и нагрузка на DNS без всякой пользы, т.к. IP
+// целевых доменов (CDN и т.п.) не меняется настолько быстро.
+const resolveCacheTTL = 30 * time.Second
 
 func RegisterOutbound(registry *outbound.Registry) {
 	outbound.Register[option.TrustTunnelOutboundOptions](registry, C.TypeTrustTunnel, NewOutbound)
 }
 
+type resolveCacheEntry struct {
+	addr    M.Socksaddr
+	expires time.Time
+}
+
 type Outbound struct {
 	outbound.Adapter
-	logger    logger.ContextLogger
-	router    adapter.Router
-	dnsRouter adapter.DNSRouter // <--- Добавлено поле для DNS роутера
-	client    trusttunnel.Dialer
+	logger       logger.ContextLogger
+	router       adapter.Router
+	client       trusttunnel.Dialer
+	resolveMu    sync.Mutex
+	resolveCache map[string]resolveCacheEntry
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrustTunnelOutboundOptions) (adapter.Outbound, error) {
@@ -72,11 +86,11 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		return nil, err
 	}
 	return &Outbound{
-		Adapter:   outbound.NewAdapterWithDialerOptions(C.TypeTrustTunnel, tag, networkList, options.DialerOptions),
-		logger:    logger,
-		router:    router,
-		dnsRouter: service.FromContext[adapter.DNSRouter](ctx), // <--- Инициализация через внедрение зависимостей
-		client:    client,
+		Adapter:      outbound.NewAdapterWithDialerOptions(C.TypeTrustTunnel, tag, networkList, options.DialerOptions),
+		logger:       logger,
+		router:       router,
+		client:       client,
+		resolveCache: make(map[string]resolveCacheEntry),
 	}, nil
 }
 
@@ -85,22 +99,34 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 // (16-байтовое поле в заголовке, без домена) — в отличие от TCP, где домен
 // уходит как Host в CONNECT и резолвится сервером. Без этого шага пакеты с
 // доменом без резолва (например, после QUIC-сниффинга на голом UDP-потоке
-// tun, до похода в DNS) падали с "only support IP".
+// tun, до похода в DNS) падали с "only support IP". Результат кэшируется на
+// resolveCacheTTL, см. комментарий там.
 func (h *Outbound) resolveDestination(ctx context.Context, destination M.Socksaddr) (M.Socksaddr, error) {
 	if destination.Addr.IsValid() || !destination.IsFqdn() {
 		return destination, nil
 	}
-	
-	// <--- Исправлено обращение к роутеру (используем dnsRouter)
-	addresses, err := h.dnsRouter.Lookup(ctx, destination.Fqdn, adapter.DNSQueryOptions{})
-	
+	now := time.Now()
+	h.resolveMu.Lock()
+	if entry, ok := h.resolveCache[destination.Fqdn]; ok && now.Before(entry.expires) {
+		h.resolveMu.Unlock()
+		return M.Socksaddr{Addr: entry.addr.Addr, Port: destination.Port}, nil
+	}
+	h.resolveMu.Unlock()
+
+	addresses, err := h.router.Lookup(ctx, destination.Fqdn, adapter.DNSQueryOptions{})
 	if err != nil {
 		return M.Socksaddr{}, E.Cause(err, "resolve ", destination.Fqdn)
 	}
 	if len(addresses) == 0 {
 		return M.Socksaddr{}, E.New("no address resolved for ", destination.Fqdn)
 	}
-	return M.Socksaddr{Addr: addresses[0], Port: destination.Port}, nil
+	resolved := M.Socksaddr{Addr: addresses[0], Port: destination.Port}
+
+	h.resolveMu.Lock()
+	h.resolveCache[destination.Fqdn] = resolveCacheEntry{addr: resolved, expires: now.Add(resolveCacheTTL)}
+	h.resolveMu.Unlock()
+
+	return resolved, nil
 }
 
 func (h *Outbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
