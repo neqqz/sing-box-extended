@@ -66,12 +66,20 @@ func parseRandomPrefix(raw string) (prefix, mask []byte, err error) {
 	return prefix, mask, nil
 }
 
+// checkSNI возвращает true, если sni разрешён (или проверка выключена).
+func checkSNI(allowed []string, sni string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	return common.Contains(allowed, sni)
+}
+
 // sniMiddleware отклоняет запросы, SNI которых не входит в allowedSNI.
-// Работает одинаково для H2 (r.TLS.ServerName) и H3 (то же поле).
-// Если allowedSNI пуст — пропускает всё.
+// Используется только для QUIC/H3 — там r.TLS заполняет сам quic-go/http3,
+// надёжно. Для TCP SNI проверяется раньше, в serveConn (см. ниже).
 type sniMiddleware struct {
 	next       http.Handler
-	allowedSNI map[string]struct{}
+	allowedSNI []string
 	logger     logger.ContextLogger
 }
 
@@ -79,11 +87,7 @@ func newSNIMiddleware(next http.Handler, allowed []string, log logger.ContextLog
 	if len(allowed) == 0 {
 		return next
 	}
-	m := make(map[string]struct{}, len(allowed))
-	for _, sni := range allowed {
-		m[sni] = struct{}{}
-	}
-	return &sniMiddleware{next: next, allowedSNI: m, logger: log}
+	return &sniMiddleware{next: next, allowedSNI: allowed, logger: log}
 }
 
 func (m *sniMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +95,7 @@ func (m *sniMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.TLS != nil {
 		sni = r.TLS.ServerName
 	}
-	if _, ok := m.allowedSNI[sni]; !ok {
+	if !checkSNI(m.allowedSNI, sni) {
 		m.logger.Debug("trusttunnel: rejected SNI: ", sni)
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
@@ -254,7 +258,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			// на уровне cryptoSetup.handleMessage (NewCryptoSetupServer).
 			ServerClientRandomPrefix: h.randomPrefix,
 			ServerClientRandomMask:   h.randomMask,
-			MaxIncomingStreams:        1 << 60,
+			MaxIncomingStreams:       1 << 60,
 			Allow0RTT:                true,
 		})
 		if err != nil {
@@ -303,16 +307,11 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 		rawConn.Close()
 		return
 	}
-	// SNI — свойство TLS-сессии, проверяем его один раз на всё соединение,
-	// не полагаясь на r.TLS в net/http (он ненадёжно прокидывается через
-	// обёртки badtls/ReadWaitConn и рвёт часть легитимных соединений).
-	if len(h.options.AllowedSNI) > 0 {
+	if !checkSNI(h.options.AllowedSNI, tlsConn.ConnectionState().ServerName) {
 		sni := tlsConn.ConnectionState().ServerName
-		if !common.Contains(h.options.AllowedSNI, sni) {
-			h.logger.Debug("trusttunnel: rejected SNI: ", sni)
-			tlsConn.Close()
-			return
-		}
+		h.logger.Debug("trusttunnel: rejected SNI: ", sni)
+		tlsConn.Close()
+		return
 	}
 	switch tlsConn.ConnectionState().NegotiatedProtocol {
 	case http2.NextProtoTLS:
