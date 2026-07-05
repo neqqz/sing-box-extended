@@ -218,12 +218,20 @@ func (c *Client) newConnectRequest(host, userAgent string) *http.Request {
 func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 	conn := &tcpConn{}
 	c.roundTrip(c.newConnectRequest(host, tcpUserAgent), &conn.httpConn)
+	if err := conn.waitCreated(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	return conn, nil
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 	conn := &clientPacketConn{}
 	c.roundTrip(c.newConnectRequest(UDPMagicAddress, udpUserAgent), &conn.httpConn)
+	if err := conn.waitCreated(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	return conn, nil
 }
 
@@ -291,7 +299,21 @@ func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, erro
 	if err != nil {
 		return nil, err
 	}
-	return t.Dial(ctx, host)
+	conn, err := t.Dial(ctx, host)
+	if err == nil {
+		return conn, nil
+	}
+	// Первая попытка не удалась — скорее всего, попали на соединение, уже
+	// мёртвое после смены сети (TCP жёстко привязан к 4-tuple и не выживает
+	// смену IP, в отличие от QUIC с его connection migration). getClient()
+	// на повторный вызов может снова отдать тот же мёртвый транспорт (пока
+	// он не удалит себя из пула), поэтому здесь форсируем гарантированно
+	// новый клиент и повторяем один раз.
+	fresh, freshErr := c.forceNewClient()
+	if freshErr != nil {
+		return nil, err
+	}
+	return fresh.Dial(ctx, host)
 }
 
 func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, error) {
@@ -299,7 +321,15 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 	if err != nil {
 		return nil, err
 	}
-	return t.ListenPacket(ctx)
+	conn, err := t.ListenPacket(ctx)
+	if err == nil {
+		return conn, nil
+	}
+	fresh, freshErr := c.forceNewClient()
+	if freshErr != nil {
+		return nil, err
+	}
+	return fresh.ListenPacket(ctx)
 }
 
 func (c *MultiplexClient) Close() error {
@@ -338,6 +368,15 @@ func (c *MultiplexClient) getClient() (*Client, error) {
 	} else if c.maxStreams > 0 && numStreams < c.maxStreams {
 		return transport, nil
 	}
+	return c.newClientLocked()
+}
+
+// forceNewClient гарантированно создаёт новый *Client, минуя выбор из пула
+// (в отличие от getClient, который мог бы снова вернуть только что умерший
+// транспорт).
+func (c *MultiplexClient) forceNewClient() (*Client, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 	return c.newClientLocked()
 }
 
