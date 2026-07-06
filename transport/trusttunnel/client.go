@@ -160,8 +160,19 @@ func (c *Client) loopHealthCheck() {
 			return
 		}
 		ctx, cancel := context.WithTimeout(c.ctx, DefaultHealthCheckTimeout)
-		_ = c.HealthCheck(ctx)
+		err := c.HealthCheck(ctx)
 		cancel()
+		if err != nil {
+			// Транспорт реально мёртв (NAT-ребайндинг/смена вышки), и
+			// HealthCheck это уже поймал за DefaultHealthCheckTimeout —
+			// не ждём, пока это через ~ReadIdleTimeout+PingTimeout (до 37с)
+			// заметит сам http2.Transport. c.cancel() рвёт c.ctx, от
+			// которого наследуются контексты всех текущих roundTrip —
+			// зависшие Dial()/ListenPacket() стримы сразу получают ошибку
+			// и уходят на новый *Client через MultiplexClient.removeClient.
+			_ = c.Close()
+			return
+		}
 	}
 }
 
