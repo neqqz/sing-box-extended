@@ -287,7 +287,7 @@ func (m *ConnectionManager) connectionCopy(ctx context.Context, source net.Conn,
 	} else {
 		if err == nil {
 			m.logger.DebugContext(ctx, "connection download finished")
-		} else if !E.IsClosedOrCanceled(err) && !strings.Contains(err.Error(), "NO_ERROR") && !strings.Contains(err.Error(), "response body closed") {
+		} else if !E.IsClosedOrCanceled(err) && !strings.Contains(err.Error(), "NO_ERROR") && !strings.Contains(err.Error(), "CANCEL") && !strings.Contains(err.Error(), "response body closed") {
 			m.logger.ErrorContext(ctx, "connection download closed: ", err)
 		} else {
 			m.logger.TraceContext(ctx, "connection download closed")
