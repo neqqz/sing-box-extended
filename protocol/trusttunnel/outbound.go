@@ -30,6 +30,27 @@ import (
 // целевых доменов (CDN и т.п.) не меняется настолько быстро.
 const resolveCacheTTL = 30 * time.Second
 
+// noDelayDialer явно отключает алгоритм Найгла на TCP-соединениях. Без
+// этого пакеты могут задерживаться в буфере ядра ради укрупнения (обычно
+// безобидно, но для латенси-чувствительного трафика внутри H2-мультиплекса
+// — например, игрового — лишняя задержка в 40мс на каждый мелкий пакет
+// заметна). Go по умолчанию TCP_NODELAY не гарантирует на всех платформах
+// одинаково, поэтому выставляем явно, а не полагаемся на дефолт.
+type noDelayDialer struct {
+	N.Dialer
+}
+
+func (d noDelayDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+	conn, err := d.Dialer.DialContext(ctx, network, destination)
+	if err != nil {
+		return nil, err
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+	}
+	return conn, nil
+}
+
 func RegisterOutbound(registry *outbound.Registry) {
 	outbound.Register[option.TrustTunnelOutboundOptions](registry, C.TypeTrustTunnel, NewOutbound)
 }
@@ -56,6 +77,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if err != nil {
 		return nil, err
 	}
+	outboundDialer = noDelayDialer{outboundDialer}
 	serverAddr := options.ServerOptions.Build()
 	networkList := options.Network.Build()
 	tlsConfig, err := tls.NewClient(ctx, logger, options.Server, common.PtrValueOrDefault(options.TLS))
