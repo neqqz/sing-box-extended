@@ -2,8 +2,10 @@ package trusttunnel
 
 import (
 	"bytes"
+	crand "crypto/rand"
 	"encoding/base64"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
@@ -56,6 +58,38 @@ func buildPaddingIP(addr netip.Addr) (buffer [16]byte) {
 	ipv4 := addr.As4()
 	copy(buffer[12:16], ipv4[:])
 	return buffer
+}
+
+// randomUDPPaddingLength возвращает случайную длину паддинга в [min, max]
+// (в байтах). Криптографически случайную — паддинг живёт внутри TLS/QUIC,
+// но лишний предсказуемый паттерн размеров лучше не оставлять и там.
+// 0, если паддинг выключен (max<=0) или диапазон некорректен.
+func randomUDPPaddingLength(min, max int) int {
+	if max <= 0 || min < 0 || max < min {
+		return 0
+	}
+	if max == min {
+		return min
+	}
+	n, err := crand.Int(crand.Reader, big.NewInt(int64(max-min+1)))
+	if err != nil {
+		return min
+	}
+	return min + int(n.Int64())
+}
+
+// writeUDPPadding пишет n случайных байт напрямую в w (отдельным Write —
+// как appName/payload выше, без лишней конкатенации в один буфер).
+func writeUDPPadding(w io.Writer, n int) error {
+	if n <= 0 {
+		return nil
+	}
+	padding := make([]byte, n)
+	if _, err := crand.Read(padding); err != nil {
+		return err
+	}
+	_, err := w.Write(padding)
+	return err
 }
 
 type httpConn struct {

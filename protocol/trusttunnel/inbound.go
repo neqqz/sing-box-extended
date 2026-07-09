@@ -149,9 +149,11 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		randomMask:   mask,
 	}
 	service := trusttunnel.NewService(trusttunnel.ServiceOptions{
-		Ctx:     ctx,
-		Logger:  logger,
-		Handler: (*inboundHandler)(h),
+		Ctx:           ctx,
+		Logger:        logger,
+		Handler:       (*inboundHandler)(h),
+		UDPPaddingMin: common.PtrValueOrDefault(options.UDPPaddingMin),
+		UDPPaddingMax: common.PtrValueOrDefault(options.UDPPaddingMax),
 	})
 	userMap := make(map[string]string, len(options.Users))
 	for _, u := range options.Users {

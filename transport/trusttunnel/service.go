@@ -22,27 +22,33 @@ type Handler interface {
 }
 
 type ServiceOptions struct {
-	Ctx     context.Context
-	Logger  logger.ContextLogger
-	Handler Handler
+	Ctx           context.Context
+	Logger        logger.ContextLogger
+	Handler       Handler
+	UDPPaddingMin int
+	UDPPaddingMax int
 }
 
 type Service struct {
-	ctx     context.Context
-	logger  logger.ContextLogger
-	users   map[string]string
-	handler Handler
-	conns   map[string][]io.Closer
+	ctx           context.Context
+	logger        logger.ContextLogger
+	users         map[string]string
+	handler       Handler
+	conns         map[string][]io.Closer
+	udpPaddingMin int
+	udpPaddingMax int
 
 	mu sync.RWMutex
 }
 
 func NewService(options ServiceOptions) *Service {
 	return &Service{
-		ctx:     options.Ctx,
-		logger:  options.Logger,
-		handler: options.Handler,
-		conns:   make(map[string][]io.Closer),
+		ctx:           options.Ctx,
+		logger:        options.Logger,
+		handler:       options.Handler,
+		conns:         make(map[string][]io.Closer),
+		udpPaddingMin: options.UDPPaddingMin,
+		udpPaddingMax: options.UDPPaddingMax,
 	}
 }
 
@@ -111,6 +117,8 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 				done:       done,
 				remoteAddr: parseRemoteAddr(request.RemoteAddr),
 			},
+			paddingMin: s.udpPaddingMin,
+			paddingMax: s.udpPaddingMax,
 		}
 		conn.setup(request.Body, nil)
 		s.trackConn(username, conn)
