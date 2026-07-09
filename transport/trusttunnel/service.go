@@ -90,7 +90,12 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	authorization := request.Header.Get("Proxy-Authorization")
 	username, loaded := s.verify(authorization)
 	if !loaded {
-		writer.WriteHeader(http.StatusProxyAuthRequired)
+		// 407 прямым текстом палит, что порт держит прокси/CONNECT-сервер —
+		// любой сканер или DPI, стукнувшийся без валидных креды, сразу видит
+		// сигнатуру. 404 неотличим от обычного веб-сервера, у которого просто
+		// нет такого пути — камуфляж уровня SNI/random-prefix, только для
+		// самого HTTP-ответа.
+		writer.WriteHeader(http.StatusNotFound)
 		s.badRequest(request.Context(), request, E.New("authorization failed"))
 		return
 	}
