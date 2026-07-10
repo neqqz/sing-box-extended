@@ -42,7 +42,7 @@ func NewCongestionControl(name string, cwnd int, timeFunc func() time.Time) (fun
 			return congestion_bbr2.NewBBR2Sender(
 				congestion_bbr2.DefaultClock{TimeFunc: timeFunc},
 				congestion.ByteCount(conn.Config().InitialPacketSize),
-				0,
+				congestion.ByteCount(cwnd)*congestion.ByteCount(conn.Config().InitialPacketSize),
 				false,
 			)
 		}, nil
