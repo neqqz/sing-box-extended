@@ -78,14 +78,8 @@ type Client struct {
 	udpPaddingMax    int
 }
 
-// h2Session — свой http2.ClientConnPool поверх ОДНОГО TCP+TLS соединения на
-// *Client (пул из нескольких соединений уже делает MultiplexClient уровнем
-// выше). Даёт то же, что h2mux в sing-mux: MarkDead() дёргается самим
-// http2.Transport, как только его собственный ReadIdleTimeout/PingTimeout
-// пинг решил, что коннект мёртв — без этого узнать о смерти можно было
-// только по ошибке следующего RoundTrip. IsClosed() читает уже посчитанное
-// состояние (ClientConn.State()) лениво, при выборе клиента в
-// MultiplexClient.getClient() — как offer() в sing-mux, не активным опросом.
+// h2Session — свой http2.ClientConnPool поверх ОДНОГО TCP+TLS соединения.
+// Изменено: добавлен dialMu для выноса DialContext и NewClientConn из-под mu.
 type h2Session struct {
 	transport *http2.Transport
 	server    M.Socksaddr
@@ -94,17 +88,40 @@ type h2Session struct {
 	mu         sync.Mutex
 	clientConn *http2.ClientConn
 	dead       bool
+	dialMu     sync.Mutex // Стерилизует только процесс дозвона, не блокируя IsClosed()
 }
 
 func (s *h2Session) GetClientConn(req *http.Request, _ string) (*http2.ClientConn, error) {
+	// 1. Быстрая проверка существующего соединения
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.clientConn != nil && !s.dead {
 		state := s.clientConn.State()
 		if !state.Closed && !state.Closing {
-			return s.clientConn, nil
+			cc := s.clientConn
+			s.mu.Unlock()
+			return cc, nil
 		}
 	}
+	s.mu.Unlock()
+
+	// 2. Сериализуем создание соединения, разгружая основной мьютекс s.mu
+	s.dialMu.Lock()
+	defer s.dialMu.Unlock()
+
+	// Double-check после взятия лока
+	s.mu.Lock()
+	if s.clientConn != nil && !s.dead {
+		state := s.clientConn.State()
+		if !state.Closed && !state.Closing {
+			cc := s.clientConn
+			s.mu.Unlock()
+			return cc, nil
+		}
+	}
+	s.mu.Unlock()
+
+	// Ввод-вывод (I/O) теперь выполняется ПОЛНОСТЬЮ вне главного мьютекса.
+	// Другие потоки и IsClosed() больше не зависают, пока идет Dial!
 	conn, err := s.tlsDialer.DialContext(req.Context(), N.NetworkTCP, s.server)
 	if err != nil {
 		return nil, err
@@ -114,8 +131,12 @@ func (s *h2Session) GetClientConn(req *http.Request, _ string) (*http2.ClientCon
 		_ = conn.Close()
 		return nil, err
 	}
+
+	s.mu.Lock()
 	s.clientConn = clientConn
 	s.dead = false
+	s.mu.Unlock()
+
 	return clientConn, nil
 }
 
@@ -131,7 +152,6 @@ func (s *h2Session) isClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.clientConn == nil {
-		// Ещё ни разу не подключались — не "мёртв", а "не открывался".
 		return false
 	}
 	if s.dead {
@@ -141,10 +161,6 @@ func (s *h2Session) isClosed() bool {
 	return state.Closed || state.Closing
 }
 
-// IsClosed сообщает, известно ли уже (без активного опроса — по внутреннему
-// состоянию, посчитанному самим транспортом), что этот *Client дохлый.
-// Используется MultiplexClient.getClient() для ленивой чистки пула перед
-// выбором, аналогично offer() в sing-mux.
 func (c *Client) IsClosed() bool {
 	select {
 	case <-c.ctx.Done():
@@ -224,20 +240,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			options.TLSConfig.SetNextProtos([]string{http2.NextProtoTLS})
 		}
 		transport := &http2.Transport{
-			AllowHTTP: true,
-			// Без этого http2.Transport не шлёт PING в простое соединения:
-			// на мобильной сети carrier NAT сам рвёт неактивный TCP-маппинг
-			// (в отличие от QUIC, где ниже явно задан KeepAlivePeriod), и
-			// разрыв обнаруживается только при следующей попытке отправки.
-			//
-			// ReadIdleTimeout=PingTimeout=DefaultHealthCheckTimeout (7s) был
-			// слишком агрессивным: суммарное окно терпимости ~14с — любой
-			// скачок RTT на мобильной сети (переключение вышки, кратковре-
-			// менный провал) укладывал живое соединение с "client connection
-			// lost". ReadIdleTimeout держим прежним (не пинговать реже, чем
-			// раз в DefaultHealthCheckTimeout, — этого достаточно для NAT),
-			// а PingTimeout увеличиваем — терпимость к задержке ACK на пинг,
-			// а не к общей неактивности.
+			AllowHTTP:       true,
 			ReadIdleTimeout: DefaultHealthCheckTimeout,
 			PingTimeout:     DefaultSessionTimeout,
 		}
@@ -261,6 +264,7 @@ func (c *Client) start() {
 }
 
 func (c *Client) loopHealthCheck() {
+	consecutiveFailures := 0
 	for {
 		select {
 		case <-c.healthCheckTimer.C:
@@ -272,16 +276,18 @@ func (c *Client) loopHealthCheck() {
 		err := c.HealthCheck(ctx)
 		cancel()
 		if err != nil {
-			// Транспорт реально мёртв (NAT-ребайндинг/смена вышки), и
-			// HealthCheck это уже поймал за DefaultHealthCheckTimeout —
-			// не ждём, пока это через ~ReadIdleTimeout+PingTimeout (до 37с)
-			// заметит сам http2.Transport. c.cancel() рвёт c.ctx, от
-			// которого наследуются контексты всех текущих roundTrip —
-			// зависшие Dial()/ListenPacket() стримы сразу получают ошибку
-			// и уходят на новый *Client через MultiplexClient.removeClient.
+			consecutiveFailures++
+			// Даем второй шанс при одиночном разрыве / потере пакета на мобильной сети.
+			// Быстро перепроверяем через 2 секунды вместо полного уничтожения пула.
+			if consecutiveFailures < 2 {
+				c.healthCheckTimer.Reset(2 * time.Second)
+				continue
+			}
+			// Если упал дважды подряд — транспорт действительно мёртв
 			_ = c.Close()
 			return
 		}
+		consecutiveFailures = 0
 	}
 }
 
@@ -414,16 +420,6 @@ func NewMultiplexClient(ctx context.Context, options ClientOptions) (*MultiplexC
 	}, nil
 }
 
-// Dial и ListenPacket НЕ гонят primary против свежего клиента по таймеру —
-// на мультиплексированном транспорте это было ошибкой: под легитимной
-// параллельной нагрузкой (много одновременных потоков в одном приложении)
-// отдельные запросы могут отвечать дольше произвольного порога без того,
-// чтобы транспорт был мёртв. Гонка по таймеру в такой ситуации массово
-// поднимала новые TCP+TLS соединения на КАЖДЫЙ чуть подзадержавшийся вызов
-// одновременно — сервер захлёбывался недохендшейканными соединениями
-// (пока клиент их же и бросал, как только primary всё-таки отвечал).
-// Новый клиент создаётся только когда старый вернул РЕАЛЬНУЮ ошибку.
-
 func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, error) {
 	primary, err := c.getClient()
 	if err != nil {
@@ -458,11 +454,6 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 	return fresh.ListenPacket(ctx)
 }
 
-// removeClient убирает t из пула сразу при первой неудаче Dial/ListenPacket
-// на нём — не дожидаясь ленивой чистки в newClientLocked. Без этого
-// getClient() мог бы выбрать тот же уже известный сломанным транспорт снова
-// на следующий вызов (например, если у него count==0 — он выглядит
-// "свободным" и приоритетным для повторного использования).
 func (c *MultiplexClient) removeClient(dead *Client) {
 	c.mutex.Lock()
 	for i, t := range c.clients {
@@ -491,10 +482,6 @@ func (c *MultiplexClient) Close() error {
 func (c *MultiplexClient) getClient() (*Client, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	// Лениво чистим пул перед выбором — как offer() в sing-mux: транспорт
-	// сам уже мог узнать о своей смерти (MarkDead от http2.Transport, или
-	// закрытый QUIC-контекст) без единого нашего запроса на нём. Незачем
-	// ждать, пока это обнаружится через ошибку следующего Dial/ListenPacket.
 	live := c.clients[:0]
 	for _, t := range c.clients {
 		if t.IsClosed() {
@@ -527,22 +514,14 @@ func (c *MultiplexClient) getClient() (*Client, error) {
 	return c.newClientLocked()
 }
 
-// forceNewClient гарантированно создаёт новый *Client, минуя выбор из пула
-// (в отличие от getClient, который мог бы снова вернуть только что умерший
-// транспорт).
 func (c *MultiplexClient) forceNewClient() (*Client, error) {
 	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	return c.newClientLocked()
+	withLock := c.newClientLocked
+	c.mutex.Unlock()
+	return withLock()
 }
 
 func (c *MultiplexClient) newClientLocked() (*Client, error) {
-	// Без этого список клиентов только растёт: при переключении сети
-	// (WiFi<->cellular) старые *Client становятся простаивающими (count==0),
-	// но никогда не закрываются и не убираются из пула — копятся навечно,
-	// каждый со своим health-check таймером и открытым (или уже мёртвым)
-	// TCP/TLS-соединением. Оставляем максимум один простаивающий про запас,
-	// остальные простаивающие закрываем перед добавлением нового.
 	c.clients = pruneIdleClients(c.clients)
 	t, err := NewClient(c.ctx, c.options)
 	if err != nil {
@@ -552,8 +531,6 @@ func (c *MultiplexClient) newClientLocked() (*Client, error) {
 	return t, nil
 }
 
-// pruneIdleClients оставляет не более одного простаивающего (count==0)
-// клиента, закрывая остальные, и возвращает обновлённый список.
 func pruneIdleClients(clients []*Client) []*Client {
 	kept := make([]*Client, 0, len(clients))
 	idleKept := false
