@@ -201,26 +201,6 @@ func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
 	go func() {
 		hardTimeout := time.AfterFunc(C.TCPTimeout, cancel)
 		defer hardTimeout.Stop()
-		// staleTimer: если сама установка стрима (заголовки ответа на
-		// CONNECT ещё не пришли) не уложилась в DefaultHealthCheckTimeout —
-		// считаем транспорт мёртвым и рвём ВЕСЬ *Client, а не только этот
-		// запрос. Типичная причина на мобильной сети: carrier NAT молча
-		// дропнул маппинг после смены вышки/IP, без RST/FIN — h2 сам этого
-		// не замечает вплоть до PingTimeout, а InterfaceUpdated (см.
-		// outbound.go) не сработает, если ОС не считает это сменой
-		// интерфейса (тот же Wi-Fi/APN, просто новый внешний IP за NAT).
-		//
-		// Без этого пул (MultiplexClient) продолжал бы слать на дохлый
-		// клиент новые стримы, и каждый висел бы так же вплоть до
-		// hardTimeout (а то и 2×hardTimeout — первый на этом клиенте,
-		// второй на свежем, если ему тоже не повезло с сетью в переходный
-		// момент).
-		//
-		// Чисто реактивно: срабатывает только если реально есть повисший
-		// запрос — никакого фонового трафика или полинга в простое, в
-		// отличие от health_check.
-		staleTimer := time.AfterFunc(DefaultHealthCheckTimeout, func() { _ = c.Close() })
-		defer staleTimer.Stop()
 		request = request.WithContext(ctx)
 		response, err := c.roundTripper.RoundTrip(request)
 		if err != nil {
