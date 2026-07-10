@@ -209,6 +209,15 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		}
 		h.h2Server = &http2.Server{
 			IdleTimeout: trusttunnel.DefaultSessionTimeout * 2,
+			// Дефолт x/net/http2 — 1 MB на стрим/соединение. При RTT
+			// в несколько сотен мс (типично для маршрута до зарубежного
+			// VPS из РФ) это даёт потолок throughput = window/RTT, что
+			// на практике режет скорость аплоада крупных файлов одним
+			// стримом (например, артефактов в GitHub Actions) до
+			// заметно меньше канала. Поднимаем окно под BDP:
+			// window >= целевая_скорость_байт/с * RTT_сек.
+			MaxUploadBufferPerStream:     8 << 20,  // 8 MB
+			MaxUploadBufferPerConnection: 16 << 20, // 16 MB
 		}
 		// ВАЖНО: net/http.Server.Serve() определяет ALPN-протокол и решает,
 		// звать ли http2.Server, через жёсткий type assertion c.rwc.(*tls.Conn)
