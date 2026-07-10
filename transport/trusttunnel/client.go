@@ -67,9 +67,9 @@ type Client struct {
 	serverString     string
 	auth             string
 	roundTripper     http.RoundTripper
-	session          *h2Session // не nil только для h2-транспорта
+	session          *h2Session 
 	quicConnMu       sync.RWMutex
-	quicConn         *quic.Conn // не nil только для QUIC-транспорта, последний живой конн
+	quicConn         *quic.Conn 
 	startOnce        sync.Once
 	healthCheck      bool
 	healthCheckTimer *time.Timer
@@ -78,8 +78,6 @@ type Client struct {
 	udpPaddingMax    int
 }
 
-// h2Session — свой http2.ClientConnPool поверх ОДНОГО TCP+TLS соединения.
-// Изменено: добавлен dialMu для выноса DialContext и NewClientConn из-под mu.
 type h2Session struct {
 	transport *http2.Transport
 	server    M.Socksaddr
@@ -88,11 +86,10 @@ type h2Session struct {
 	mu         sync.Mutex
 	clientConn *http2.ClientConn
 	dead       bool
-	dialMu     sync.Mutex // Стерилизует только процесс дозвона, не блокируя IsClosed()
+	dialMu     sync.Mutex 
 }
 
 func (s *h2Session) GetClientConn(req *http.Request, _ string) (*http2.ClientConn, error) {
-	// 1. Быстрая проверка существующего соединения
 	s.mu.Lock()
 	if s.clientConn != nil && !s.dead {
 		state := s.clientConn.State()
@@ -104,11 +101,9 @@ func (s *h2Session) GetClientConn(req *http.Request, _ string) (*http2.ClientCon
 	}
 	s.mu.Unlock()
 
-	// 2. Сериализуем создание соединения, разгружая основной мьютекс s.mu
 	s.dialMu.Lock()
 	defer s.dialMu.Unlock()
 
-	// Double-check после взятия лока
 	s.mu.Lock()
 	if s.clientConn != nil && !s.dead {
 		state := s.clientConn.State()
@@ -120,8 +115,6 @@ func (s *h2Session) GetClientConn(req *http.Request, _ string) (*http2.ClientCon
 	}
 	s.mu.Unlock()
 
-	// Ввод-вывод (I/O) теперь выполняется ПОЛНОСТЬЮ вне главного мьютекса.
-	// Другие потоки и IsClosed() больше не зависают, пока идет Dial!
 	conn, err := s.tlsDialer.DialContext(req.Context(), N.NetworkTCP, s.server)
 	if err != nil {
 		return nil, err
@@ -212,8 +205,9 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		}
 		client.roundTripper = &http3.Transport{
 			QUICConfig: &quic.Config{
-				MaxIdleTimeout:  DefaultSessionTimeout * 2,
-				KeepAlivePeriod: DefaultHealthCheckTimeout,
+				// Оптимизировано для мобильных: не дергаем сеть слишком часто
+				MaxIdleTimeout:  time.Minute * 2,
+				KeepAlivePeriod: time.Second * 30, 
 			},
 			Dial: func(ctx context.Context, addr string, tlsCfg *stdtls.Config, cfg *quic.Config) (*quic.Conn, error) {
 				udpConn, err := options.Dialer.DialContext(ctx, N.NetworkUDP, client.server)
@@ -241,8 +235,9 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		}
 		transport := &http2.Transport{
 			AllowHTTP:       true,
-			ReadIdleTimeout: DefaultHealthCheckTimeout,
-			PingTimeout:     DefaultSessionTimeout,
+			// Включаем мягкий low-level пинг на уровне HTTP/2 стека
+			ReadIdleTimeout: time.Second * 45,
+			PingTimeout:     time.Second * 15,
 		}
 		session := &h2Session{
 			transport: transport,
@@ -277,13 +272,11 @@ func (c *Client) loopHealthCheck() {
 		cancel()
 		if err != nil {
 			consecutiveFailures++
-			// Даем второй шанс при одиночном разрыве / потере пакета на мобильной сети.
-			// Быстро перепроверяем через 2 секунды вместо полного уничтожения пула.
+			// Защита батареи: если первый чек упал, ждем 15 секунд вместо жесткого спама раз в 2 секунды
 			if consecutiveFailures < 2 {
-				c.healthCheckTimer.Reset(2 * time.Second)
+				c.healthCheckTimer.Reset(15 * time.Second)
 				continue
 			}
-			// Если упал дважды подряд — транспорт действительно мёртв
 			_ = c.Close()
 			return
 		}
@@ -482,6 +475,8 @@ func (c *MultiplexClient) Close() error {
 func (c *MultiplexClient) getClient() (*Client, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	
+	// Фильтруем мертвые сессии
 	live := c.clients[:0]
 	for _, t := range c.clients {
 		if t.IsClosed() {
@@ -491,6 +486,7 @@ func (c *MultiplexClient) getClient() (*Client, error) {
 		live = append(live, t)
 	}
 	c.clients = live
+	
 	var transport *Client
 	for _, t := range c.clients {
 		if transport == nil || t.count.Load() < transport.count.Load() {
@@ -516,9 +512,8 @@ func (c *MultiplexClient) getClient() (*Client, error) {
 
 func (c *MultiplexClient) forceNewClient() (*Client, error) {
 	c.mutex.Lock()
-	withLock := c.newClientLocked
-	c.mutex.Unlock()
-	return withLock()
+	defer c.mutex.Unlock()
+	return c.newClientLocked()
 }
 
 func (c *MultiplexClient) newClientLocked() (*Client, error) {
