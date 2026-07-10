@@ -67,12 +67,110 @@ type Client struct {
 	serverString     string
 	auth             string
 	roundTripper     http.RoundTripper
+	session          *h2Session // не nil только для h2-транспорта
+	quicConnMu       sync.RWMutex
+	quicConn         *quic.Conn // не nil только для QUIC-транспорта, последний живой конн
 	startOnce        sync.Once
 	healthCheck      bool
 	healthCheckTimer *time.Timer
 	count            atomic.Int64
 	udpPaddingMin    int
 	udpPaddingMax    int
+}
+
+// h2Session — свой http2.ClientConnPool поверх ОДНОГО TCP+TLS соединения на
+// *Client (пул из нескольких соединений уже делает MultiplexClient уровнем
+// выше). Даёт то же, что h2mux в sing-mux: MarkDead() дёргается самим
+// http2.Transport, как только его собственный ReadIdleTimeout/PingTimeout
+// пинг решил, что коннект мёртв — без этого узнать о смерти можно было
+// только по ошибке следующего RoundTrip. IsClosed() читает уже посчитанное
+// состояние (ClientConn.State()) лениво, при выборе клиента в
+// MultiplexClient.getClient() — как offer() в sing-mux, не активным опросом.
+type h2Session struct {
+	transport *http2.Transport
+	server    M.Socksaddr
+	tlsDialer tls.Dialer
+
+	mu         sync.Mutex
+	clientConn *http2.ClientConn
+	dead       bool
+}
+
+func (s *h2Session) GetClientConn(req *http.Request, _ string) (*http2.ClientConn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clientConn != nil && !s.dead {
+		state := s.clientConn.State()
+		if !state.Closed && !state.Closing {
+			return s.clientConn, nil
+		}
+	}
+	conn, err := s.tlsDialer.DialContext(req.Context(), N.NetworkTCP, s.server)
+	if err != nil {
+		return nil, err
+	}
+	clientConn, err := s.transport.NewClientConn(conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	s.clientConn = clientConn
+	s.dead = false
+	return clientConn, nil
+}
+
+func (s *h2Session) MarkDead(conn *http2.ClientConn) {
+	s.mu.Lock()
+	if conn == s.clientConn {
+		s.dead = true
+	}
+	s.mu.Unlock()
+}
+
+func (s *h2Session) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clientConn == nil {
+		// Ещё ни разу не подключались — не "мёртв", а "не открывался".
+		return false
+	}
+	if s.dead {
+		return true
+	}
+	state := s.clientConn.State()
+	return state.Closed || state.Closing
+}
+
+// IsClosed сообщает, известно ли уже (без активного опроса — по внутреннему
+// состоянию, посчитанному самим транспортом), что этот *Client дохлый.
+// Используется MultiplexClient.getClient() для ленивой чистки пула перед
+// выбором, аналогично offer() в sing-mux.
+func (c *Client) IsClosed() bool {
+	select {
+	case <-c.ctx.Done():
+		return true
+	default:
+	}
+	if c.session != nil {
+		return c.session.isClosed()
+	}
+	c.quicConnMu.RLock()
+	conn := c.quicConn
+	c.quicConnMu.RUnlock()
+	if conn != nil {
+		select {
+		case <-conn.Context().Done():
+			return true
+		default:
+		}
+	}
+	return false
+}
+
+func (c *Client) setQUICConn(conn *quic.Conn) {
+	c.quicConnMu.Lock()
+	c.quicConn = conn
+	c.quicConnMu.Unlock()
 }
 
 func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
@@ -117,6 +215,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 					return nil, err
 				}
 				conn.SetCongestionControl(congestionControlFactory(conn))
+				client.setQUICConn(conn)
 				return conn, nil
 			},
 		}
@@ -124,11 +223,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		if len(options.TLSConfig.NextProtos()) == 0 {
 			options.TLSConfig.SetNextProtos([]string{http2.NextProtoTLS})
 		}
-		tlsDialer := tls.NewDialer(options.Dialer, options.TLSConfig)
-		client.roundTripper = &http2.Transport{
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *stdtls.Config) (net.Conn, error) {
-				return tlsDialer.DialContext(ctx, network, client.server)
-			},
+		transport := &http2.Transport{
 			AllowHTTP: true,
 			// Без этого http2.Transport не шлёт PING в простое соединения:
 			// на мобильной сети carrier NAT сам рвёт неактивный TCP-маппинг
@@ -146,6 +241,14 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			ReadIdleTimeout: DefaultHealthCheckTimeout,
 			PingTimeout:     DefaultSessionTimeout,
 		}
+		session := &h2Session{
+			transport: transport,
+			server:    client.server,
+			tlsDialer: tls.NewDialer(options.Dialer, options.TLSConfig),
+		}
+		transport.ConnPool = session
+		client.roundTripper = transport
+		client.session = session
 	}
 	return client, nil
 }
@@ -388,6 +491,19 @@ func (c *MultiplexClient) Close() error {
 func (c *MultiplexClient) getClient() (*Client, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	// Лениво чистим пул перед выбором — как offer() в sing-mux: транспорт
+	// сам уже мог узнать о своей смерти (MarkDead от http2.Transport, или
+	// закрытый QUIC-контекст) без единого нашего запроса на нём. Незачем
+	// ждать, пока это обнаружится через ошибку следующего Dial/ListenPacket.
+	live := c.clients[:0]
+	for _, t := range c.clients {
+		if t.IsClosed() {
+			_ = t.Close()
+			continue
+		}
+		live = append(live, t)
+	}
+	c.clients = live
 	var transport *Client
 	for _, t := range c.clients {
 		if transport == nil || t.count.Load() < transport.count.Load() {
