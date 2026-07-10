@@ -69,11 +69,7 @@ type Outbound struct {
 	outbound.Adapter
 	logger       logger.ContextLogger
 	dnsRouter    adapter.DNSRouter
-	ctx          context.Context
-	clientOpts   trusttunnel.ClientOptions
-	multiplex    bool
-	clientAccess sync.RWMutex
-	client       trusttunnel.Dialer
+	client       *trusttunnel.MultiplexClient
 	resolveMu    sync.Mutex
 	resolveCache map[string]resolveCacheEntry
 }
@@ -107,16 +103,27 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		UDPPaddingMin:     common.PtrValueOrDefault(options.UDPPaddingMin),
 		UDPPaddingMax:     common.PtrValueOrDefault(options.UDPPaddingMax),
 	}
-	var client trusttunnel.Dialer
-	multiplex := options.Multiplex != nil && options.Multiplex.Enabled
-	if multiplex {
-		clientOpts.MaxConnections = options.Multiplex.MaxConnections
-		clientOpts.MinStreams = options.Multiplex.MinStreams
-		clientOpts.MaxStreams = options.Multiplex.MaxStreams
-		client, err = trusttunnel.NewMultiplexClient(ctx, clientOpts)
-	} else {
-		client, err = trusttunnel.NewClient(ctx, clientOpts)
+	// Раньше без multiplex.enabled создавался голый *Client — у него нет
+	// самовосстановления: Close() убивает его насовсем, и любую сетевую
+	// проблему (см. InterfaceUpdated/roundTrip ниже) пришлось бы чинить
+	// вручную пересозданием объекта на уровне Outbound (лишний мьютекс и
+	// код, которого нет в hysteria2/tuic/ssh). MultiplexClient это умеет
+	// «из коробки»: Close() обнуляет пул, а следующий Dial/ListenPacket сам
+	// поднимает свежий *Client. Поэтому заводим MultiplexClient всегда;
+	// maxConnections=1 без явного multiplex.enabled сохраняет прежнее
+	// поведение (один транспорт, без пулинга соединений) — 0/0/0 включил
+	// бы в NewMultiplexClient дефолтный пул на 8 соединений, что было бы
+	// неожиданной сменой поведения для тех, кто multiplex не просил.
+	maxConnections, minStreams, maxStreams := 1, 0, 0
+	if options.Multiplex != nil && options.Multiplex.Enabled {
+		maxConnections = options.Multiplex.MaxConnections
+		minStreams = options.Multiplex.MinStreams
+		maxStreams = options.Multiplex.MaxStreams
 	}
+	clientOpts.MaxConnections = maxConnections
+	clientOpts.MinStreams = minStreams
+	clientOpts.MaxStreams = maxStreams
+	client, err := trusttunnel.NewMultiplexClient(ctx, clientOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -124,9 +131,6 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		Adapter:      outbound.NewAdapterWithDialerOptions(C.TypeTrustTunnel, tag, networkList, options.DialerOptions),
 		logger:       logger,
 		dnsRouter:    service.FromContext[adapter.DNSRouter](ctx),
-		ctx:          ctx,
-		clientOpts:   clientOpts,
-		multiplex:    multiplex,
 		client:       client,
 		resolveCache: make(map[string]resolveCacheEntry),
 	}, nil
@@ -167,26 +171,18 @@ func (h *Outbound) resolveDestination(ctx context.Context, destination M.Socksad
 	return resolved, nil
 }
 
-// getClient возвращает текущий транспортный клиент под RLock — конкурентно
-// с возможной подменой в InterfaceUpdated (см. ниже).
-func (h *Outbound) getClient() trusttunnel.Dialer {
-	h.clientAccess.RLock()
-	defer h.clientAccess.RUnlock()
-	return h.client
-}
-
 func (h *Outbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
 	switch N.NetworkName(network) {
 	case N.NetworkTCP:
 		h.logger.InfoContext(ctx, "outbound connection to ", destination)
-		return h.getClient().Dial(ctx, destination.String())
+		return h.client.Dial(ctx, destination.String())
 	case N.NetworkUDP:
 		h.logger.InfoContext(ctx, "outbound packet connection to ", destination)
 		resolved, err := h.resolveDestination(ctx, destination)
 		if err != nil {
 			return nil, err
 		}
-		conn, err := h.getClient().ListenPacket(ctx)
+		conn, err := h.client.ListenPacket(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +194,7 @@ func (h *Outbound) DialContext(ctx context.Context, network string, destination 
 
 func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
 	h.logger.InfoContext(ctx, "outbound packet connection to ", destination)
-	conn, err := h.getClient().ListenPacket(ctx)
+	conn, err := h.client.ListenPacket(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -206,49 +202,18 @@ func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 }
 
 // InterfaceUpdated вызывается роутером при смене дефолтного сетевого
-// интерфейса (Wi-Fi↔мобильная сеть, смена вышки с новым внешним IP и т.п.).
-// Старое HTTP/2- или QUIC-соединение после такой смены на мобильных сетях
-// почти всегда мертво (carrier NAT молча дропает маппинг, без RST/FIN), но
-// ни h2, ни сам транспорт узнаёт об этом не сразу — активный ping/health
-// check стоит батареи, а без него следующий Dial()/ListenPacket() завис бы
-// на нём вплоть до TCPTimeout (и до 2×TCPTimeout в MultiplexClient — сперва
-// таймаут на мёртвом клиенте, потом ещё раз на свежем, если ему тоже не
-// повезло с сетью в переходный момент).
-//
-// Событийная, а не polling-модель: реагируем только когда ОС/сетевой
-// монитор реально сообщил о смене интерфейса — никакого фонового трафика
-// или таймеров, расходующих батарею в простое.
+// интерфейса (Wi-Fi↔мобильная сеть, смена вышки с новым внешним IP и т.п.),
+// как и в hysteria2/hysteria/tuic/ssh outbound. Старое HTTP/2- или
+// QUIC-соединение после такой смены на мобильных сетях почти всегда мертво
+// (carrier NAT молча дропает маппинг, без RST/FIN), а h2/h3 сами узнают об
+// этом не сразу. MultiplexClient.Close() обнуляет пул, следующий
+// Dial()/ListenPacket() сам поднимет свежий транспорт — как и у остальных
+// протоколов, без ручного пересоздания объекта здесь.
 func (h *Outbound) InterfaceUpdated() {
-	h.clientAccess.Lock()
-	defer h.clientAccess.Unlock()
-	old := h.client
-	newClientOpts := h.clientOpts
-	var (
-		fresh trusttunnel.Dialer
-		err   error
-	)
-	if h.multiplex {
-		fresh, err = trusttunnel.NewMultiplexClient(h.ctx, newClientOpts)
-	} else {
-		fresh, err = trusttunnel.NewClient(h.ctx, newClientOpts)
-	}
-	if err != nil {
-		// Не даём смене интерфейса оставить outbound вовсе без клиента —
-		// лучше продолжить с потенциально мёртвым старым (следующий вызов
-		// сам обнаружит проблему через обычный таймаут), чем сломать outbound
-		// насовсем.
-		h.logger.Error("trusttunnel: rebuild client after interface update: ", err)
-		return
-	}
-	h.client = fresh
-	if old != nil {
-		go func() { _ = old.Close() }()
-	}
+	_ = h.client.Close()
 }
 
 func (h *Outbound) Close() error {
-	h.clientAccess.Lock()
-	defer h.clientAccess.Unlock()
 	return h.client.Close()
 }
 
