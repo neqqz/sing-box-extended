@@ -326,6 +326,16 @@ func (c *Client) loopHealthCheck() {
 			c.healthCheckTimer.Stop()
 			return
 		}
+		if c.count.Load() > 0 {
+			// На клиенте прямо сейчас есть живые стримы — это само по себе
+			// доказательство того, что соединение работает. Не гоняем
+			// отдельный CONNECT health-check, который на загруженном
+			// H2-соединении может ложно упереться в очередь за тем же
+			// потоком и словить фантомный таймаут, хотя данные реально идут.
+			consecutiveFailures = 0
+			c.healthCheckTimer.Reset(DefaultHealthCheckTimeout)
+			continue
+		}
 		ctx, cancel := context.WithTimeout(c.ctx, DefaultHealthCheckTimeout)
 		err := c.HealthCheck(ctx)
 		cancel()
@@ -356,8 +366,40 @@ func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
 	request.Body = pipeReader
 	*conn = httpConn{writer: pipeWriter, created: make(chan struct{})}
 	c.count.Add(1)
-	conn.closeFn = sync.OnceFunc(func() { c.count.Add(-1) })
-	ctx, cancel := context.WithCancel(c.ctx)
+	conn.closeFn = sync.OnceFunc(func() {
+		if c.count.Add(-1) == 0 {
+			// Клиент уже помечен мёртвым (health-check/getClient), но пока
+			// на нём были активные стримы, мы намеренно не рвали соединение
+			// (см. комментарий у cancel ниже). Как только последний стрим
+			// реально завершился — дожимаем: закрываем опустевшую
+			// TCP-сессию, иначе она повиснет открытой до серверного таймаута.
+			select {
+			case <-c.ctx.Done():
+				if closer, ok := c.roundTripper.(io.Closer); ok {
+					_ = closer.Close()
+				}
+				if t, ok := c.roundTripper.(*http2.Transport); ok {
+					t.CloseIdleConnections()
+				}
+			default:
+			}
+		}
+	})
+	// ВАЖНО: контекст запроса намеренно НЕ наследуется от c.ctx.
+	// Раньше было ctx, cancel := context.WithCancel(c.ctx) — из-за этого
+	// c.cancel() (вызывается из c.Close(), в т.ч. из loopHealthCheck при
+	// двух неудачных health-check'ах подряд) мгновенно отменял контексты
+	// ВСЕХ активных мультиплексированных стримов на этом h2-соединении
+	// разом, даже полностью живых, которые просто не успели ответить на
+	// собственный health-check из-за конкуренции за то же H2-соединение.
+	// Именно это выглядело как "отваливающийся http2": пачка не связанных
+	// между собой стримов к разным хостам падала с context canceled в один
+	// и тот же момент. Теперь у запроса свой независимый контекст с
+	// единственным источником отмены — вызывающая сторона (conn.Close())
+	// и жёсткий таймаут ниже. Смерть/переиспользование Client'а на уровне
+	// пула по-прежнему решается через IsHardClosed()/getClient() и влияет
+	// только на маршрутизацию НОВЫХ стримов, а не на уже открытые.
+	ctx, cancel := context.WithCancel(context.Background())
 	conn.cancelFn = cancel
 	go func() {
 		hardTimeout := time.AfterFunc(C.TCPTimeout, cancel)
