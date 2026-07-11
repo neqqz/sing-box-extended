@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/sagernet/quic-go"
@@ -422,12 +423,31 @@ func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, erro
 	if err == nil {
 		return conn, nil
 	}
-	c.removeClient(primary)
+	if isNetworkUnreachable(err) {
+		// Интерфейс, к которому привязан весь пул (auto_detect_interface),
+		// на момент дозвона ещё не поднял маршрут (типичный "моргнувший"
+		// хендовер вышки/включение мобильных данных). Остальные клиенты в
+		// пуле почти наверняка привязаны к тому же мёртвому интерфейсу и
+		// провалятся так же — сбрасываем пул целиком сразу, вместо того
+		// чтобы дать десяткам параллельных запросов повиснуть каждому на
+		// собственные до 30с (DefaultSessionTimeout) до истечения их
+		// родительского контекста.
+		_ = c.Close()
+	} else {
+		c.removeClient(primary)
+	}
 	fresh, freshErr := c.forceNewClient()
 	if freshErr != nil {
 		return nil, err
 	}
 	return fresh.Dial(ctx, host)
+}
+
+// isNetworkUnreachable распознаёт ENETUNREACH/EHOSTUNREACH — признак того,
+// что проблема не в конкретном соединении, а в самом сетевом интерфейсе,
+// к которому мы сейчас привязаны.
+func isNetworkUnreachable(err error) bool {
+	return errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 
 func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, error) {
@@ -439,7 +459,11 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 	if err == nil {
 		return conn, nil
 	}
-	c.removeClient(primary)
+	if isNetworkUnreachable(err) {
+		_ = c.Close()
+	} else {
+		c.removeClient(primary)
+	}
 	fresh, freshErr := c.forceNewClient()
 	if freshErr != nil {
 		return nil, err
