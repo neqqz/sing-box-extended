@@ -310,7 +310,16 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, handler http.Handler) {
 }
 
 func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
-	ctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
+	// ВАЖНО: раньше здесь стояло 10*time.Second — короче, чем клиентский
+	// C.TCPTimeout (15s), которым клиент ограничивает весь дозвон целиком
+	// (TCP+TLS+первый ответ). На стабильной сети разницы не видно, но на
+	// мобильной, где TLS-хендшейку иногда честно нужно 10-14s из-за
+	// ретрансмитов (RTO 1s→2s→4s→8s при потере пары пакетов), СЕРВЕР
+	// обрывал ещё живой, но чуть медленный хендшейк раньше, чем клиент
+	// вообще решил бы сдаться — то есть сервер сам создавал часть тех
+	// "context canceled"/"operation was canceled" на клиенте, которые
+	// выглядели как проблема клиента. 20s даёт запас сверх клиентских 15s.
+	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Second)
 	defer cancel()
 	tlsConn, err := tls.ServerHandshake(ctx, rawConn, h.httpTLSConfig)
 	if err != nil {
