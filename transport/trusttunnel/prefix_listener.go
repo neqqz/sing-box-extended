@@ -44,6 +44,7 @@ type PrefixListener struct {
 	mask         []byte
 	fallback     string // static "host:port" fallback, used when SNI can't be extracted
 	fallbackPort string // port to pair with the extracted SNI when dialing
+	ownPort      string // our own listening port, used to detect self-loops
 	logger       logger.ContextLogger
 }
 
@@ -79,12 +80,19 @@ func NewPrefixListener(inner net.Listener, raw string, fallback string, log logg
 			fallbackPort = port
 		}
 	}
+	ownPort := ""
+	if addr := inner.Addr(); addr != nil {
+		if _, port, splitErr := net.SplitHostPort(addr.String()); splitErr == nil {
+			ownPort = port
+		}
+	}
 	return &PrefixListener{
 		Listener:     inner,
 		prefix:       prefix,
 		mask:         mask,
 		fallback:     fallback,
 		fallbackPort: fallbackPort,
+		ownPort:      ownPort,
 		logger:       log,
 	}, nil
 }
@@ -173,6 +181,10 @@ func (l *PrefixListener) relayToFallback(conn net.Conn, peeked []byte) {
 	if target == "" {
 		return
 	}
+	if l.isSelfLoop(target) {
+		l.logger.Error("trusttunnel inbound: fallback target ", target, " resolves back to this server, refusing to avoid a proxy loop")
+		return
+	}
 
 	upstream, err := net.DialTimeout("tcp", target, fallbackDialTimeout)
 	if err != nil {
@@ -236,6 +248,39 @@ func (l *PrefixListener) captureClientHelloSNI(conn net.Conn, already []byte) ([
 	}).HandshakeContext(ctx)
 
 	return captured.Bytes(), sni
+}
+
+// isSelfLoop reports whether target resolves to this same machine on the
+// same port we're listening on — dialing it would just re-enter our own
+// Accept() loop with the same unmatched ClientHello, looping forever and
+// exhausting sockets/goroutines. Checked by port first (cheap), then by
+// resolving the host and comparing against this machine's own interface
+// addresses.
+func (l *PrefixListener) isSelfLoop(target string) bool {
+	host, port, err := net.SplitHostPort(target)
+	if err != nil || l.ownPort == "" || port != l.ownPort {
+		return false
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
+	if err != nil {
+		return false
+	}
+	localAddrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, ip := range ips {
+		if ip.IP.IsLoopback() {
+			return true
+		}
+		for _, localAddr := range localAddrs {
+			ipNet, ok := localAddr.(*net.IPNet)
+			if ok && ipNet.IP.Equal(ip.IP) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // peekedConn replays the bytes we already read back to subsequent Read calls,
