@@ -8,11 +8,10 @@ type TrustTunnelInboundOptions struct {
 	CongestionController string            `json:"congestion_controller,omitempty"`
 	CWND                 int               `json:"cwnd,omitempty"`
 	ClientRandomPrefix   string            `json:"client_random_prefix,omitempty"`
-	// FallbackServer — при неверном/отсутствующем client_random_prefix (сканер,
-	// активный зонд ТСПУ) вместо разрыва TCP-соединения сырые байты прозрачно
-	// проксируются на этот адрес (обычно — тот же домен, что в allowed_sni),
-	// так что снаружи сервер неотличим от настоящего сайта даже при активном
-	// пробинге, а не только при пассивном прослушивании. Формат: "host:port".
+	// FallbackServer — если задан, при неверном/отсутствующем client_random_prefix
+	// (сканер, активный зонд) сырые байты проксируются на него, а не рвутся,
+	// когда SNI из ClientHello извлечь не удалось (см. transport/trusttunnel/prefix_listener.go —
+	// по умолчанию используется сам этот SNI, а FallbackServer лишь запасной вариант). Формат: "host:port".
 	FallbackServer       string            `json:"fallback_server,omitempty"`
 	AllowedSNI           []string          `json:"allowed_sni,omitempty"`
 	UDPPaddingMin        *int              `json:"udp_padding_min,omitempty"`
