@@ -228,7 +228,7 @@ func (l *PrefixListener) captureClientHelloSNI(conn net.Conn, already []byte) ([
 	defer cancel()
 
 	var sni string
-	_, _ = tls.Server(bufio.NewReadOnlyConn(reader), &tls.Config{
+	_ = tls.Server(bufio.NewReadOnlyConn(reader), &tls.Config{
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			sni = hello.ServerName
 			return nil, nil
