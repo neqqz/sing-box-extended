@@ -241,6 +241,25 @@ func (c *Client) setQUICConn(conn *quic.Conn) {
 	c.quicConnMu.Unlock()
 }
 
+// EverConnected reports whether this Client ever managed to establish a
+// working underlying connection (h2 ClientConn / QUIC conn) at least once,
+// as opposed to having failed on its very first dial. Used by
+// MultiplexClient to decide whether a retry-on-fresh-client is worth the
+// extra full timeout: if we never connected even once, the server/network
+// path itself is almost certainly the problem, and dialing yet another fresh
+// client at the same destination over the same broken path will just burn a
+// second full C.TCPTimeout for an identical failure.
+func (c *Client) EverConnected() bool {
+	if c.session != nil {
+		c.session.mu.Lock()
+		defer c.session.mu.Unlock()
+		return c.session.clientConn != nil
+	}
+	c.quicConnMu.RLock()
+	defer c.quicConnMu.RUnlock()
+	return c.quicConn != nil
+}
+
 func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	client := &Client{
@@ -533,7 +552,19 @@ func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, erro
 	// мертвы — их убьёт (и корректно вычистит) getClient()/health-check
 	// сам, если интерфейс действительно лёг. Поэтому здесь трогаем только
 	// тот единственный клиент, на котором произошёл сбой.
+	everConnected := primary.EverConnected()
 	c.removeClient(primary)
+	if !everConnected {
+		// primary ни разу не смог даже установить соединение (первый же
+		// дозвон до сервера сдох по таймауту/сети) — сервер или путь до
+		// него сейчас попросту недоступны. Ретраить на СВЕЖЕМ клиенте к
+		// ТОЙ ЖЕ дестинации по той же дохлой сети — это гарантированно
+		// ещё один полный C.TCPTimeout ради идентичного результата
+		// (именно так 15s превращались в наблюдаемые 30s на каждый
+		// стрим). Отдаём ошибку сразу — вызывающая сторона (роутер,
+		// urltest-селектор, сам клиент-приложение) отреагирует быстрее.
+		return nil, err
+	}
 	fresh, freshErr := c.forceNewClient()
 	if freshErr != nil {
 		return nil, err
@@ -551,8 +582,14 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 		return conn, nil
 	}
 	// See the comment in Dial: never nuke the whole pool over a single
-	// failed dial — only the client that actually failed is affected.
+	// failed dial — only the client that actually failed is affected, and
+	// we skip the fresh-client retry entirely if this client never had a
+	// working connection to begin with (see EverConnected).
+	everConnected := primary.EverConnected()
 	c.removeClient(primary)
+	if !everConnected {
+		return nil, err
+	}
 	fresh, freshErr := c.forceNewClient()
 	if freshErr != nil {
 		return nil, err
