@@ -193,9 +193,6 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			return err
 		}
 		// TCP: pre-TLS peek, проверяем bytes[11:43] ClientHello.Random до хендшейка.
-		// При несовпадении маркера — если задан fallback_server, соединение
-		// прозрачно проксируется на реальный сайт вместо разрыва (устойчивость
-		// к активному пробингу, см. FallbackServer в option/trusttunnel.go).
 		checkedListener, err := trusttunnel.NewPrefixListener(rawListener, h.options.ClientRandomPrefix, h.options.FallbackServer, h.logger)
 		if err != nil {
 			return err
