@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/sagernet/quic-go"
@@ -142,17 +141,39 @@ func (s *h2Session) MarkDead(conn *http2.ClientConn) {
 	s.mu.Unlock()
 }
 
-func (s *h2Session) isClosed() bool {
+// status возвращает (hardClosed, draining) для текущего clientConn.
+// hardClosed — соединение реально мертво (transport.MarkDead его отбраковал,
+// либо http2 сообщает state.Closed): активные стримы на нём уже ни на что
+// не годны, их контекст можно смело отменять.
+// draining — получен GOAWAY, http2.ClientConn в state.Closing: НЕ новых
+// стримов, но уже открытые стримы по спецификации HTTP/2 должны доиграть
+// до конца. Это не то же самое, что "мертво".
+func (s *h2Session) status() (hardClosed, draining bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.clientConn == nil {
-		return false
+		return false, false
 	}
 	if s.dead {
-		return true
+		return true, false
 	}
 	state := s.clientConn.State()
-	return state.Closed || state.Closing
+	return state.Closed, state.Closing
+}
+
+func (s *h2Session) isClosed() bool {
+	hardClosed, draining := s.status()
+	return hardClosed || draining
+}
+
+func (s *h2Session) isHardClosed() bool {
+	hardClosed, _ := s.status()
+	return hardClosed
+}
+
+func (s *h2Session) isDraining() bool {
+	_, draining := s.status()
+	return draining
 }
 
 func (c *Client) IsClosed() bool {
@@ -173,6 +194,43 @@ func (c *Client) IsClosed() bool {
 			return true
 		default:
 		}
+	}
+	return false
+}
+
+// IsHardClosed reports whether the underlying connection is genuinely dead
+// (unusable even for streams already in flight), as opposed to merely
+// draining after a graceful GOAWAY. Only hard-dead clients should have their
+// context canceled — canceling a draining client's context kills every
+// active multiplexed stream on it even though HTTP/2 promises those streams
+// may run to completion.
+func (c *Client) IsHardClosed() bool {
+	select {
+	case <-c.ctx.Done():
+		return true
+	default:
+	}
+	if c.session != nil {
+		return c.session.isHardClosed()
+	}
+	c.quicConnMu.RLock()
+	conn := c.quicConn
+	c.quicConnMu.RUnlock()
+	if conn != nil {
+		select {
+		case <-conn.Context().Done():
+			return true
+		default:
+		}
+	}
+	return false
+}
+
+// IsDraining reports whether the client is in a graceful GOAWAY drain: no
+// new streams should be routed to it, but existing streams are left alone.
+func (c *Client) IsDraining() bool {
+	if c.session != nil {
+		return c.session.isDraining()
 	}
 	return false
 }
@@ -423,31 +481,22 @@ func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, erro
 	if err == nil {
 		return conn, nil
 	}
-	if isNetworkUnreachable(err) {
-		// Интерфейс, к которому привязан весь пул (auto_detect_interface),
-		// на момент дозвона ещё не поднял маршрут (типичный "моргнувший"
-		// хендовер вышки/включение мобильных данных). Остальные клиенты в
-		// пуле почти наверняка привязаны к тому же мёртвому интерфейсу и
-		// провалятся так же — сбрасываем пул целиком сразу, вместо того
-		// чтобы дать десяткам параллельных запросов повиснуть каждому на
-		// собственные до 30с (DefaultSessionTimeout) до истечения их
-		// родительского контекста.
-		_ = c.Close()
-	} else {
-		c.removeClient(primary)
-	}
+	// ВАЖНО: раньше isNetworkUnreachable(err) (ENETUNREACH/EHOSTUNREACH —
+	// типичный "моргнувший" хендовер вышки/включение мобильных данных на
+	// клиенте с auto_detect_interface) сбрасывал ВЕСЬ пул (c.Close()),
+	// отменяя контекст каждого Client'а в пуле и тем самым разом обрывая
+	// все туннели, которые в этот момент активно передавали данные через
+	// другие, полностью исправные соединения пула. Один неудачный дозвон
+	// нового стрима не означает, что уже установленные соединения тоже
+	// мертвы — их убьёт (и корректно вычистит) getClient()/health-check
+	// сам, если интерфейс действительно лёг. Поэтому здесь трогаем только
+	// тот единственный клиент, на котором произошёл сбой.
+	c.removeClient(primary)
 	fresh, freshErr := c.forceNewClient()
 	if freshErr != nil {
 		return nil, err
 	}
 	return fresh.Dial(ctx, host)
-}
-
-// isNetworkUnreachable распознаёт ENETUNREACH/EHOSTUNREACH — признак того,
-// что проблема не в конкретном соединении, а в самом сетевом интерфейсе,
-// к которому мы сейчас привязаны.
-func isNetworkUnreachable(err error) bool {
-	return errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 
 func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, error) {
@@ -459,11 +508,9 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 	if err == nil {
 		return conn, nil
 	}
-	if isNetworkUnreachable(err) {
-		_ = c.Close()
-	} else {
-		c.removeClient(primary)
-	}
+	// See the comment in Dial: never nuke the whole pool over a single
+	// failed dial — only the client that actually failed is affected.
+	c.removeClient(primary)
 	fresh, freshErr := c.forceNewClient()
 	if freshErr != nil {
 		return nil, err
@@ -499,20 +546,33 @@ func (c *MultiplexClient) Close() error {
 func (c *MultiplexClient) getClient() (*Client, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	
-	// Фильтруем мертвые сессии
+
+	// Вычищаем только по-настоящему мёртвые сессии (IsHardClosed). Сессию в
+	// состоянии graceful GOAWAY-дрейна (IsDraining, но не hard-closed) не
+	// трогаем и не отменяем её контекст здесь — на ней могут быть активные
+	// мультиплексированные стримы, которым HTTP/2 обещал доиграть до конца;
+	// раньше это место било IsClosed() (Closed || Closing) и убивало такую
+	// сессию целиком при любом обычном GOAWAY/idle-таймауте сервера, разом
+	// обрывая все её активные туннели — именно это и выглядело как "вечно
+	// отваливающийся" http2-транспорт.
 	live := c.clients[:0]
 	for _, t := range c.clients {
-		if t.IsClosed() {
+		if t.IsHardClosed() {
 			_ = t.Close()
 			continue
 		}
 		live = append(live, t)
 	}
 	c.clients = live
-	
+
 	var transport *Client
 	for _, t := range c.clients {
+		if t.IsDraining() {
+			// Дренящаяся сессия не годится для НОВЫХ стримов, но остаётся
+			// в пуле нетронутой, пока не станет hard-closed или не опустеет
+			// (тогда её приберёт pruneIdleClients/следующий проход выше).
+			continue
+		}
 		if transport == nil || t.count.Load() < transport.count.Load() {
 			transport = t
 		}
