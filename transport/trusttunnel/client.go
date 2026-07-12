@@ -96,6 +96,12 @@ type h2Session struct {
 	mu         sync.Mutex
 	clientConn *http2.ClientConn
 	dead       bool
+	// probing защищает от одновременного запуска нескольких активных
+	// зондов (Ping) на один и тот же clientConn — когда сразу несколько
+	// стримов синхронно упираются в собственный hardTimeout на одной и
+	// той же зомби-сессии (см. probeIfSuspect), не шлём PING на каждый
+	// из них, достаточно одного.
+	probing atomic.Bool
 	// dialMu — канал-мьютекс вместо sync.Mutex по той же причине, что и
 	// MultiplexClient.mu (см. комментарий там): обычный sync.Mutex.Lock()
 	// ничем не ограничен по времени. Пока один стрим реально дозванивается
@@ -199,6 +205,41 @@ func (s *h2Session) MarkDead(conn *http2.ClientConn) {
 		s.dead = true
 	}
 	s.mu.Unlock()
+}
+
+// probeIfSuspect реактивно проверяет живость ТЕКУЩЕГО clientConn, когда
+// стрим уже упал по СВОЕМУ собственному hardTimeout (C.TCPTimeout) на уже
+// установленной сессии — то есть GetClientConn отдал вроде бы живое
+// соединение (State() не Closed/Closing), но сервер за 15s не ответил ни
+// байтом. Без этого зонда единственный способ узнать, что путь на самом
+// деле тихо сдох (мобильный NAT молча уронил маппинг, пакеты уходят в
+// пустоту без RST/FIN) — встроенный ReadIdleTimeout/PingTimeout у
+// http2.Transport (90s+15s набегает), и всё это время КАЖДЫЙ новый стрим,
+// которому не повезёт получить именно эту сессию, будет так же вслепую
+// жечь свои 15s и падать с тем же "context canceled" — именно это и видно
+// в логе как серия падений на дозвон/чтение с одним и тем же сервером.
+// Проверяем СРАЗУ по первому такому отказу, не дожидаясь фонового пинга —
+// и если сессия правда мертва, немедленно метим её MarkDead, чтобы пул
+// перестал отдавать её новым стримам.
+func (s *h2Session) probeIfSuspect() {
+	s.mu.Lock()
+	conn := s.clientConn
+	dead := s.dead
+	s.mu.Unlock()
+	if conn == nil || dead {
+		return
+	}
+	if !s.probing.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer s.probing.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := conn.Ping(ctx); err != nil {
+			s.MarkDead(conn)
+		}
+	}()
 }
 
 // status возвращает (hardClosed, draining) для текущего clientConn.
@@ -496,7 +537,15 @@ func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	conn.cancelFn = cancel
 	go func() {
-		hardTimeout := time.AfterFunc(C.TCPTimeout, cancel)
+		// timedOut отличает срабатывание НАШЕГО hardTimeout (подозрение,
+		// что путь тихо сдох) от обычной отмены вызывающей стороной
+		// (conn.Close() — штатное закрытие, ни о чём не говорит о
+		// здоровье соединения). Проверяем сессию только в первом случае.
+		var timedOut atomic.Bool
+		hardTimeout := time.AfterFunc(C.TCPTimeout, func() {
+			timedOut.Store(true)
+			cancel()
+		})
 		defer hardTimeout.Stop()
 		request = request.WithContext(ctx)
 		response, err := c.roundTripper.RoundTrip(request)
@@ -504,6 +553,9 @@ func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
 			_ = pipeWriter.CloseWithError(err)
 			_ = pipeReader.CloseWithError(err)
 			conn.setup(nil, err)
+			if timedOut.Load() && c.session != nil {
+				c.session.probeIfSuspect()
+			}
 		} else if response.StatusCode != http.StatusOK {
 			_ = response.Body.Close()
 			err = fmt.Errorf("unexpected status code: %d", response.StatusCode)
