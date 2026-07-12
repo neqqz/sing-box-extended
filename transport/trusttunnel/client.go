@@ -82,6 +82,16 @@ type h2Session struct {
 	transport *http2.Transport
 	server    M.Socksaddr
 	tlsDialer tls.Dialer
+	// ctx — контекст владеющего Client'а (не запроса). Нужен ТОЛЬКО чтобы
+	// оборвать зависший дозвон нового соединения (см. ниже в
+	// GetClientConn), когда Close()/InterfaceUpdated() уже знают, что путь
+	// сдох (смена интерфейса на мобильной сети — хендовер вышки,
+	// rmnet-интерфейс пересоздан и т.п.), а сам дозвон слушает только
+	// req.Context() и без этого ждал бы полный C.TCPTimeout вслепую. На
+	// уже установленные стримы это НЕ влияет: у них свой независимый
+	// контекст (см. комментарий в roundTrip), этот ctx used только вокруг
+	// самого TCP/TLS dial.
+	ctx context.Context
 
 	mu         sync.Mutex
 	clientConn *http2.ClientConn
@@ -115,7 +125,24 @@ func (s *h2Session) GetClientConn(req *http.Request, _ string) (*http2.ClientCon
 	}
 	s.mu.Unlock()
 
-	conn, err := s.tlsDialer.DialContext(req.Context(), N.NetworkTCP, s.server)
+	// Дозвон слушает req.Context() (свой таймаут стрима) И s.ctx (ctx
+	// владеющего Client'а). Раньше слушался только первый: если во время
+	// зависшего TCP/TLS-дозвона происходил реальный Close()/
+	// InterfaceUpdated() (интерфейс сменился, старый путь гарантированно
+	// мёртв), дозвон об этом не узнавал и висел до полного C.TCPTimeout —
+	// а за это время в очередь на этот же дозвон (dialMu) успевали
+	// встать остальные стримы, которые все разом падали с "context
+	// canceled/operation was canceled" по истечении СВОЕГО таймаута. Это
+	// и есть волнообразные обрывы http2-пути при смене сети на мобильных
+	// клиентах. Обрыв по s.ctx сразу освобождает dialMu и даёт следующему
+	// стриму немедленно поднять новый дозвон вместо ожидания вслепую.
+	dialCtx, dialCancel := context.WithCancel(req.Context())
+	if s.ctx != nil {
+		stop := context.AfterFunc(s.ctx, dialCancel)
+		defer stop()
+	}
+	conn, err := s.tlsDialer.DialContext(dialCtx, N.NetworkTCP, s.server)
+	dialCancel()
 	if err != nil {
 		return nil, err
 	}
@@ -334,6 +361,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			transport: transport,
 			server:    client.server,
 			tlsDialer: tls.NewDialer(options.Dialer, options.TLSConfig),
+			ctx:       ctx,
 		}
 		transport.ConnPool = session
 		client.roundTripper = transport
