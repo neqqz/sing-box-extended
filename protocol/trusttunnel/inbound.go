@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -119,7 +120,26 @@ type Inbound struct {
 	network        []string
 	randomPrefix   []byte
 	randomMask     []byte
+	// handshakeSem ограничивает число ОДНОВРЕМЕННО выполняемых TLS
+	// handshake'ов. Раньше go h.serveConn(...) запускался без всякого
+	// лимита — при burst'е из сотни+ соединений сразу (типичный триггер:
+	// рестарт сервера или клиента, когда весь пул переподключается разом)
+	// все эти горутины одновременно грызли CPU на RSA/ECDHE, и часть из
+	// них честно не укладывалась в дедлайн просто из-за нехватки CPU-time
+	// на всех разом — сколько дедлайн ни повышай, при настоящей перегрузке
+	// это лечит симптом, а не причину. Семафор превращает "все дерутся за
+	// CPU одновременно и часть проигрывает по таймауту" в "обрабатываем
+	// по очереди с полной отдачей CPU каждому" — суммарно burst
+	// прожёвывается быстрее и с кратно меньшим числом реальных отказов.
+	handshakeSem chan struct{}
 }
+
+// DefaultMaxConcurrentHandshakes — сколько TLS handshake'ов обрабатываем
+// одновременно. RSA/ECDHE handshake CPU-bound, поэтому лимит держим
+// в районе числа ядер, а не по числу соединений — иначе просто
+// переносим ту же перегрузку с "конкуренция за CPU" на "конкуренция за
+// семафор" без выигрыша.
+var DefaultMaxConcurrentHandshakes = max(runtime.NumCPU()*4, 16)
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrustTunnelInboundOptions) (adapter.Inbound, error) {
 	if options.TLS == nil || !options.TLS.Enabled {
@@ -147,6 +167,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		}),
 		randomPrefix: prefix,
 		randomMask:   mask,
+		handshakeSem: make(chan struct{}, DefaultMaxConcurrentHandshakes),
 	}
 	service := trusttunnel.NewService(trusttunnel.ServiceOptions{
 		Ctx:           ctx,
@@ -321,6 +342,18 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 	// выглядели как проблема клиента. 20s даёт запас сверх клиентских 15s.
 	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Second)
 	defer cancel()
+	// Ждём слот в семафоре, но не дольше того же общего дедлайна — если
+	// burst настолько большой, что мы не успеваем добраться до хендшейка
+	// даже за 20s, честно отдаём ту же ошибку, что вызывающий уже привык
+	// видеть, вместо того чтобы копить неограниченную очередь горутин.
+	select {
+	case h.handshakeSem <- struct{}{}:
+		defer func() { <-h.handshakeSem }()
+	case <-ctx.Done():
+		_ = rawConn.Close()
+		h.logger.Debug("trusttunnel: TLS handshake failed: ", ctx.Err())
+		return
+	}
 	tlsConn, err := tls.ServerHandshake(ctx, rawConn, h.httpTLSConfig)
 	if err != nil {
 		h.logger.Debug("trusttunnel: TLS handshake failed: ", err)
