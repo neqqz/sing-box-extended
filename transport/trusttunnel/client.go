@@ -515,13 +515,45 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 }
 
 type MultiplexClient struct {
-	mutex          sync.Mutex
+	// ВАЖНО: раньше здесь был sync.Mutex, и getClient()/forceNewClient()
+	// держали его на ВСЁ время реального сетевого дозвона внутри
+	// newClientLocked() -> NewClient() (DNS+TCP+TLS, до нескольких секунд
+	// на деградировавшей мобильной сети). Проблема не в самой сериализации
+	// дозвонов (она даже полезна — не долбим сеть параллельными
+	// хендшейками), а в том, что sync.Mutex.Lock() ничем не ограничен: если
+	// один вызов Dial() уже дозванивается, все остальные, вставшие в
+	// очередь за мьютексом, ждали БЕЗ ТАЙМАУТА и без учёта их собственного
+	// ctx — этот простой в очереди вообще не считался ни в C.TCPTimeout, ни
+	// в серверный 20s-дедлайн (те начинали тикать только ПОСЛЕ получения
+	// мьютекса). Именно поэтому предыдущие правки таймаутов не до конца
+	// снимали burst сразу после рестарта: пока сеть ещё не разогналась
+	// после холодного старта (характерная для сотовой связи задержка
+	// перехода из RRC-idle в connected), первый дозвон мог тянуться, а все
+	// остальные стримы копились в очереди сверх любых наших таймаутов.
+	// Канал-мьютекс даёт то же самое взаимоисключение, но ожидание можно
+	// прервать по ctx вызывающего — стрим отваливается по СВОЕМУ таймауту,
+	// а не висит неопределённо долго за чужой спиной.
+	mu             chan struct{}
 	maxConnections int
 	minStreams     int
 	maxStreams     int
 	ctx            context.Context
 	options        ClientOptions
 	clients        []*Client
+}
+
+// lock ждёт свободный слот мьютекса, но не дольше, чем жив переданный ctx.
+func (c *MultiplexClient) lock(ctx context.Context) error {
+	select {
+	case c.mu <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *MultiplexClient) unlock() {
+	<-c.mu
 }
 
 func NewMultiplexClient(ctx context.Context, options ClientOptions) (*MultiplexClient, error) {
@@ -537,6 +569,7 @@ func NewMultiplexClient(ctx context.Context, options ClientOptions) (*MultiplexC
 		return nil, err
 	}
 	mc := &MultiplexClient{
+		mu:             make(chan struct{}, 1),
 		maxConnections: maxConnections,
 		minStreams:     minStreams,
 		maxStreams:     maxStreams,
@@ -566,15 +599,17 @@ func (c *MultiplexClient) idleReaperLoop() {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
-			c.mutex.Lock()
+			if err := c.lock(c.ctx); err != nil {
+				return
+			}
 			c.clients = pruneIdleClients(c.clients)
-			c.mutex.Unlock()
+			c.unlock()
 		}
 	}
 }
 
 func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, error) {
-	primary, err := c.getClient()
+	primary, err := c.getClient(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -605,7 +640,7 @@ func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, erro
 		// urltest-селектор, сам клиент-приложение) отреагирует быстрее.
 		return nil, err
 	}
-	fresh, freshErr := c.forceNewClient()
+	fresh, freshErr := c.forceNewClient(ctx)
 	if freshErr != nil {
 		return nil, err
 	}
@@ -613,7 +648,7 @@ func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, erro
 }
 
 func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, error) {
-	primary, err := c.getClient()
+	primary, err := c.getClient(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -630,7 +665,7 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 	if !everConnected {
 		return nil, err
 	}
-	fresh, freshErr := c.forceNewClient()
+	fresh, freshErr := c.forceNewClient(ctx)
 	if freshErr != nil {
 		return nil, err
 	}
@@ -638,20 +673,25 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 }
 
 func (c *MultiplexClient) removeClient(dead *Client) {
-	c.mutex.Lock()
+	_ = c.lock(context.Background())
 	for i, t := range c.clients {
 		if t == dead {
 			c.clients = append(c.clients[:i], c.clients[i+1:]...)
 			break
 		}
 	}
-	c.mutex.Unlock()
+	c.unlock()
 	_ = dead.Close()
 }
 
 func (c *MultiplexClient) Close() error {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	// Здесь намеренно context.Background(), а не c.ctx: Close() обычно
+	// вызывается КАК РАЗ когда c.ctx уже отменён (штатный шатдаун), и если
+	// бы ожидание лока было завязано на уже мёртвый ctx, Close() тут же
+	// вернул бы ошибку, ничего не закрыв. Закрытие — не пользовательский
+	// запрос с дедлайном, ему можно и подождать реальной освобождения лока.
+	_ = c.lock(context.Background())
+	defer c.unlock()
 	var errs []error
 	for _, t := range c.clients {
 		if err := t.Close(); err != nil {
@@ -662,9 +702,11 @@ func (c *MultiplexClient) Close() error {
 	return errors.Join(errs...)
 }
 
-func (c *MultiplexClient) getClient() (*Client, error) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+func (c *MultiplexClient) getClient(ctx context.Context) (*Client, error) {
+	if err := c.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer c.unlock()
 
 	// Вычищаем только по-настоящему мёртвые сессии (IsHardClosed). Сессию в
 	// состоянии graceful GOAWAY-дрейна (IsDraining, но не hard-closed) не
@@ -713,9 +755,11 @@ func (c *MultiplexClient) getClient() (*Client, error) {
 	return c.newClientLocked()
 }
 
-func (c *MultiplexClient) forceNewClient() (*Client, error) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+func (c *MultiplexClient) forceNewClient(ctx context.Context) (*Client, error) {
+	if err := c.lock(ctx); err != nil {
+		return nil, err
+	}
+	defer c.unlock()
 	return c.newClientLocked()
 }
 
