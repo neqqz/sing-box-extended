@@ -96,7 +96,38 @@ type h2Session struct {
 	mu         sync.Mutex
 	clientConn *http2.ClientConn
 	dead       bool
-	dialMu     sync.Mutex 
+	// dialMu — канал-мьютекс вместо sync.Mutex по той же причине, что и
+	// MultiplexClient.mu (см. комментарий там): обычный sync.Mutex.Lock()
+	// ничем не ограничен по времени. Пока один стрим реально дозванивается
+	// (до C.TCPTimeout), остальные конкурентные стримы того же
+	// h2Session вставали в очередь на dialMu и ждали БЕЗ учёта СВОЕГО
+	// собственного req.Context() — это ожидание в очереди не считалось ни
+	// в C.TCPTimeout, ни в серверный дедлайн, оба тикали только с момента
+	// реального захвата мьютекса. В результате к тому моменту, когда
+	// стрим наконец получал dialMu, его собственный таймаут зачастую уже
+	// истёк, и он тут же валился с "operation was canceled", даже не
+	// начав дозвон — именно это давало наблюдаемую лавину обрывов http2
+	// (разброс от долей секунды до 18+s с начала стрима при
+	// C.TCPTimeout=15s) и по цепочке RST_STREAM(CANCEL) на сервере на
+	// едва открытые стримы. Канал даёт то же взаимоисключение, но
+	// ожидание прерывается по req.Context() вызывающего стрима: если
+	// стрим не дождался своей очереди на дозвон, он не тратит время
+	// впустую и не пытается дозвониться с уже просроченным бюджетом.
+	dialMu chan struct{}
+}
+
+// lockDial ждёт свободный слот на дозвон, но не дольше, чем жив ctx.
+func (s *h2Session) lockDial(ctx context.Context) error {
+	select {
+	case s.dialMu <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *h2Session) unlockDial() {
+	<-s.dialMu
 }
 
 func (s *h2Session) GetClientConn(req *http.Request, _ string) (*http2.ClientConn, error) {
@@ -111,8 +142,10 @@ func (s *h2Session) GetClientConn(req *http.Request, _ string) (*http2.ClientCon
 	}
 	s.mu.Unlock()
 
-	s.dialMu.Lock()
-	defer s.dialMu.Unlock()
+	if err := s.lockDial(req.Context()); err != nil {
+		return nil, err
+	}
+	defer s.unlockDial()
 
 	s.mu.Lock()
 	if s.clientConn != nil && !s.dead {
@@ -362,6 +395,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			server:    client.server,
 			tlsDialer: tls.NewDialer(options.Dialer, options.TLSConfig),
 			ctx:       ctx,
+			dialMu:    make(chan struct{}, 1),
 		}
 		transport.ConnPool = session
 		client.roundTripper = transport
