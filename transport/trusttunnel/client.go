@@ -542,6 +542,22 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
+// dialFailureBackoff — окно после провала ПЕРВОГО дозвона свежего клиента
+// (EverConnected()==false), в течение которого newClientLocked() не плодит
+// ЕЩЁ ОДНОГО параллельного кандидата поверх уже идущей попытки. Без этого
+// каждый всплеск конкурентных Dial() при недоступном сервере (например,
+// пачка приложений реконнектится сразу после смены wifi, а путь до сервера
+// в этот момент ещё не поднялся/недоступен) поднимает до maxConnections
+// параллельных клиентов одновременно, каждый из которых независимо жрёт
+// TCPConnectTimeout (5s) на дозвон к ОДНОМУ И ТОМУ ЖЕ IP сервера — и цикл
+// тут же повторяется на следующей волне запросов, раз за разом, пока путь
+// не восстановится. Внешне это выглядит как непрерывно "отваливающийся"
+// http2-путь, хотя по факту это самонагнетающееся громовое стадо дозвонов,
+// а не единичный обрыв. 3s — заметно меньше TCPConnectTimeout, чтобы не
+// тормозить настоящее восстановление пути, но достаточно, чтобы схлопнуть
+// параллельные попытки в одну серийную, пока сервер действительно недоступен.
+const dialFailureBackoff = 3 * time.Second
+
 type MultiplexClient struct {
 	// ВАЖНО: раньше здесь был sync.Mutex, и getClient()/forceNewClient()
 	// держали его на ВСЁ время реального сетевого дозвона внутри
@@ -568,6 +584,10 @@ type MultiplexClient struct {
 	ctx            context.Context
 	options        ClientOptions
 	clients        []*Client
+	// backoffUntil — unix-время (наносекунды) до которого newClientLocked()
+	// не создаёт НОВЫХ клиентов поверх уже существующих. См. комментарий у
+	// dialFailureBackoff. 0 — бэкоффа сейчас нет.
+	backoffUntil atomic.Int64
 }
 
 // lock ждёт свободный слот мьютекса, но не дольше, чем жив переданный ctx.
@@ -666,6 +686,7 @@ func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, erro
 		// (именно так 15s превращались в наблюдаемые 30s на каждый
 		// стрим). Отдаём ошибку сразу — вызывающая сторона (роутер,
 		// urltest-селектор, сам клиент-приложение) отреагирует быстрее.
+		c.noteDialFailure()
 		return nil, err
 	}
 	fresh, freshErr := c.forceNewClient(ctx)
@@ -691,6 +712,7 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 	everConnected := primary.EverConnected()
 	c.removeClient(primary)
 	if !everConnected {
+		c.noteDialFailure()
 		return nil, err
 	}
 	fresh, freshErr := c.forceNewClient(ctx)
@@ -698,6 +720,14 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 		return nil, err
 	}
 	return fresh.ListenPacket(ctx)
+}
+
+// noteDialFailure запускает окно бэкоффа (см. dialFailureBackoff) после
+// провала первого дозвона свежего клиента — на этот период newClientLocked
+// перестаёт плодить параллельных кандидатов к тому же (видимо, недоступному)
+// серверу.
+func (c *MultiplexClient) noteDialFailure() {
+	c.backoffUntil.Store(time.Now().Add(dialFailureBackoff).UnixNano())
 }
 
 func (c *MultiplexClient) removeClient(dead *Client) {
@@ -793,6 +823,17 @@ func (c *MultiplexClient) forceNewClient(ctx context.Context) (*Client, error) {
 
 func (c *MultiplexClient) newClientLocked() (*Client, error) {
 	c.clients = pruneIdleClients(c.clients)
+	// Недавний провал первого дозвона (см. dialFailureBackoff): пока
+	// действует окно и в пуле уже есть хоть один кандидат (пусть даже сам
+	// ещё не подключившийся) — не плодим ЕЩЁ ОДНУ параллельную попытку
+	// дозвона к тому же, видимо недоступному, серверу. Отдаём последнего
+	// добавленного: если он сам сейчас дозванивается, новые стримы просто
+	// встанут за ним (см. dialMu в h2Session) вместо открытия своего
+	// независимого TCP-хендшейма. Если пул пуст — бэкофф не мешает,
+	// кому-то всё равно нужно попробовать первым.
+	if until := c.backoffUntil.Load(); until != 0 && time.Now().UnixNano() < until && len(c.clients) > 0 {
+		return c.clients[len(c.clients)-1], nil
+	}
 	t, err := NewClient(c.ctx, c.options)
 	if err != nil {
 		return nil, err
