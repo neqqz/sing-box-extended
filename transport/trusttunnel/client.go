@@ -283,9 +283,19 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		}
 		client.roundTripper = &http3.Transport{
 			QUICConfig: &quic.Config{
-				// Оптимизировано для мобильных: не дергаем сеть слишком часто
+				// Оптимизировано для мобильных: чем реже шлём keepalive,
+				// тем дольше радиомодуль может простаивать между пакетами
+				// вместо постоянного active-состояния. 90s даёт запас под
+				// MaxIdleTimeout=2m (не успевает истечь) и втрое реже будит
+				// радио, чем прежние 30s. Компромисс: у некоторых мобильных
+				// операторов NAT-маппинг для UDP живёт < 90s — тогда между
+				// keepalive'ами мэппинг может протухнуть, и следующий пакет
+				// потребует пересоздания сессии (это не баг, просто дороже
+				// одно переподключение вместо лишних keepalive'ов весь день).
+				// Если увидишь рост частоты переподключений — можно вернуть
+				// к 30-45s.
 				MaxIdleTimeout:  time.Minute * 2,
-				KeepAlivePeriod: time.Second * 30, 
+				KeepAlivePeriod: time.Second * 90,
 			},
 			Dial: func(ctx context.Context, addr string, tlsCfg *stdtls.Config, cfg *quic.Config) (*quic.Conn, error) {
 				udpConn, err := options.Dialer.DialContext(ctx, N.NetworkUDP, client.server)
@@ -312,9 +322,12 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			options.TLSConfig.SetNextProtos([]string{http2.NextProtoTLS})
 		}
 		transport := &http2.Transport{
-			AllowHTTP:       true,
-			// Включаем мягкий low-level пинг на уровне HTTP/2 стека
-			ReadIdleTimeout: time.Second * 45,
+			AllowHTTP: true,
+			// Мягкий low-level пинг на уровне HTTP/2: пингуем, только если
+			// от сервера не было чтения дольше ReadIdleTimeout (реактивно,
+			// а не постоянный heartbeat как у QUIC). 90s вместо 45s — реже
+			// лишний раз будим радиомодуль на простаивающем соединении.
+			ReadIdleTimeout: time.Second * 90,
 			PingTimeout:     time.Second * 15,
 		}
 		session := &h2Session{
@@ -523,14 +536,41 @@ func NewMultiplexClient(ctx context.Context, options ClientOptions) (*MultiplexC
 	if err != nil {
 		return nil, err
 	}
-	return &MultiplexClient{
+	mc := &MultiplexClient{
 		maxConnections: maxConnections,
 		minStreams:     minStreams,
 		maxStreams:     maxStreams,
 		ctx:            ctx,
 		options:        options,
 		clients:        []*Client{client},
-	}, nil
+	}
+	// ВАЖНО: без этого пул худел ТОЛЬКО реактивно — pruneIdleClients()
+	// вызывался лишь при запросе НОВОГО соединения (newClientLocked).
+	// Если приложения разогнали пул до maxConnections штук, а потом трафик
+	// стих (экран выключен, телефон в кармане), лишние простаивающие
+	// соединения так и оставались открытыми НАВСЕГДА — и каждое из них
+	// независимо слало keepalive (QUIC KeepAlivePeriod=30s / H2
+	// ReadIdleTimeout=45s), не давая радиомодулю уйти в low-power idle.
+	// Раз в минуту принудительно прогоняем ту же логику, что и при
+	// демандовом создании клиента, чтобы пул реально сжимался обратно,
+	// когда трафика больше нет — экономит батарею в фоне/на паузах.
+	go mc.idleReaperLoop()
+	return mc, nil
+}
+
+func (c *MultiplexClient) idleReaperLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+			c.mutex.Lock()
+			c.clients = pruneIdleClients(c.clients)
+			c.mutex.Unlock()
+		}
+	}
 }
 
 func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, error) {
@@ -689,14 +729,25 @@ func (c *MultiplexClient) newClientLocked() (*Client, error) {
 	return t, nil
 }
 
+// maxIdleReserve — сколько простаивающих (count==0) соединений держим
+// в резерве при чистке пула, вместо того чтобы закрывать их подчистую.
+// Не спасает от burst'а сразу после полного рестарта клиента/сервера
+// (там пул стартует с нуля, резервировать нечего) — для этого есть
+// серверный семафор на конкурентность handshake'ов. Но помогает в более
+// частом случае: пул нарастили под пиковую нагрузку, часть трафика
+// затихла, idle-reaper начал его подрезать — а тут снова просыпается
+// пачка приложений. Держим 2, а не 1, чтобы такое пробуждение чаще
+// попадало на уже тёплое соединение, а не упиралось в холодный дозвон.
+const maxIdleReserve = 2
+
 func pruneIdleClients(clients []*Client) []*Client {
 	kept := make([]*Client, 0, len(clients))
-	idleKept := false
+	idleKeptCount := 0
 	for _, t := range clients {
-		if t.count.Load() > 0 || !idleKept {
+		if t.count.Load() > 0 || idleKeptCount < maxIdleReserve {
 			kept = append(kept, t)
 			if t.count.Load() == 0 {
-				idleKept = true
+				idleKeptCount++
 			}
 			continue
 		}
