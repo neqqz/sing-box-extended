@@ -67,9 +67,9 @@ type Client struct {
 	serverString     string
 	auth             string
 	roundTripper     http.RoundTripper
-	session          *h2Session 
+	session          *h2Session
 	quicConnMu       sync.RWMutex
-	quicConn         *quic.Conn 
+	quicConn         *quic.Conn
 	startOnce        sync.Once
 	healthCheck      bool
 	healthCheckTimer *time.Timer
@@ -120,6 +120,24 @@ type h2Session struct {
 	// стрим не дождался своей очереди на дозвон, он не тратит время
 	// впустую и не пытается дозвониться с уже просроченным бюджетом.
 	dialMu chan struct{}
+}
+
+// dialMaxAttempts/dialRetryDelay — см. комментарий в GetClientConn. Короткая
+// пауза и одна повторная попытка ВНУТРИ критической секции dialMu, прежде
+// чем отдать провал дозвона наверх вызывающему стриму и заставить следующего
+// в очереди начинать с нуля.
+const (
+	dialMaxAttempts = 2
+	dialRetryDelay  = 300 * time.Millisecond
+)
+
+// sCtxDone возвращает Done()-канал s.ctx, либо nil-канал (никогда не
+// закрывается), если s.ctx не задан — безопасно использовать в select.
+func sCtxDone(s *h2Session) <-chan struct{} {
+	if s.ctx == nil {
+		return nil
+	}
+	return s.ctx.Done()
 }
 
 // lockDial ждёт свободный слот на дозвон, но не дольше, чем жив ctx.
@@ -175,13 +193,48 @@ func (s *h2Session) GetClientConn(req *http.Request, _ string) (*http2.ClientCon
 	// и есть волнообразные обрывы http2-пути при смене сети на мобильных
 	// клиентах. Обрыв по s.ctx сразу освобождает dialMu и даёт следующему
 	// стриму немедленно поднять новый дозвон вместо ожидания вслепую.
-	dialCtx, dialCancel := context.WithCancel(req.Context())
-	if s.ctx != nil {
-		stop := context.AfterFunc(s.ctx, dialCancel)
-		defer stop()
+	//
+	// dialRetryDelay/dialMaxAttempts: сам по себе провал ПЕРВОЙ попытки
+	// дозвона до сервера — частая история на мобильной сети (короткая
+	// потеря пакета на handshake, доля секунды NAT-ребайнда) и обычно
+	// самовосстанавливается за доли секунды. Раньше первый же провал
+	// сразу возвращался вызывающему стриму, а следующий стрим из очереди
+	// dialMu тут же повторял ровно ту же попытку с нуля — если сбой
+	// длился хотя бы секунду-две, а в очереди стояло десяток стримов,
+	// падали ВСЕ они по очереди один за другим, хотя путь мог
+	// восстановиться уже после первой же повторной попытки. Один короткий
+	// блип на радиоинтерфейсе превращался в лавину из десятков упавших
+	// потоков вместо одного успешного ретрая. Короткая пауза и повторная
+	// попытка ВНУТРИ этой критической секции (а не в соседних вызовах)
+	// даёт пути шанс восстановиться, прежде чем отдать ошибку наверх и
+	// заставить следующего в очереди начинать всё заново.
+	var conn net.Conn
+	var err error
+	for attempt := 0; attempt < dialMaxAttempts; attempt++ {
+		dialCtx, dialCancel := context.WithCancel(req.Context())
+		var stop func() bool
+		if s.ctx != nil {
+			stop = context.AfterFunc(s.ctx, dialCancel)
+		}
+		conn, err = s.tlsDialer.DialContext(dialCtx, N.NetworkTCP, s.server)
+		dialCancel()
+		if stop != nil {
+			stop()
+		}
+		if err == nil {
+			break
+		}
+		if attempt == dialMaxAttempts-1 {
+			break
+		}
+		select {
+		case <-time.After(dialRetryDelay):
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		case <-sCtxDone(s):
+			return nil, err
+		}
 	}
-	conn, err := s.tlsDialer.DialContext(dialCtx, N.NetworkTCP, s.server)
-	dialCancel()
 	if err != nil {
 		return nil, err
 	}
