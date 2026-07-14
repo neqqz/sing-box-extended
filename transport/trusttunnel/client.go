@@ -744,6 +744,28 @@ type MultiplexClient struct {
 	// не создаёт НОВЫХ клиентов поверх уже существующих. См. комментарий у
 	// dialFailureBackoff. 0 — бэкоффа сейчас нет.
 	backoffUntil atomic.Int64
+	// recoveryMu/recovering — коалесинг восстановления. Если умирает ОДНА
+	// долгоживущая сессия (см. "http2: client connection lost"), её могли
+	// одновременно использовать десяток параллельных стримов — каждый из
+	// них узнаёт о смерти независимо и раньше независимо же поднимал СВОЙ
+	// forceNewClient(), т.е. свою отдельную TCP+TLS-сессию до сервера. Пока
+	// путь ещё восстанавливается (WiFi-роуминг между точками, короткая
+	// потеря сигнала), это давало те же волны параллельных хендшейков,
+	// от которых уже лечили cold-старт в Dial()/ListenPacket(). Теперь все
+	// конкурентные вызовы recoverClient() в течение одного и того же
+	// восстановления получают ОДИН и тот же новый Client — дальше они уже
+	// делят его dialMu и общий ретрай-цикл, а не бьют в сервер параллельно
+	// каждый своим дозвоном.
+	recoveryMu sync.Mutex
+	recovering *recoveryState
+}
+
+// recoveryState — результат одной операции восстановления клиента,
+// разделяемый между всеми конкурентными вызывающими через recoverClient().
+type recoveryState struct {
+	done   chan struct{}
+	client *Client
+	err    error
 }
 
 // lock ждёт свободный слот мьютекса, но не дольше, чем жив переданный ctx.
@@ -859,7 +881,7 @@ func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, erro
 	if until := c.backoffUntil.Load(); until != 0 && time.Now().UnixNano() < until {
 		return nil, err
 	}
-	fresh, freshErr := c.forceNewClient(ctx)
+	fresh, freshErr := c.recoverClient(ctx)
 	if freshErr != nil {
 		return nil, err
 	}
@@ -895,7 +917,7 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 	if until := c.backoffUntil.Load(); until != 0 && time.Now().UnixNano() < until {
 		return nil, err
 	}
-	fresh, freshErr := c.forceNewClient(ctx)
+	fresh, freshErr := c.recoverClient(ctx)
 	if freshErr != nil {
 		return nil, err
 	}
@@ -996,6 +1018,38 @@ func (c *MultiplexClient) getClient(ctx context.Context) (*Client, error) {
 		return transport, nil
 	}
 	return c.newClientLocked()
+}
+
+// recoverClient коалесит конкурентные попытки восстановления после смерти
+// ранее рабочего клиента: первый вызвавший реально создаёт новый Client
+// (forceNewClient), все остальные, подоспевшие, пока эта попытка ещё не
+// завершилась, ждут её результат вместо того, чтобы параллельно поднимать
+// свои собственные TCP+TLS-сессии до того же сервера. См. комментарий у
+// поля recovering.
+func (c *MultiplexClient) recoverClient(ctx context.Context) (*Client, error) {
+	c.recoveryMu.Lock()
+	if r := c.recovering; r != nil {
+		c.recoveryMu.Unlock()
+		select {
+		case <-r.done:
+			return r.client, r.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	r := &recoveryState{done: make(chan struct{})}
+	c.recovering = r
+	c.recoveryMu.Unlock()
+
+	client, err := c.forceNewClient(ctx)
+
+	c.recoveryMu.Lock()
+	c.recovering = nil
+	c.recoveryMu.Unlock()
+
+	r.client, r.err = client, err
+	close(r.done)
+	return client, err
 }
 
 func (c *MultiplexClient) forceNewClient(ctx context.Context) (*Client, error) {
