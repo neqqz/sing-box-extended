@@ -845,11 +845,30 @@ func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, erro
 		c.noteDialFailure()
 		return nil, err
 	}
+	// ВАЖНО: раньше здесь forceNewClient() вызывался безусловно, даже если
+	// путь до сервера только что упал у ДРУГОГО клиента (см. noteDialFailure
+	// выше). Из-за этого при реальном обрыве сети КАЖДЫЙ падающий стрим
+	// (а их за секунду может быть десятки) независимо поднимал СВОЙ
+	// собственный новый TCP+TLS дозвон к явно недоступному серверу — на
+	// сервере это выглядело как растущая с каждой секундой лавина
+	// TLS-хендшейков, упирающихся в handshakeSem и context deadline
+	// exceeded. even-connected клиент, который только что умер — такой же
+	// сигнал "путь сейчас недоступен", как и never-connected: уважаем тот
+	// же бэкофф, вместо того чтобы плодить ещё одного кандидата поверх уже
+	// идущей попытки восстановления.
+	if until := c.backoffUntil.Load(); until != 0 && time.Now().UnixNano() < until {
+		return nil, err
+	}
 	fresh, freshErr := c.forceNewClient(ctx)
 	if freshErr != nil {
 		return nil, err
 	}
-	return fresh.Dial(ctx, host)
+	freshConn, freshErr := fresh.Dial(ctx, host)
+	if freshErr != nil {
+		c.noteDialFailure()
+		return nil, freshErr
+	}
+	return freshConn, nil
 }
 
 func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, error) {
@@ -871,11 +890,21 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 		c.noteDialFailure()
 		return nil, err
 	}
+	// См. комментарий в Dial() — тот же бэкофф нужен и здесь, иначе волна
+	// упавших UDP-потоков плодит собственную лавину холодных дозвонов.
+	if until := c.backoffUntil.Load(); until != 0 && time.Now().UnixNano() < until {
+		return nil, err
+	}
 	fresh, freshErr := c.forceNewClient(ctx)
 	if freshErr != nil {
 		return nil, err
 	}
-	return fresh.ListenPacket(ctx)
+	freshConn, freshErr := fresh.ListenPacket(ctx)
+	if freshErr != nil {
+		c.noteDialFailure()
+		return nil, freshErr
+	}
+	return freshConn, nil
 }
 
 // noteDialFailure запускает окно бэкоффа (см. dialFailureBackoff) после
