@@ -566,6 +566,21 @@ func (c *Client) resetHealthCheckTimer() {
 }
 
 func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
+	c.roundTripTimeout(request, conn, C.TCPTimeout)
+}
+
+// roundTripTimeout — то же, что roundTrip, но с явным hard-таймаутом вместо
+// захардкоженного C.TCPTimeout. Нужен MultiplexClient.{Dial,ListenPacket} для
+// повторной попытки на только что восстановленном клиенте (см. recoverClient):
+// если первая попытка на старом клиенте уже сожгла полный C.TCPTimeout, а
+// вторая на свежем берёт ТОТ ЖЕ полный таймаут, вызывающая сторона суммарно
+// ждёт до ~2×C.TCPTimeout прежде чем узнать об ошибке (в логах — "context
+// canceled" ровно на ~30s вместо ~15s: ретрай в худшем случае делает задержку
+// перед ошибкой ХУЖЕ, чем было бы без него). Короткий таймаут на повторе даёт
+// реально восстановившемуся пути честный шанс (обычный TCP+TLS хендшейк
+// укладывается в разы меньше), но не удваивает худший случай, когда путь
+// всё ещё лежит.
+func (c *Client) roundTripTimeout(request *http.Request, conn *httpConn, timeout time.Duration) {
 	c.startOnce.Do(c.start)
 	pipeReader, pipeWriter := io.Pipe()
 	request.Body = pipeReader
@@ -612,7 +627,7 @@ func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
 		// (conn.Close() — штатное закрытие, ни о чём не говорит о
 		// здоровье соединения). Проверяем сессию только в первом случае.
 		var timedOut atomic.Bool
-		hardTimeout := time.AfterFunc(C.TCPTimeout, func() {
+		hardTimeout := time.AfterFunc(timeout, func() {
 			timedOut.Store(true)
 			cancel()
 		})
@@ -652,8 +667,13 @@ func (c *Client) newConnectRequest(host, userAgent string) *http.Request {
 }
 
 func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
+	return c.dialTimeout(host, C.TCPTimeout)
+}
+
+// dialTimeout — как Dial, но с явным hard-таймаутом; см. roundTripTimeout.
+func (c *Client) dialTimeout(host string, timeout time.Duration) (net.Conn, error) {
 	conn := &tcpConn{}
-	c.roundTrip(c.newConnectRequest(host, tcpUserAgent), &conn.httpConn)
+	c.roundTripTimeout(c.newConnectRequest(host, tcpUserAgent), &conn.httpConn, timeout)
 	if err := conn.waitCreated(); err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -662,8 +682,13 @@ func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
+	return c.listenPacketTimeout(C.TCPTimeout)
+}
+
+// listenPacketTimeout — как ListenPacket, но с явным hard-таймаутом; см. roundTripTimeout.
+func (c *Client) listenPacketTimeout(timeout time.Duration) (net.PacketConn, error) {
 	conn := &clientPacketConn{paddingMin: c.udpPaddingMin, paddingMax: c.udpPaddingMax}
-	c.roundTrip(c.newConnectRequest(UDPMagicAddress, udpUserAgent), &conn.httpConn)
+	c.roundTripTimeout(c.newConnectRequest(UDPMagicAddress, udpUserAgent), &conn.httpConn, timeout)
 	if err := conn.waitCreated(); err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -713,6 +738,14 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 // тормозить настоящее восстановление пути, но достаточно, чтобы схлопнуть
 // параллельные попытки в одну серийную, пока сервер действительно недоступен.
 const dialFailureBackoff = 3 * time.Second
+
+// recoveryRetryTimeout — hard-таймаут ТОЛЬКО для повторной попытки в
+// Dial()/ListenPacket() на только что восстановленном (recoverClient) свежем
+// клиенте — см. комментарий у roundTripTimeout. Меньше C.TCPTimeout, чтобы не
+// удваивать худший случай ожидания перед ошибкой (наблюдалось в логах как
+// "context canceled" на ~30s вместо ~15s), но заметно больше типичного
+// времени TCP+TLS хендшейка на уже ожившем пути.
+const recoveryRetryTimeout = 7 * time.Second
 
 type MultiplexClient struct {
 	// ВАЖНО: раньше здесь был sync.Mutex, и getClient()/forceNewClient()
@@ -885,7 +918,7 @@ func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, erro
 	if freshErr != nil {
 		return nil, err
 	}
-	freshConn, freshErr := fresh.Dial(ctx, host)
+	freshConn, freshErr := fresh.dialTimeout(host, recoveryRetryTimeout)
 	if freshErr != nil {
 		c.noteDialFailure()
 		return nil, freshErr
@@ -921,7 +954,7 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 	if freshErr != nil {
 		return nil, err
 	}
-	freshConn, freshErr := fresh.ListenPacket(ctx)
+	freshConn, freshErr := fresh.listenPacketTimeout(recoveryRetryTimeout)
 	if freshErr != nil {
 		c.noteDialFailure()
 		return nil, freshErr
