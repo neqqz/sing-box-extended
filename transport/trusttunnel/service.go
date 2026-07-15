@@ -2,6 +2,7 @@ package trusttunnel
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+	"golang.org/x/net/http2"
 )
 
 type Handler interface {
@@ -133,7 +135,19 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			firstPacket.Release()
 			s.untrackConn(username, conn)
 			_ = conn.Close()
-			s.logger.ErrorContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
+			// RST_STREAM(CANCEL) от клиента на потоке, который ещё не передал
+			// ни одного пакета (мы здесь читаем самый первый) — штатная отмена
+			// на стороне клиента (см. тот же диагноз в client.go у dialMu), а
+			// не признак обрыва туннеля. На ERROR это забивало лог ложным
+			// сигналом "туннель падает" при полностью рабочем сервере: клиент
+			// просто передумал открывать UDP-поток раньше, чем сервер успел
+			// прочитать из него хоть байт. Другие ошибки (сброс TCP, битые
+			// данные, реальный таймаут) остаются ERROR без изменений.
+			if isStreamCancel(err) {
+				s.logger.DebugContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
+			} else {
+				s.logger.ErrorContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
+			}
 			return
 		}
 		destination = destination.Unwrap()
@@ -200,6 +214,14 @@ func (s *Service) verify(authorization string) (username string, loaded bool) {
 
 func (s *Service) badRequest(ctx context.Context, request *http.Request, err error) {
 	s.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", request.RemoteAddr))
+}
+
+// isStreamCancel сообщает, является ли err HTTP/2 RST_STREAM с кодом CANCEL —
+// клиент сам оборвал поток (например, приложение отменило запрос до того, как
+// UDP-поток реально понадобился), а не сервер столкнулся с проблемой на пути.
+func isStreamCancel(err error) bool {
+	var streamErr http2.StreamError
+	return errors.As(err, &streamErr) && streamErr.Code == http2.ErrCodeCancel
 }
 
 func parseRemoteAddr(addr string) net.Addr {
