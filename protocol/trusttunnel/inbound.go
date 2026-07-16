@@ -239,6 +239,21 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			// window >= целевая_скорость_байт/с * RTT_сек.
 			MaxUploadBufferPerStream:     8 << 20,  // 8 MB
 			MaxUploadBufferPerConnection: 16 << 20, // 16 MB
+			// ВАЖНО: IdleTimeout ловит только соединение с НУЛЁМ активных
+			// стримов — если у клиента (типично мобильный, за carrier NAT)
+			// сдох путь молча, без FIN/RST, а на сервере в этот момент
+			// числится "активный" стрим, IdleTimeout не сработает никогда:
+			// соединение виснет до TCP-ретрансмиссий ядра на следующей
+			// попытке записи (net.ipv4.tcp_retries2, обычно ~15 минут на
+			// Linux) — жрёт файловый дескриптор и память втрое дольше, чем
+			// нужно, и не даёт клиенту переподключиться на этот же слот
+			// handshakeSem/учёта раньше срока. ReadIdleTimeout+PingTimeout —
+			// зеркало того же механизма, что уже стоит у клиента в
+			// *http2.Transport (см. ClientOptions ниже по коду): если от
+			// клиента нет ни одного фрейма 30s, шлём PING; нет ответа за
+			// 15s — считаем мёртвым и закрываем.
+			ReadIdleTimeout: 30 * time.Second,
+			PingTimeout:     15 * time.Second,
 		}
 		// ВАЖНО: net/http.Server.Serve() определяет ALPN-протокол и решает,
 		// звать ли http2.Server, через жёсткий type assertion c.rwc.(*tls.Conn)
@@ -348,13 +363,29 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 	// видеть, вместо того чтобы копить неограниченную очередь горутин.
 	select {
 	case h.handshakeSem <- struct{}{}:
-		defer func() { <-h.handshakeSem }()
 	case <-ctx.Done():
 		_ = rawConn.Close()
 		h.logger.Debug("trusttunnel: TLS handshake failed: ", ctx.Err())
 		return
 	}
 	tlsConn, err := tls.ServerHandshake(ctx, rawConn, h.httpTLSConfig)
+	// ВАЖНО: слот освобождаем СРАЗУ после самого хендшейка (успешного или
+	// нет), а не через defer на всю serveConn. handshakeSem защищает только
+	// CPU-bound RSA/ECDHE-хендшейк (см. комментарий у поля выше) — а ниже
+	// идёт h2Server.ServeConn/httpServer.Serve, который блокируется на ВСЮ
+	// жизнь соединения (часы, а не миллисекунды). При defer-варианте слот
+	// держался до полного закрытия соединения, и семафор на деле ограничивал
+	// не число одновременных хендшейков, а число одновременно ОТКРЫТЫХ
+	// h2-соединений сервером суммарно по всем клиентам сразу
+	// (DefaultMaxConcurrentHandshakes, обычно 16) — любое (N+1)-е соединение
+	// сверх этого, даже когда хендшейки давно не идут и CPU простаивает,
+	// вставало в очередь на семафор, съедало здесь же те самые 20s и
+	// отваливалось с "TLS handshake failed: context deadline exceeded",
+	// хотя до реального хендшейка дело даже не доходило. Внешне это
+	// выглядело как обрывы http2-пути, коррелирующие не с сетью, а с общим
+	// числом одновременно подключённых клиентов/устройств (типичный
+	// триггер — синхронный реконнект пачки клиентов после сетевого сбоя).
+	<-h.handshakeSem
 	if err != nil {
 		h.logger.Debug("trusttunnel: TLS handshake failed: ", err)
 		rawConn.Close()
