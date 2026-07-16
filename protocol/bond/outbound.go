@@ -76,6 +76,15 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	return outbound, nil
 }
 
+func (h *Outbound) Start(stage adapter.StartStage) error {
+	for _, outbound := range h.outbounds {
+		if err := adapter.LegacyStart(outbound, stage); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (h *Outbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
 	if N.NetworkName(network) == N.NetworkUDP {
 		return h.uotClient.DialContext(ctx, network, destination)

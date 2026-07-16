@@ -312,7 +312,7 @@ func createHTTPClient(ctx context.Context, dest M.Socksaddr, dialer N.Dialer, op
 		if err != nil {
 			return nil, err
 		}
-		if httpVersion == "2" {
+		if tlsConfig != nil && httpVersion != "3" {
 			return tls.ClientHandshake(ctxInner, conn, tlsConfig)
 		}
 		return conn, nil

@@ -14,23 +14,43 @@
     {
       "type": "warp",
       "tag": "warp-out",
+      "system": false,
+      "name": "warp0",
       "listen_port": 10000,
       "udp_timeout": "5m0s",
+      "persistent_keepalive_interval": 25,
+      "workers": 8,
+      "preallocated_buffers_per_pool": 256,
+      "disable_pauses": true,
       "amnezia": {
         "jc": 120,
         "jmin": 23,
         "jmax": 911,
+        "s1": 1,
+        "s2": 2,
+        "s3": 3,
+        "s4": 4,
         "h1": 1,
         "h2": 2,
         "h3": 3,
-        "h4": 4
+        "h4": 4,
+        "i1": "<b 0xc70000000108...",
+        "i2": "<b 0xc70000000108...",
+        "i3": "<b 0xc70000000108...",
+        "i4": "<b 0xc70000000108...",
+        "i5": "<b 0xc70000000108...",
+        "j1": "<b 0xc70000000108...",
+        "j2": "<b 0xc70000000108...",
+        "j3": "<b 0xc70000000108...",
+        "itime": 50
       },
       "profile": {
         "detour": "direct",
         // For getting existing WARP device profile, else sing-box will create new profile
         "id": "",
         "private_key": "",
-        "auth_token": ""
+        "auth_token": "",
+        "recreate": false
       }
       // Dial Fields
     }

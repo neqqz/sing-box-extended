@@ -107,6 +107,10 @@ func extractNegativeTTL(response *dns.Msg) (uint32, bool) {
 }
 
 func (c *Client) Exchange(ctx context.Context, transport adapter.DNSTransport, message *dns.Msg, options adapter.DNSQueryOptions, responseChecker func(responseAddrs []netip.Addr) bool) (*dns.Msg, error) {
+	transportStack := transportStackFromContext(ctx)
+	if containsTransport(transportStack, transport.Tag()) {
+		return nil, E.New("DNS resolution loop detected: ", formatTransportLoop(transportStack, transport.Tag()))
+	}
 	if len(message.Question) == 0 {
 		if c.logger != nil {
 			c.logger.WarnContext(ctx, "bad question size: ", len(message.Question))
@@ -137,6 +141,7 @@ func (c *Client) Exchange(ctx context.Context, transport adapter.DNSTransport, m
 			len(message.Extra[0].(*dns.OPT).Option) == 0) &&
 		!options.ClientSubnet.IsValid()
 	disableCache := !isSimpleRequest || c.disableCache || options.DisableCache
+	ctx = contextWithTransportStack(ctx, append(transportStack, transport.Tag()))
 	if !disableCache {
 		cacheKey := transportCacheKey{Question: question, transportTag: transport.Tag()}
 		if c.cache != nil {
@@ -177,11 +182,6 @@ func (c *Client) Exchange(ctx context.Context, transport adapter.DNSTransport, m
 	}
 
 	messageId := message.Id
-	contextTransport, clientSubnetLoaded := transportTagFromContext(ctx)
-	if clientSubnetLoaded && transport.Tag() == contextTransport {
-		return nil, E.New("DNS query loopback in transport[", contextTransport, "]")
-	}
-	ctx = contextWithTransportTag(ctx, transport.Tag())
 	if !disableCache && responseChecker != nil && c.rdrc != nil {
 		rejected := c.rdrc.LoadRDRC(transport.Tag(), question.Name, question.Qtype)
 		if rejected {
@@ -547,15 +547,36 @@ func MessageToAddresses(response *dns.Msg) []netip.Addr {
 	return addresses
 }
 
-type transportKey struct{}
+type transportStackKey struct{}
 
-func contextWithTransportTag(ctx context.Context, transportTag string) context.Context {
-	return context.WithValue(ctx, transportKey{}, transportTag)
+func contextWithTransportStack(ctx context.Context, stack []string) context.Context {
+	return context.WithValue(ctx, transportStackKey{}, stack)
 }
 
-func transportTagFromContext(ctx context.Context) (string, bool) {
-	value, loaded := ctx.Value(transportKey{}).(string)
-	return value, loaded
+func transportStackFromContext(ctx context.Context) []string {
+	value, _ := ctx.Value(transportStackKey{}).([]string)
+	return value
+}
+
+func containsTransport(stack []string, tag string) bool {
+	for _, t := range stack {
+		if t == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func formatTransportLoop(stack []string, loopTag string) string {
+	result := ""
+	for i, t := range stack {
+		if i > 0 {
+			result += " -> "
+		}
+		result += t
+	}
+	result += " -> " + loopTag
+	return result
 }
 
 func FixedResponseStatus(message *dns.Msg, rcode int) *dns.Msg {

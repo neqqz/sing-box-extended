@@ -131,7 +131,7 @@ upload_android:
 	./codeberg-release.sh --replace --draft --prerelease -p 5 "v${VERSION}" dist/release_android
 	rm -rf dist/release_android
 
-release_android: build_android upload_android
+release_android: lib_android update_android_version build_android upload_android
 
 publish_android:
 	cd ../sing-box-for-android && ./gradlew :app:publishPlayReleaseBundle && ./gradlew --stop

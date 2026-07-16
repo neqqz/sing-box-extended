@@ -8,7 +8,6 @@ type WARPEndpointOptions struct {
 	ListenPort                  uint16             `json:"listen_port,omitempty"`
 	UDPTimeout                  badoption.Duration `json:"udp_timeout,omitempty"`
 	PersistentKeepaliveInterval uint16             `json:"persistent_keepalive_interval,omitempty"`
-	Reserved                    []uint8            `json:"reserved,omitempty"`
 	Workers                     int                `json:"workers,omitempty"`
 	PreallocatedBuffersPerPool  uint32             `json:"preallocated_buffers_per_pool,omitempty"`
 	DisablePauses               bool               `json:"disable_pauses,omitempty"`

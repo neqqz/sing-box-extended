@@ -99,9 +99,9 @@ func (h *Inbound) connHandler(ctx context.Context, conn net.Conn, metadata adapt
 		failoverConn := NewFailoverConn(ctx, conn, nil, func() {
 			h.sessionMtx.Lock(sessionUUID)
 			h.mtx.Lock()
-			defer h.sessionMtx.Unlock(sessionUUID)
-			defer h.mtx.Unlock()
 			delete(h.conns, sessionUUID)
+			h.sessionMtx.Unlock(sessionUUID)
+			h.mtx.Unlock()
 		})
 		h.mtx.Lock()
 		h.conns[sessionUUID] = failoverConn
@@ -118,6 +118,7 @@ func (h *Inbound) connHandler(ctx context.Context, conn net.Conn, metadata adapt
 		serverConn, ok := h.conns[sessionUUID]
 		h.mtx.RUnlock()
 		if !ok {
+			h.sessionMtx.Unlock(sessionUUID)
 			_, err := conn.Write([]byte{StatusSessionNotFound})
 			if err != nil {
 				return err

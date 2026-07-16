@@ -1215,6 +1215,7 @@ func (c *pollConn) pullLoop() {
 			payload, err := base64.StdEncoding.DecodeString(line)
 			if err != nil {
 				_ = resp.Body.Close()
+				cancel()
 				_ = c.closeWithError(fmt.Errorf("poll pull decode failed: %w", err))
 				return
 			}
@@ -1222,6 +1223,7 @@ func (c *pollConn) pullLoop() {
 			case c.rxc <- payload:
 			case <-c.closed:
 				_ = resp.Body.Close()
+				cancel()
 				return
 			}
 		}
