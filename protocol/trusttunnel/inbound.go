@@ -129,7 +129,8 @@ type Inbound struct {
 	// на всех разом — сколько дедлайн ни повышай, при настоящей перегрузке
 	// это лечит симптом, а не причину. Семафор превращает "все дерутся за
 	// CPU одновременно и часть проигрывает по таймауту" в "обрабатываем
-	// по очереди с полной отдачей CPU каждому" — суммарно burst
+	// с полной отдачей CPU каждому, а сверх лимита — мгновенный fail-fast
+	// вместо ожидания в очереди" (см. serveConn) — суммарно burst
 	// прожёвывается быстрее и с кратно меньшим числом реальных отказов.
 	handshakeSem chan struct{}
 }
@@ -141,18 +142,10 @@ type Inbound struct {
 // семафор" без выигрыша.
 var DefaultMaxConcurrentHandshakes = max(runtime.NumCPU()*4, 16)
 
-// handshakeQueueTimeout — сколько ждём свободный слот в handshakeSem.
-// Короче, чем tlsHandshakeTimeout: слот — это чисто CPU-очередь на сервере,
-// не связана с сетью клиента, и если он не освободился за это время,
-// сервер объективно перегружен (либо после фикса handshakeSem вообще не
-// должен случаться — слот держится только на время самого хендшейка).
-const handshakeQueueTimeout = 10 * time.Second
-
 // tlsHandshakeTimeout — бюджет на сам TLS handshake после того, как слот
-// уже получен. Свежий, не урезанный временем ожидания в очереди: на
-// мобильной сети хендшейк иногда честно занимает 10-14s из-за ретрансмитов
-// (RTO 1s→2s→4s→8s при потере пары пакетов), и клиентский C.TCPTimeout —
-// 15s. Даём запас сверх него.
+// уже получен. На мобильной сети хендшейк иногда честно занимает 10-14s
+// из-за ретрансмитов (RTO 1s→2s→4s→8s при потере пары пакетов), а
+// клиентский C.TCPTimeout — 15s. Даём запас сверх него.
 const tlsHandshakeTimeout = 20 * time.Second
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrustTunnelInboundOptions) (adapter.Inbound, error) {
@@ -360,38 +353,34 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, handler http.Handler) {
 }
 
 func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
-	// Бюджет на ОЖИДАНИЕ СЛОТА в семафоре — отдельный и короче, чем бюджет
-	// на сам хендшейк. Раньше это был один общий ctx на 20s: если клиент
-	// простаивал в очереди N секунд (сервер занят), на сам TLS-хендшейк —
-	// который на мобильной сети и так честно может занимать 10-14s —
-	// оставалось всего 20-N. То есть именно в момент нагрузки сервера
-	// клиентам урезалось время не на ожидание, а на сам крипто-обмен,
-	// что било по ним сильнее всего ровно тогда, когда сервер и так занят.
-	// 10s на очередь — если слот не освободился за 10s, сервер объективно
-	// перегружен и ждать дальше бессмысленно; сам хендшейк получает свежий
-	// полный бюджет независимо от того, сколько простояли в очереди.
-	queueCtx, queueCancel := context.WithTimeout(h.ctx, handshakeQueueTimeout)
-	defer queueCancel()
-	waitStart := time.Now()
+	// ВАЖНО: раньше здесь было блокирующее ожидание свободного слота в
+	// handshakeSem (сначала общий ctx на 20s вместе с самим хендшейком,
+	// потом отдельный на 10s только под очередь) — в обоих случаях клиент
+	// синхронно висел, не зная, перегружен сервер или просто сеть плохая.
+	// Тот же класс проблемы в quic-go/server.go (handlePacket) решён иначе:
+	// при переполнении очереди пакет не ждёт — дропается мгновенно
+	// (select { case ch <- p: default: drop }, см. protocol.MaxAcceptQueueSize),
+	// а ретрай — забота клиента и протокола поверх. Переносим тот же
+	// принцип сюда: если слот не свободен ПРЯМО СЕЙЧАС — закрываем
+	// соединение сразу, вместо того чтобы копить клиентов в очереди с
+	// фиксированным таймаутом. Клиентский dialMu-ретрай (до 5 попыток,
+	// бэкофф 400мс-3000мс) видит быстрый отказ почти мгновенно вместо
+	// многосекундного молчания — и, как следствие, любой оставшийся
+	// "context deadline exceeded" ниже теперь однозначно означает именно
+	// медленный TLS handshake (сеть), а не очередь: неоднозначность, из-за
+	// которой пришлось заводить отдельный queueWait, устранена структурно,
+	// а не только в логах.
 	select {
 	case h.handshakeSem <- struct{}{}:
-	case <-queueCtx.Done():
+	default:
 		_ = rawConn.Close()
-		// Отдельный текст от ошибки самого хендшейка ниже: это истечение
-		// дедлайна В ОЧЕРЕДИ на handshakeSem, до всякого TLS. Раньше оба
-		// случая (очередь и реально медленный хендшейк на плохой мобильной
-		// сети) писали один и тот же "TLS handshake failed: context
-		// deadline exceeded" — по логу нельзя было понять, жив ли ещё баг
-		// семафора или это просто сеть. Теперь различимо по тексту и видно
-		// сколько реально простояли в очереди.
-		h.logger.Debug("trusttunnel: handshakeSem queue wait timed out after ", time.Since(waitStart), " (slot never freed, not a TLS failure): ", queueCtx.Err())
+		h.logger.Debug("trusttunnel: handshakeSem full, rejecting immediately (server busy, fail-fast — client will retry)")
 		return
 	}
-	queueWait := time.Since(waitStart)
-	// ВАЖНО: h.ctx, а не queueCtx — свежий полный бюджет на сам хендшейк,
-	// не урезанный временем, уже потраченным на ожидание слота выше.
+	// Свежий полный бюджет на сам хендшейк — слот уже наш, ждать было не надо.
 	ctx, cancel := context.WithTimeout(h.ctx, tlsHandshakeTimeout)
 	defer cancel()
+	handshakeStart := time.Now()
 	tlsConn, err := tls.ServerHandshake(ctx, rawConn, h.httpTLSConfig)
 	// ВАЖНО: слот освобождаем СРАЗУ после самого хендшейка (успешного или
 	// нет), а не через defer на всю serveConn. handshakeSem защищает только
@@ -411,7 +400,7 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 	// триггер — синхронный реконнект пачки клиентов после сетевого сбоя).
 	<-h.handshakeSem
 	if err != nil {
-		h.logger.Debug("trusttunnel: TLS handshake failed after ", time.Since(waitStart)-queueWait, " (queued ", queueWait, "): ", err)
+		h.logger.Debug("trusttunnel: TLS handshake failed after ", time.Since(handshakeStart), ": ", err)
 		rawConn.Close()
 		return
 	}
