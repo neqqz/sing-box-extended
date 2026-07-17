@@ -3,7 +3,7 @@
 [![license](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 [![go](https://img.shields.io/badge/go-1.26-00ADD8.svg)](go.mod)
 [![codeberg](https://img.shields.io/badge/mirror-codeberg-2185D0.svg)](https://codeberg.org/shtorm-7/sing-box-extended)
-[![telegram](https://img.shields.io/badge/telegram-chat-26A5E4.svg)](https://t.me/sing_box_extended)
+[![telegram](https://img.shields.io/badge/telegram-chat-26A5E4.svg?logo=telegram)](https://t.me/sing_box_extended)
 
 Sing-box with extended features.
 
