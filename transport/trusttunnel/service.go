@@ -143,7 +143,7 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			// просто передумал открывать UDP-поток раньше, чем сервер успел
 			// прочитать из него хоть байт. Другие ошибки (сброс TCP, битые
 			// данные, реальный таймаут) остаются ERROR без изменений.
-			if isStreamCancel(err) {
+			if isBenignFirstPacketClose(err) {
 				s.logger.DebugContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
 			} else {
 				s.logger.ErrorContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
@@ -216,12 +216,26 @@ func (s *Service) badRequest(ctx context.Context, request *http.Request, err err
 	s.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", request.RemoteAddr))
 }
 
-// isStreamCancel сообщает, является ли err HTTP/2 RST_STREAM с кодом CANCEL —
-// клиент сам оборвал поток (например, приложение отменило запрос до того, как
-// UDP-поток реально понадобился), а не сервер столкнулся с проблемой на пути.
-func isStreamCancel(err error) bool {
+// isBenignFirstPacketClose сообщает, является ли err штатной, инициированной
+// САМИМ клиентом отменой потока, который ещё не передал ни одного пакета —
+// а не признаком реальной проблемы на пути. Два варианта, которыми клиент
+// это делает:
+//   - HTTP/2 RST_STREAM с кодом CANCEL (явная отмена);
+//   - обычный io.EOF — клиент закрыл свою сторону (body/контекст) локально,
+//     БЕЗ явного RST_STREAM. Возникает, например, когда клиент параллельно
+//     пробует несколько адресов-кандидатов (QUIC/UDP happy-eyeballs-стиль,
+//     типично для приложений вроде TikTok) и бросает все потоки, кроме
+//     выигравшего, — тот, что бросили, никогда не увидит ни байта payload'а.
+//     До этой правки такой EOF не отличался от isStreamCancel и логировался
+//     на ERROR, хотя семантически это тот же самый "клиент передумал до
+//     первого байта", просто без явного RST_STREAM — заваливало лог тысячами
+//     ложных ERROR при полностью исправном туннеле.
+func isBenignFirstPacketClose(err error) bool {
 	var streamErr http2.StreamError
-	return errors.As(err, &streamErr) && streamErr.Code == http2.ErrCodeCancel
+	if errors.As(err, &streamErr) && streamErr.Code == http2.ErrCodeCancel {
+		return true
+	}
+	return errors.Is(err, io.EOF)
 }
 
 func parseRemoteAddr(addr string) net.Addr {

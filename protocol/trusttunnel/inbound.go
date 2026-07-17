@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/quic-go"
@@ -146,7 +147,25 @@ var DefaultMaxConcurrentHandshakes = max(runtime.NumCPU()*4, 16)
 // уже получен. На мобильной сети хендшейк иногда честно занимает 10-14s
 // из-за ретрансмитов (RTO 1s→2s→4s→8s при потере пары пакетов), а
 // клиентский C.TCPTimeout — 15s. Даём запас сверх него.
+//
+// Это АБСОЛЮТНЫЙ потолок — не сдвигается, что бы ни происходило на
+// соединении. Отдельно от него — tlsHandshakeIdleTimeout ниже, который,
+// наоборот, сбрасывается на каждый принятый байт. Та же пара таймеров, что
+// у quic-go: Config.HandshakeIdleTimeout (сбрасывается на каждый пакет) +
+// handshakeTimeout() = 2×idle (фиксированный backstop, connection.go). Идея:
+// соединение, которое реально ретрансмитит (байты идут, просто редко),
+// не должно умирать по тому же таймеру, что и полностью мёртвый сокет
+// (порт-сканер, ушедший клиент) — но и активность не должна давать
+// хендшейку жить вечно.
 const tlsHandshakeTimeout = 20 * time.Second
+
+// tlsHandshakeIdleTimeout — как quic-go's HandshakeIdleTimeout: если за это
+// время НИ ОДНОГО байта не пришло, дальше ждать нет смысла — досрочно рвём
+// хендшейк, освобождая слот handshakeSem для реального клиента, вместо того
+// чтобы держать его до полных 20s ради заведомо мёртвого соединения. Пока
+// байты идут (даже редко, из-за ретрансмитов), этот таймер не срабатывает —
+// решает только tlsHandshakeTimeout выше.
+const tlsHandshakeIdleTimeout = 5 * time.Second
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrustTunnelInboundOptions) (adapter.Inbound, error) {
 	if options.TLS == nil || !options.TLS.Enabled {
@@ -352,6 +371,35 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, handler http.Handler) {
 	}
 }
 
+// activityConn запоминает время последнего успешного Read — тот же сигнал,
+// на котором в quic-go держится idleTimeoutStartTime() (сбрасывается на
+// каждый принятый пакет, connection.go). Здесь источник активности — не
+// пакеты, а байты TCP, но идея та же: отличить "соединение живое, просто
+// медленное" от "соединение мертво" можно только по факту недавней
+// активности, а не по одному общему таймеру на всё.
+type activityConn struct {
+	net.Conn
+	lastActive atomic.Int64 // unix nanos
+}
+
+func newActivityConn(conn net.Conn) *activityConn {
+	c := &activityConn{Conn: conn}
+	c.lastActive.Store(time.Now().UnixNano())
+	return c
+}
+
+func (c *activityConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if n > 0 {
+		c.lastActive.Store(time.Now().UnixNano())
+	}
+	return n, err
+}
+
+func (c *activityConn) idleFor() time.Duration {
+	return time.Since(time.Unix(0, c.lastActive.Load()))
+}
+
 func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 	// ВАЖНО: раньше здесь было блокирующее ожидание свободного слота в
 	// handshakeSem (сначала общий ctx на 20s вместе с самим хендшейком,
@@ -381,7 +429,37 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 	ctx, cancel := context.WithTimeout(h.ctx, tlsHandshakeTimeout)
 	defer cancel()
 	handshakeStart := time.Now()
-	tlsConn, err := tls.ServerHandshake(ctx, rawConn, h.httpTLSConfig)
+	trackedConn := newActivityConn(rawConn)
+	// idle-watchdog — как quic-go's HandshakeIdleTimeout (см. комментарий у
+	// tlsHandshakeIdleTimeout): рвём хендшейк ДОСРОЧНО только если он
+	// полностью замолчал на tlsHandshakeIdleTimeout, освобождая слот раньше
+	// для реального клиента. Хендшейк, который активно (пусть и медленно —
+	// мобильные ретрансмиты) обменивается байтами, этим таймером не
+	// затрагивается вообще — для него по-прежнему единственный предел
+	// tlsHandshakeTimeout, отсчитываемый от начала и заданный выше.
+	watchdogDone := make(chan struct{})
+	handshakeDone := make(chan struct{})
+	go func() {
+		defer close(watchdogDone)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-handshakeDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if trackedConn.idleFor() >= tlsHandshakeIdleTimeout {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	tlsConn, err := tls.ServerHandshake(ctx, trackedConn, h.httpTLSConfig)
+	close(handshakeDone)
+	<-watchdogDone
 	// ВАЖНО: слот освобождаем СРАЗУ после самого хендшейка (успешного или
 	// нет), а не через defer на всю serveConn. handshakeSem защищает только
 	// CPU-bound RSA/ECDHE-хендшейк (см. комментарий у поля выше) — а ниже
