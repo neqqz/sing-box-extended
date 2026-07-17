@@ -46,8 +46,18 @@ func NewServerWithOptions(options ServerOptions) (ServerConfig, error) {
 }
 
 func ServerHandshake(ctx context.Context, conn net.Conn, config ServerConfig) (Conn, error) {
-	ctx, cancel := context.WithTimeout(ctx, C.TCPTimeout)
-	defer cancel()
+	// Only impose our own C.TCPTimeout deadline if the caller didn't already
+	// set one. context.WithTimeout on an already-deadlined parent takes the
+	// EARLIER of the two deadlines, so blindly wrapping here silently
+	// shortens any longer deadline a caller deliberately set (e.g.
+	// trusttunnel's serveConn, which budgets 20s specifically to outlast the
+	// client's own 15s C.TCPTimeout) down to 15s — turning an intended
+	// margin into a coin-flip race against the client's identical timeout.
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, C.TCPTimeout)
+		defer cancel()
+	}
 	tlsConn, err := aTLS.ServerHandshake(ctx, conn, config)
 	if err != nil {
 		return nil, err
