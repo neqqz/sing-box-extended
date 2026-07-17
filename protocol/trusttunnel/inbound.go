@@ -141,6 +141,20 @@ type Inbound struct {
 // семафор" без выигрыша.
 var DefaultMaxConcurrentHandshakes = max(runtime.NumCPU()*4, 16)
 
+// handshakeQueueTimeout — сколько ждём свободный слот в handshakeSem.
+// Короче, чем tlsHandshakeTimeout: слот — это чисто CPU-очередь на сервере,
+// не связана с сетью клиента, и если он не освободился за это время,
+// сервер объективно перегружен (либо после фикса handshakeSem вообще не
+// должен случаться — слот держится только на время самого хендшейка).
+const handshakeQueueTimeout = 10 * time.Second
+
+// tlsHandshakeTimeout — бюджет на сам TLS handshake после того, как слот
+// уже получен. Свежий, не урезанный временем ожидания в очереди: на
+// мобильной сети хендшейк иногда честно занимает 10-14s из-за ретрансмитов
+// (RTO 1s→2s→4s→8s при потере пары пакетов), и клиентский C.TCPTimeout —
+// 15s. Даём запас сверх него.
+const tlsHandshakeTimeout = 20 * time.Second
+
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrustTunnelInboundOptions) (adapter.Inbound, error) {
 	if options.TLS == nil || !options.TLS.Enabled {
 		return nil, C.ErrTLSRequired
@@ -346,28 +360,38 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, handler http.Handler) {
 }
 
 func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
-	// ВАЖНО: раньше здесь стояло 10*time.Second — короче, чем клиентский
-	// C.TCPTimeout (15s), которым клиент ограничивает весь дозвон целиком
-	// (TCP+TLS+первый ответ). На стабильной сети разницы не видно, но на
-	// мобильной, где TLS-хендшейку иногда честно нужно 10-14s из-за
-	// ретрансмитов (RTO 1s→2s→4s→8s при потере пары пакетов), СЕРВЕР
-	// обрывал ещё живой, но чуть медленный хендшейк раньше, чем клиент
-	// вообще решил бы сдаться — то есть сервер сам создавал часть тех
-	// "context canceled"/"operation was canceled" на клиенте, которые
-	// выглядели как проблема клиента. 20s даёт запас сверх клиентских 15s.
-	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Second)
-	defer cancel()
-	// Ждём слот в семафоре, но не дольше того же общего дедлайна — если
-	// burst настолько большой, что мы не успеваем добраться до хендшейка
-	// даже за 20s, честно отдаём ту же ошибку, что вызывающий уже привык
-	// видеть, вместо того чтобы копить неограниченную очередь горутин.
+	// Бюджет на ОЖИДАНИЕ СЛОТА в семафоре — отдельный и короче, чем бюджет
+	// на сам хендшейк. Раньше это был один общий ctx на 20s: если клиент
+	// простаивал в очереди N секунд (сервер занят), на сам TLS-хендшейк —
+	// который на мобильной сети и так честно может занимать 10-14s —
+	// оставалось всего 20-N. То есть именно в момент нагрузки сервера
+	// клиентам урезалось время не на ожидание, а на сам крипто-обмен,
+	// что било по ним сильнее всего ровно тогда, когда сервер и так занят.
+	// 10s на очередь — если слот не освободился за 10s, сервер объективно
+	// перегружен и ждать дальше бессмысленно; сам хендшейк получает свежий
+	// полный бюджет независимо от того, сколько простояли в очереди.
+	queueCtx, queueCancel := context.WithTimeout(h.ctx, handshakeQueueTimeout)
+	defer queueCancel()
+	waitStart := time.Now()
 	select {
 	case h.handshakeSem <- struct{}{}:
-	case <-ctx.Done():
+	case <-queueCtx.Done():
 		_ = rawConn.Close()
-		h.logger.Debug("trusttunnel: TLS handshake failed: ", ctx.Err())
+		// Отдельный текст от ошибки самого хендшейка ниже: это истечение
+		// дедлайна В ОЧЕРЕДИ на handshakeSem, до всякого TLS. Раньше оба
+		// случая (очередь и реально медленный хендшейк на плохой мобильной
+		// сети) писали один и тот же "TLS handshake failed: context
+		// deadline exceeded" — по логу нельзя было понять, жив ли ещё баг
+		// семафора или это просто сеть. Теперь различимо по тексту и видно
+		// сколько реально простояли в очереди.
+		h.logger.Debug("trusttunnel: handshakeSem queue wait timed out after ", time.Since(waitStart), " (slot never freed, not a TLS failure): ", queueCtx.Err())
 		return
 	}
+	queueWait := time.Since(waitStart)
+	// ВАЖНО: h.ctx, а не queueCtx — свежий полный бюджет на сам хендшейк,
+	// не урезанный временем, уже потраченным на ожидание слота выше.
+	ctx, cancel := context.WithTimeout(h.ctx, tlsHandshakeTimeout)
+	defer cancel()
 	tlsConn, err := tls.ServerHandshake(ctx, rawConn, h.httpTLSConfig)
 	// ВАЖНО: слот освобождаем СРАЗУ после самого хендшейка (успешного или
 	// нет), а не через defer на всю serveConn. handshakeSem защищает только
@@ -387,7 +411,7 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 	// триггер — синхронный реконнект пачки клиентов после сетевого сбоя).
 	<-h.handshakeSem
 	if err != nil {
-		h.logger.Debug("trusttunnel: TLS handshake failed: ", err)
+		h.logger.Debug("trusttunnel: TLS handshake failed after ", time.Since(waitStart)-queueWait, " (queued ", queueWait, "): ", err)
 		rawConn.Close()
 		return
 	}
