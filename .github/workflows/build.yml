@@ -606,20 +606,12 @@ jobs:
       - name: Prepare upload
         run: |-
           mkdir -p dist
-          VERSION_CODE=$(grep VERSION_CODE clients/android/version.properties | cut -d= -f2)
           VERSION_NAME=$(grep VERSION_NAME clients/android/version.properties | cut -d= -f2)
           cp ${{ env.ALIGNED_APK }} "dist/sing-box-${VERSION_NAME}-android-aarch64.apk"
-          cat > dist/SFA-version-metadata.json << EOF
-          {
-            "version_code": ${VERSION_CODE},
-            "version_name": "${VERSION_NAME}"
-          }
-          EOF
-          cat dist/SFA-version-metadata.json
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: binary-android-apks
+          name: binary-android_aarch64
           path: 'dist'
 
   upload:
