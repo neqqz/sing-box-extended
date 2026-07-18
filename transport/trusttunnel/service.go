@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/buf"
@@ -182,6 +183,8 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			},
 		}
 		conn.setup(request.Body, nil)
+		// Устанавливаем таймаут простоя для TCP-стрима при создании
+		_ = conn.SetDeadline(time.Now().Add(TCPStreamIdleTimeout))
 		wrapper := &h2ConnWrapper{Conn: conn}
 		s.trackConn(username, wrapper)
 		_ = s.handler.NewConnection(ctx, wrapper, M.Metadata{
