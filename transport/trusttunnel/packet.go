@@ -106,25 +106,11 @@ func (u *clientPacketConn) writePacketToServer(buffer *buf.Buffer, source M.Sock
 	common.Must(binary.Write(header, binary.BigEndian, source.Port))
 	common.Must(binary.Write(header, binary.BigEndian, uint8(len(appName))))
 	common.Must1(header.WriteString(appName))
-<<<<<<< HEAD
-	_, err := u.writer.Write(header.Bytes())
+	padding, err := randomUDPPadding(paddingLen)
 	if err != nil {
 		return err
 	}
-	_, err = u.writer.Write(buffer.Bytes())
-	if err != nil {
-		return err
-	}
-	if err = writeUDPPadding(u.writer, paddingLen); err != nil {
-		return err
-	}
-	if u.flusher != nil {
-		u.flusher.Flush()
-	}
-	return nil
-=======
-	return u.writeChunks(header.Bytes(), buffer.Bytes())
->>>>>>> upstream/extended
+	return u.writeChunks(header.Bytes(), buffer.Bytes(), padding)
 }
 
 var (
@@ -226,23 +212,9 @@ func (u *serverPacketConn) writePacketToClient(buffer *buf.Buffer, source M.Sock
 	common.Must1(header.Write(sourceAddress[:]))
 	common.Must(binary.Write(header, binary.BigEndian, source.Port))
 	common.Must(header.WriteZeroN(16 + 2))
-<<<<<<< HEAD
-	_, err := u.writer.Write(header.Bytes())
+	padding, err := randomUDPPadding(paddingLen)
 	if err != nil {
 		return err
 	}
-	_, err = u.writer.Write(buffer.Bytes())
-	if err != nil {
-		return err
-	}
-	if err = writeUDPPadding(u.writer, paddingLen); err != nil {
-		return err
-	}
-	if u.flusher != nil {
-		u.flusher.Flush()
-	}
-	return nil
-=======
-	return u.writeChunks(header.Bytes(), buffer.Bytes())
->>>>>>> upstream/extended
+	return u.writeChunks(header.Bytes(), buffer.Bytes(), padding)
 }
