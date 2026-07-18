@@ -23,11 +23,6 @@ on:
           - tvOS
           - macOS-standalone
           - publish-android
-  #push:
-    #branches:
-      #- stable
-      #- testing
-      #- unstable
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ inputs.build }}
@@ -61,6 +56,7 @@ jobs:
         id: outputs
         run: |-
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build binary
     if: github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Binary'
@@ -73,52 +69,14 @@ jobs:
           - { os: linux, arch: amd64, variant: purego, naive: true }
           - { os: linux, arch: amd64, variant: glibc, naive: true }
           - { os: linux, arch: amd64, variant: musl, naive: true, debian: amd64, rpm: x86_64, pacman: x86_64, alpine: x86_64, openwrt: "x86_64" }
-
           - { os: linux, arch: arm64, variant: purego, naive: true }
           - { os: linux, arch: arm64, variant: glibc, naive: true }
           - { os: linux, arch: arm64, variant: musl, naive: true, debian: arm64, rpm: aarch64, pacman: aarch64, alpine: aarch64, openwrt: "aarch64_cortex-a53 aarch64_cortex-a72 aarch64_cortex-a76 aarch64_generic" }
-
-          # - { os: linux, arch: "386", go386: sse2 }
-          # - { os: linux, arch: "386", variant: glibc, naive: true, go386: sse2 }
-          # - { os: linux, arch: "386", variant: musl, naive: true, go386: sse2, debian: i386, rpm: i386, alpine: x86, openwrt: "i386_pentium4" }
-
-          # - { os: linux, arch: arm, goarm: "7" }
-          # - { os: linux, arch: arm, variant: glibc, naive: true, goarm: "7" }
-          # - { os: linux, arch: arm, variant: musl, naive: true, goarm: "7", debian: armhf, rpm: armv7hl, pacman: armv7hl, alpine: armv7, openwrt: "arm_cortex-a5_vfpv4 arm_cortex-a7_neon-vfpv4 arm_cortex-a7_vfpv4 arm_cortex-a8_vfpv3 arm_cortex-a9_neon arm_cortex-a9_vfpv3-d16 arm_cortex-a15_neon-vfpv4" }
-
-          # - { os: linux, arch: mipsle, gomips: hardfloat, naive: true, variant: glibc }
-          # - { os: linux, arch: mipsle, gomips: softfloat, naive: true, variant: musl, debian: mipsel, rpm: mipsel, openwrt: "mipsel_24kc mipsel_74kc mipsel_mips32" }
-          # - { os: linux, arch: mips64le, gomips: hardfloat, naive: true, variant: glibc, debian: mips64el, rpm: mips64el }
-          # - { os: linux, arch: riscv64, naive: true, variant: glibc }
-          # - { os: linux, arch: riscv64, naive: true, variant: musl, debian: riscv64, rpm: riscv64, alpine: riscv64, openwrt: "riscv64_generic" }
-          # - { os: linux, arch: loong64, naive: true, variant: glibc }
-          # - { os: linux, arch: loong64, naive: true, variant: musl, debian: loongarch64, rpm: loongarch64, alpine: loongarch64, openwrt: "loongarch64_generic" }
-
-          # - { os: linux, arch: "386", go386: softfloat, openwrt: "i386_pentium-mmx" }
-          # - { os: linux, arch: arm, goarm: "5", openwrt: "arm_arm926ej-s arm_cortex-a7 arm_cortex-a9 arm_fa526 arm_xscale" }
-          # - { os: linux, arch: arm, goarm: "6", debian: armel, rpm: armv6hl, openwrt: "arm_arm1176jzf-s_vfp" }
-          # - { os: linux, arch: mips, gomips: softfloat, openwrt: "mips_24kc mips_4kec mips_mips32" }
-          # - { os: linux, arch: mipsle, gomips: hardfloat, openwrt: "mipsel_24kc_24kf" }
-          # - { os: linux, arch: mipsle, gomips: softfloat }
-          # - { os: linux, arch: mips64, gomips: softfloat, openwrt: "mips64_mips64r2 mips64_octeonplus" }
-          # - { os: linux, arch: mips64le, gomips: hardfloat }
-          # - { os: linux, arch: mips64le, gomips: softfloat, openwrt: "mips64el_mips64r2" }
-          # - { os: linux, arch: s390x, debian: s390x, rpm: s390x }
-          # - { os: linux, arch: ppc64le, debian: ppc64el, rpm: ppc64le }
-          # - { os: linux, arch: riscv64 }
-          # - { os: linux, arch: loong64 }
-
           - { os: windows, arch: amd64, legacy_win7: true, legacy_name: "windows-7" }
-          # - { os: windows, arch: "386", legacy_win7: true, legacy_name: "windows-7" }
-
-          # Android: Only aarch64 (arm64) is kept
           - { os: android, arch: arm64, ndk: "aarch64-linux-android23" }
-          # - { os: android, arch: arm, ndk: "armv7a-linux-androideabi23" }
-          # - { os: android, arch: amd64, ndk: "x86_64-linux-android23" }
-          # - { os: android, arch: "386", ndk: "i686-linux-android23" }
     steps:
       - name: Checkout
-        uses: actions/checkout@v7 # v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Setup Go
@@ -151,6 +109,9 @@ jobs:
         with:
           ndk-version: r28
           local-cache: true
+      - name: Setup Android SDK
+        if: matrix.os == 'android'
+        uses: android-actions/setup-android@v4
       - name: Clone cronet-go
         if: matrix.naive
         run: |
@@ -185,15 +146,12 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: service/admin_panel/web/package-lock.json
-
       - name: Install frontend deps
         working-directory: service/admin_panel/web
         run: npm install
-
       - name: Build frontend
         working-directory: service/admin_panel/web
         run: npm run build
-        
       - name: Download Chromium toolchain
         if: matrix.naive
         run: |
@@ -362,8 +320,6 @@ jobs:
           curl -Lo '/tmp/debsigs.diff' 'https://gitlab.com/debsigs/debsigs/-/commit/160138f5de1ec110376d3c807b60a37388bc7c90.diff'
           sudo patch /usr/bin/debsigs < '/tmp/debsigs.diff'
           rm -rf $HOME/.gnupg
-
-
       - name: Package RPM
         if: matrix.rpm != ''
         run: |-
@@ -451,6 +407,7 @@ jobs:
         with:
           name: binary-${{ matrix.os }}_${{ matrix.arch }}${{ matrix.goarm && format('v{0}', matrix.goarm) }}${{ matrix.go386 && format('_{0}', matrix.go386) }}${{ matrix.gomips && format('_{0}', matrix.gomips) }}${{ matrix.legacy_name && format('-legacy-{0}', matrix.legacy_name) }}${{ matrix.variant && format('-{0}', matrix.variant) }}
           path: "dist"
+
   build_darwin:
     name: Build Darwin binaries
     if: github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Binary'
@@ -465,7 +422,7 @@ jobs:
           - { arch: amd64, legacy_osx: true, legacy_name: "macos-10.13" }
     steps:
       - name: Checkout
-        uses: actions/checkout@v7 # v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Setup Go
@@ -487,22 +444,18 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |-
           .github/setup_go_for_macos1013.sh
-          
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: service/admin_panel/web/package-lock.json
-          
       - name: Install frontend deps
         working-directory: service/admin_panel/web
         run: npm install
       - name: Build frontend
-      
         working-directory: service/admin_panel/web
         run: npm run build
-        
       - name: Setup Go for macOS 10.13
         if: matrix.legacy_osx
         run: |-
@@ -560,6 +513,7 @@ jobs:
         with:
           name: binary-darwin_${{ matrix.arch }}${{ matrix.legacy_name && format('-legacy-{0}', matrix.legacy_name) }}
           path: "dist"
+
   build_windows:
     name: Build Windows binaries
     if: github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Binary'
@@ -574,29 +528,25 @@ jobs:
           - { arch: arm64, naive: true }
     steps:
       - name: Checkout
-        uses: actions/checkout@v7 # v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
           go-version: 'stable'
-          
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: service/admin_panel/web/package-lock.json
-
       - name: Install frontend deps
         working-directory: service/admin_panel/web
         run: npm install
-
       - name: Build frontend
         working-directory: service/admin_panel/web
         run: npm run build
-        
       - name: Set tag
         run: |-
           git ls-remote --exit-code --tags origin v${{ needs.calculate_version.outputs.version }} || echo "PUBLISHED=false" >> "$env:GITHUB_ENV"
@@ -672,6 +622,7 @@ jobs:
         with:
           name: binary-windows_${{ matrix.arch }}
           path: "dist"
+
   build_android:
     name: Build Android
     if: (github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Android') && github.ref != 'refs/heads/oldstable'
@@ -680,7 +631,7 @@ jobs:
       - calculate_version
     steps:
       - name: Checkout
-        uses: actions/checkout@v7 # v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: 'recursive'
@@ -693,6 +644,8 @@ jobs:
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r28
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
       - name: Setup OpenJDK
         run: |-
           sudo apt update && sudo apt install -y openjdk-17-jdk-headless
@@ -747,16 +700,28 @@ jobs:
           mkdir clients/android/app/libs
           cp *.aar clients/android/app/libs
           cd clients/android
-          ./gradlew :app:assembleOtherRelease -PabiFilters=arm64-v8a #:app:assembleOtherLegacyRelease
+          ./gradlew :app:assembleOtherRelease -PabiFilters=arm64-v8a
         env:
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+      - name: ZipAlign APK
+        run: |
+          BUILD_TOOLS_VERSION=$(ls $ANDROID_HOME/build-tools/ | tail -n 1)
+          ZIPALIGN="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/zipalign"
+          
+          INPUT_APK=$(find clients/android/app/build/outputs/apk/other/release -name "*.apk" | head -n 1)
+          OUTPUT_APK="${INPUT_APK%.apk}-aligned.apk"
+          
+          echo "Aligning: $INPUT_APK -> $OUTPUT_APK"
+          $ZIPALIGN -v -p 4 "$INPUT_APK" "$OUTPUT_APK"
+          
+          echo "ALIGNED_APK=$OUTPUT_APK" >> $GITHUB_ENV
       - name: Prepare upload
         run: |-
           mkdir -p dist
-          #cp clients/android/app/build/outputs/apk/play/release/*.apk dist
-          cp clients/android/app/build/outputs/apk/other/release/*v8a.apk dist
-          #cp clients/android/app/build/outputs/apk/otherLegacy/release/*.apk dist
+          cp ${{ env.ALIGNED_APK }} dist/
+          # Также копируем оригинальный APK на всякий случай
+          cp clients/android/app/build/outputs/apk/other/release/*.apk dist/ 2>/dev/null || true
           VERSION_CODE=$(grep VERSION_CODE clients/android/version.properties | cut -d= -f2)
           VERSION_NAME=$(grep VERSION_NAME clients/android/version.properties | cut -d= -f2)
           cat > dist/SFA-version-metadata.json << EOF
@@ -771,6 +736,7 @@ jobs:
         with:
           name: binary-android-apks
           path: 'dist'
+
   publish_android:
     name: Publish Android
     if: github.event_name == 'workflow_dispatch' && inputs.build == 'publish-android' && github.ref != 'refs/heads/oldstable'
@@ -779,7 +745,7 @@ jobs:
       - calculate_version
     steps:
       - name: Checkout
-        uses: actions/checkout@v7 # v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: 'recursive'
@@ -792,6 +758,8 @@ jobs:
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r28
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
       - name: Setup OpenJDK
         run: |-
           sudo apt update && sudo apt install -y openjdk-17-jdk-headless
@@ -841,10 +809,11 @@ jobs:
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.SERVICE_ACCOUNT_CREDENTIALS }}
+
   build_apple:
     name: Build Apple clients
     runs-on: macos-26
-    if: false # github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Apple' || inputs.build == 'app-store' || inputs.build == 'iOS' || inputs.build == 'macOS' || inputs.build == 'tvOS' || inputs.build == 'macOS-standalone'
+    if: false
     needs:
       - calculate_version
     strategy:
@@ -882,7 +851,7 @@ jobs:
     steps:
       - name: Checkout
         if: matrix.if
-        uses: actions/checkout@v7 # v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: 'recursive'
@@ -919,22 +888,17 @@ jobs:
           security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security list-keychain -d user -s $KEYCHAIN_PATH
-
           PROFILES_ZIP_PATH=$RUNNER_TEMP/Profiles.zip
           echo -n "$PROVISIONING_PROFILES" | base64 --decode -o $PROFILES_ZIP_PATH
-
           PROFILES_PATH="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PROFILES_PATH"
           unzip $PROFILES_ZIP_PATH -d "$PROFILES_PATH"
-
           ASC_KEY_PATH=$RUNNER_TEMP/Key.p12
           echo -n "$ASC_KEY" | base64 --decode -o $ASC_KEY_PATH
-
           xcrun notarytool store-credentials "notarytool-password" \
             --key $ASC_KEY_PATH \
             --key-id $ASC_KEY_ID \
             --issuer $ASC_KEY_ISSUER_ID
-
           echo "ASC_KEY_PATH=$ASC_KEY_PATH" >> "$GITHUB_ENV"
           echo "ASC_KEY_ID=$ASC_KEY_ID" >> "$GITHUB_ENV"
           echo "ASC_KEY_ISSUER_ID=$ASC_KEY_ISSUER_ID" >> "$GITHUB_ENV"
@@ -1013,7 +977,6 @@ jobs:
           cd "${{ matrix.archive }}"
           zip -r SFM.dSYMs.zip dSYMs
           popd
-
           mkdir -p dist
           cp clients/apple/SFM.dmg "dist/SFM-${VERSION}-universal.dmg"
           cp "clients/apple/${{ matrix.archive }}/SFM.dSYMs.zip" "dist/SFM-${VERSION}-universal.dSYMs.zip"
@@ -1023,6 +986,7 @@ jobs:
         with:
           name: binary-macos-dmg
           path: 'dist'
+
   upload:
     name: Upload builds
     if: "!failure() && github.event_name == 'workflow_dispatch' && (inputs.build == 'All' || inputs.build == 'Binary' || inputs.build == 'Android' || inputs.build == 'Apple' || inputs.build == 'macOS-standalone')"
@@ -1036,7 +1000,7 @@ jobs:
       - build_apple
     steps:
       - name: Checkout
-        uses: actions/checkout@v7 # v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Cache ghr
@@ -1077,4 +1041,3 @@ jobs:
           ghr --replace -p 5 "v${VERSION}" dist
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
