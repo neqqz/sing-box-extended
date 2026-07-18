@@ -97,22 +97,22 @@ func randomUDPPaddingLength(min, max int) int {
 	return min + int(n.Int64())
 }
 
-// writeUDPPadding пишет n случайных байт напрямую в w (отдельным Write —
-// как appName/payload выше, без лишней конкатенации в один буфер).
-func writeUDPPadding(w io.Writer, n int) error {
+// randomUDPPadding возвращает n случайных байт паддинга (nil, если n<=0).
+// Раньше эта функция сама писала в w отдельным Write; теперь байты
+// возвращаются вызывающему, чтобы он мог передать их в writeChunks вместе
+// с header/payload — одним write-локом, без гонки с Close().
+func randomUDPPadding(n int) ([]byte, error) {
 	if n <= 0 {
-		return nil
+		return nil, nil
 	}
 	padding := make([]byte, n)
 	if _, err := crand.Read(padding); err != nil {
-		return err
+		return nil, err
 	}
-	_, err := w.Write(padding)
-	return err
+	return padding, nil
 }
 
 type httpConn struct {
-<<<<<<< HEAD
 	writer       io.Writer
 	flusher      http.Flusher
 	body         io.ReadCloser
@@ -126,23 +126,8 @@ type httpConn struct {
 	deadline     *time.Timer
 	deadlineLock sync.Mutex
 	done         chan struct{}
-=======
-	writer     io.Writer
-	flusher    http.Flusher
-	body       io.ReadCloser
-	setupOnce  sync.Once
-	created    chan struct{}
-	createErr  error
-	cancelFn   func()
-	closeFn    func()
-	remoteAddr net.Addr
-	localAddr  net.Addr
-	deadline   *time.Timer
-	done       chan struct{}
-	closed     bool
-
-	mtx sync.Mutex
->>>>>>> upstream/extended
+	closed       bool
+	mtx          sync.Mutex
 }
 
 func (h *httpConn) setup(body io.ReadCloser, err error) {
@@ -199,6 +184,11 @@ func (h *httpConn) writeFlush(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// writeChunks writes chunks to the underlying writer under h.mtx, so it
+// can't race with Close() setting h.closed / closing the writer, and
+// flushes once at the end. Use this (rather than writing to h.writer
+// directly) for anything that issues more than one Write per logical
+// packet, so the writes stay atomic with respect to concurrent writers.
 func (h *httpConn) writeChunks(chunks ...[]byte) error {
 	h.mtx.Lock()
 	defer h.mtx.Unlock()
