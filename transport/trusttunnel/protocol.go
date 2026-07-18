@@ -112,6 +112,7 @@ func writeUDPPadding(w io.Writer, n int) error {
 }
 
 type httpConn struct {
+<<<<<<< HEAD
 	writer       io.Writer
 	flusher      http.Flusher
 	body         io.ReadCloser
@@ -125,6 +126,23 @@ type httpConn struct {
 	deadline     *time.Timer
 	deadlineLock sync.Mutex
 	done         chan struct{}
+=======
+	writer     io.Writer
+	flusher    http.Flusher
+	body       io.ReadCloser
+	setupOnce  sync.Once
+	created    chan struct{}
+	createErr  error
+	cancelFn   func()
+	closeFn    func()
+	remoteAddr net.Addr
+	localAddr  net.Addr
+	deadline   *time.Timer
+	done       chan struct{}
+	closed     bool
+
+	mtx sync.Mutex
+>>>>>>> upstream/extended
 }
 
 func (h *httpConn) setup(body io.ReadCloser, err error) {
@@ -147,6 +165,9 @@ func (h *httpConn) waitCreated() error {
 }
 
 func (h *httpConn) Close() error {
+	h.mtx.Lock()
+	h.closed = true
+	h.mtx.Unlock()
 	h.setup(nil, net.ErrClosed)
 	if closer, ok := h.writer.(io.Closer); ok {
 		_ = closer.Close()
@@ -171,11 +192,28 @@ func (h *httpConn) Close() error {
 }
 
 func (h *httpConn) writeFlush(p []byte) (n int, err error) {
-	n, err = h.writer.Write(p)
+	err = h.writeChunks(p)
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (h *httpConn) writeChunks(chunks ...[]byte) error {
+	h.mtx.Lock()
+	defer h.mtx.Unlock()
+	if h.closed {
+		return net.ErrClosed
+	}
+	for _, chunk := range chunks {
+		if _, err := h.writer.Write(chunk); err != nil {
+			return err
+		}
+	}
 	if h.flusher != nil {
 		h.flusher.Flush()
 	}
-	return n, err
+	return nil
 }
 
 func (h *httpConn) RemoteAddr() net.Addr {

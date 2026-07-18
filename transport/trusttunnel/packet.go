@@ -106,6 +106,7 @@ func (u *clientPacketConn) writePacketToServer(buffer *buf.Buffer, source M.Sock
 	common.Must(binary.Write(header, binary.BigEndian, source.Port))
 	common.Must(binary.Write(header, binary.BigEndian, uint8(len(appName))))
 	common.Must1(header.WriteString(appName))
+<<<<<<< HEAD
 	_, err := u.writer.Write(header.Bytes())
 	if err != nil {
 		return err
@@ -121,6 +122,9 @@ func (u *clientPacketConn) writePacketToServer(buffer *buf.Buffer, source M.Sock
 		u.flusher.Flush()
 	}
 	return nil
+=======
+	return u.writeChunks(header.Bytes(), buffer.Bytes())
+>>>>>>> upstream/extended
 }
 
 var (
@@ -222,6 +226,7 @@ func (u *serverPacketConn) writePacketToClient(buffer *buf.Buffer, source M.Sock
 	common.Must1(header.Write(sourceAddress[:]))
 	common.Must(binary.Write(header, binary.BigEndian, source.Port))
 	common.Must(header.WriteZeroN(16 + 2))
+<<<<<<< HEAD
 	_, err := u.writer.Write(header.Bytes())
 	if err != nil {
 		return err
@@ -237,4 +242,7 @@ func (u *serverPacketConn) writePacketToClient(buffer *buf.Buffer, source M.Sock
 		u.flusher.Flush()
 	}
 	return nil
+=======
+	return u.writeChunks(header.Bytes(), buffer.Bytes())
+>>>>>>> upstream/extended
 }

@@ -23,9 +23,9 @@ type FallbackOutboundOptions struct {
 }
 
 type GroupCommonOption struct {
-	Outbounds       []string          `json:"outbounds"`
-	Providers       []string          `json:"providers"`
-	Exclude         *badoption.Regexp `json:"exclude,omitempty"`
-	Include         *badoption.Regexp `json:"include,omitempty"`
-	UseAllProviders bool              `json:"use_all_providers,omitempty"`
+	Outbounds       []string                   `json:"outbounds"`
+	Providers       badoption.Listable[string] `json:"providers,omitempty"`
+	Exclude         *badoption.Regexp          `json:"exclude,omitempty"`
+	Include         *badoption.Regexp          `json:"include,omitempty"`
+	UseAllProviders bool                       `json:"use_all_providers,omitempty"`
 }

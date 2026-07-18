@@ -118,13 +118,13 @@ type V2RayXHTTPBaseOptions struct {
 	Path                 string                     `json:"path,omitempty"`
 	Headers              map[string]string          `json:"headers,omitempty"`
 	DomainStrategy       DomainStrategy             `json:"domain_strategy,omitempty"`
-	XPaddingBytes        badoption.Range[int]    `json:"x_padding_bytes"`
+	XPaddingBytes        badoption.Range[int]       `json:"x_padding_bytes"`
 	NoGRPCHeader         bool                       `json:"no_grpc_header,omitempty"`
 	NoSSEHeader          bool                       `json:"no_sse_header,omitempty"`
-	ScMaxEachPostBytes   *badoption.Range[int]   `json:"sc_max_each_post_bytes"`
-	ScMinPostsIntervalMs *badoption.Range[int]   `json:"sc_min_posts_interval_ms"`
+	ScMaxEachPostBytes   *badoption.Range[int]      `json:"sc_max_each_post_bytes"`
+	ScMinPostsIntervalMs *badoption.Range[int]      `json:"sc_min_posts_interval_ms"`
 	ScMaxBufferedPosts   int64                      `json:"sc_max_buffered_posts,omitempty"`
-	ScStreamUpServerSecs *badoption.Range[int]   `json:"sc_stream_up_server_secs"`
+	ScStreamUpServerSecs *badoption.Range[int]      `json:"sc_stream_up_server_secs"`
 	ServerMaxHeaderBytes int                        `json:"server_max_header_bytes"`
 	TrustedXForwardedFor badoption.Listable[string] `json:"trusted_x_forwarded_for,omitempty"`
 	Xmux                 *V2RayXHTTPXmuxOptions     `json:"xmux"`
@@ -140,9 +140,9 @@ type V2RayXHTTPBaseOptions struct {
 	SeqKey               string                     `json:"seq_key,omitempty"`
 	UplinkDataPlacement  string                     `json:"uplink_data_placement,omitempty"`
 	UplinkDataKey        string                     `json:"uplink_data_key,omitempty"`
-	UplinkChunkSize      *badoption.Range[int]   `json:"uplink_chunk_size,omitempty"`
+	UplinkChunkSize      *badoption.Range[int]      `json:"uplink_chunk_size,omitempty"`
 	SessionIDTable       string                     `json:"session_id_table,omitempty"`
-	SessionIDLength      badoption.Range[int]    `json:"session_id_length,omitempty"`
+	SessionIDLength      badoption.Range[int]       `json:"session_id_length,omitempty"`
 	CongestionController string                     `json:"congestion_controller,omitempty"`
 	CWND                 int                        `json:"cwnd,omitempty"`
 }
@@ -497,7 +497,7 @@ type V2RayXHTTPXmuxOptions struct {
 	CMaxReuseTimes   badoption.Range[int] `json:"c_max_reuse_times"`
 	HMaxRequestTimes badoption.Range[int] `json:"h_max_request_times"`
 	HMaxReusableSecs badoption.Range[int] `json:"h_max_reusable_secs"`
-	HKeepAlivePeriod int64                   `json:"h_keep_alive_period"`
+	HKeepAlivePeriod int64                `json:"h_keep_alive_period"`
 }
 
 func (m *V2RayXHTTPXmuxOptions) GetNormalizedMaxConcurrency() badoption.Range[int] {

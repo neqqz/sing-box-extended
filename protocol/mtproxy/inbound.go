@@ -102,10 +102,9 @@ func (n *Inbound) Start(stage adapter.StartStage) error {
 }
 
 func (n *Inbound) Close() error {
+	err := common.Close(&n.listener)
 	n.proxy.Shutdown()
-	return common.Close(
-		&n.listener,
-	)
+	return err
 }
 
 func (h *Inbound) UpdateUsers(users []option.MTProxyUser) {

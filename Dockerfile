@@ -1,18 +1,23 @@
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 LABEL maintainer="shtorm-7"
 COPY . /go/src/github.com/sagernet/sing-box
 WORKDIR /go/src/github.com/sagernet/sing-box
 ARG TARGETOS TARGETARCH
 ARG GOPROXY=""
-ENV GOPROXY ${GOPROXY}
-ENV CGO_ENABLED=0
+ARG CRONET_GO_PATH=/go/src/github.com/sagernet/sing-box/cronet-go
+ENV GOPROXY=${GOPROXY}
+ENV CGO_ENABLED=1
 ENV GOOS=$TARGETOS
 ENV GOARCH=$TARGETARCH
+ENV CRONET_GO_PATH=${CRONET_GO_PATH}
 RUN set -ex \
-    && apk add git build-base \
-    && export COMMIT=$(git rev-parse --short HEAD) \
-    && export VERSION=$(go run ./cmd/internal/read_tag) \
-    && export TAGS=$(cat release/DEFAULT_BUILD_TAGS_OTHERS) \
+    && git config --global --add safe.directory /go/src/github.com/sagernet/sing-box \
+    && export GOTOOLCHAIN=local \
+    && export CGO_ENABLED=1 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    && eval "$(CGO_ENABLED=0 GOOS= GOARCH= go run -C "$CRONET_GO_PATH" ./cmd/build-naive --target=$GOOS/$GOARCH --libc=musl env --export)" \
+    && export CGO_LDFLAGS="$CGO_LDFLAGS -Wl,-z,notext -Wl,-z,execstack" \
+    && export VERSION=$(CGO_ENABLED=0 GOOS= GOARCH= go run ./cmd/internal/read_tag) \
+    && export TAGS=$(cat release/DEFAULT_BUILD_TAGS_DOCKER) \
     && export LDFLAGS_SHARED=$(cat release/LDFLAGS) \
     && go build -v -trimpath -tags "$TAGS" \
         -o /go/bin/sing-box \
