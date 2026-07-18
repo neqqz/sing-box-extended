@@ -21,6 +21,25 @@ const (
 	DefaultConnectionTimeout  = 30 * time.Second
 	DefaultHealthCheckTimeout = 7 * time.Second
 	DefaultSessionTimeout     = 30 * time.Second
+	// TCPStreamIdleTimeout — сколько проксируемый TCP-стрим может провисеть
+	// без единого байта в любую сторону, прежде чем мы сами его закроем.
+	//
+	// h2Server.ReadIdleTimeout/PingTimeout (см. inbound.go) детектируют
+	// только мёртвое СОЕДИНЕНИЕ целиком — если по нему параллельно ходит
+	// трафик ДРУГИХ приложений (обычная ситуация: один h2-туннель на все
+	// приложения телефона), таймер простоя соединения не срабатывает
+	// никогда, сколько бы конкретных стримов внутри него ни осиротело
+	// (клиентское приложение убито/сокет умер молча, RST_STREAM/END_STREAM
+	// от клиента не пришёл). Без этого таймаута такой стрим висит на
+	// pipe.Read вечно — ни секунды не разряжается сам, накапливается
+	// goroutine+fd+исходящее соединение на каждый такой случай, пока не
+	// упрёмся в лимиты (см. комментарий выше про ~15 минут tcp_retries2 —
+	// та ситуация ХУЖЕ этой: тут вообще нет верхней границы).
+	//
+	// httpConn.SetDeadline/Close уже реализованы и просто не были ничем
+	// востребованы для клиентской стороны стрима — connectionCopy в route/
+	// не расставляет дедлайны сама, это ответственность транспорта.
+	TCPStreamIdleTimeout = 15 * time.Minute
 )
 
 func buildAuth(username string, password string) string {
@@ -203,9 +222,19 @@ func (t *tcpConn) Read(b []byte) (n int, err error) {
 	if err = t.waitCreated(); err != nil {
 		return 0, err
 	}
-	return t.body.Read(b)
+	n, err = t.body.Read(b)
+	if n > 0 {
+		// Пришли байты — стрим жив, откладываем самозакрытие ещё на
+		// TCPStreamIdleTimeout. См. комментарий у константы в protocol.go.
+		_ = t.SetDeadline(time.Now().Add(TCPStreamIdleTimeout))
+	}
+	return n, err
 }
 
 func (t *tcpConn) Write(b []byte) (int, error) {
-	return t.writeFlush(b)
+	n, err := t.writeFlush(b)
+	if n > 0 {
+		_ = t.SetDeadline(time.Now().Add(TCPStreamIdleTimeout))
+	}
+	return n, err
 }
