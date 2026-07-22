@@ -348,6 +348,7 @@ func createHTTPClient(ctx context.Context, dest M.Socksaddr, dialer N.Dialer, op
 				}
 				conn, dErr := qtls.DialEarly(ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), tlsConfig, cfg)
 				if dErr != nil {
+					_ = udpConn.Close()
 					return nil, dErr
 				}
 				if congestionControlFactory != nil {
