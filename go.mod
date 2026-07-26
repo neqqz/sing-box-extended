@@ -231,7 +231,7 @@ replace github.com/sagernet/sing-mux => github.com/shtorm-7/sing-mux v0.3.4-exte
 
 replace github.com/ameshkov/dnscrypt/v2 => github.com/shtorm-7/dnscrypt/v2 v2.4.0-extended-1.0.0
 
-replace github.com/sagernet/sing-vmess => github.com/shtorm-7/sing-vmess v0.2.7-extended-1.0.0
+replace github.com/sagernet/sing-vmess => github.com/shtorm-7/sing-vmess v0.2.8-extended-1.0.0
 
 replace github.com/dolonet/mtg-multi => github.com/shtorm-7/mtg-multi v1.11.0-extended-1.0.0
 

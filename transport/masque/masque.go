@@ -77,7 +77,16 @@ func ConnectTunnel(ctx context.Context, dialer N.Dialer, tlsConfig aTLS.Config, 
 	if !ok || quicEndpoint == nil {
 		return nil, nil, nil, errors.New("missing HTTP/3 UDP endpoint")
 	}
-	udpConn, err := dialer.ListenPacket(ctx, M.SocksaddrFromNetIP(quicEndpoint.AddrPort()))
+	endpointAddrPort := quicEndpoint.AddrPort()
+	udpConn, err := dialer.ListenPacket(
+		ctx,
+		M.SocksaddrFromNetIP(
+			netip.AddrPortFrom(
+				endpointAddrPort.Addr().Unmap(),
+				endpointAddrPort.Port(),
+			),
+		),
+	)
 	if err != nil {
 		return nil, nil, nil, err
 	}

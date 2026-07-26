@@ -387,8 +387,8 @@ github.com/shtorm-7/sing v0.8.10-extended-1.2.0 h1:5yw9j0+P2QkRWvxBvb71wvNdpAlHm
 github.com/shtorm-7/sing v0.8.10-extended-1.2.0/go.mod h1:olXxWQNqRW/l2Q6JI3b2Qmz8iQnIFlOeeH8bx6JhgUA=
 github.com/shtorm-7/sing-mux v0.3.4-extended-1.0.0 h1:a5OoXr3e2ACbM6vDIaaGL44IdHQ6wPjcSoU13vfC0Sw=
 github.com/shtorm-7/sing-mux v0.3.4-extended-1.0.0/go.mod h1:QvlKMyNBNrQoyX4x+gq028uPbLM2XeRpWtDsWBJbFSk=
-github.com/shtorm-7/sing-vmess v0.2.7-extended-1.0.0 h1:WVheKmQH5hSQbJU1ZTKthKSutkTLWSb2hp4JuQhJBow=
-github.com/shtorm-7/sing-vmess v0.2.7-extended-1.0.0/go.mod h1:5aYoOtYksAyS0NXDm0qKeTYW1yoE1bJVcv+XLcVoyJs=
+github.com/shtorm-7/sing-vmess v0.2.8-extended-1.0.0 h1:OjvqZOhYSi9eIJGYC0iPDPqvgo/asujvhAGkFzbZ5/Y=
+github.com/shtorm-7/sing-vmess v0.2.8-extended-1.0.0/go.mod h1:P11scgTxMxVVQ8dlM27yNm3Cro40mD0+gHbnqrNGDuY=
 github.com/shtorm-7/tailscale v1.92.4-sing-box-1.13-mod.7-extended-1.0.2 h1:hSMjh97OszszOd8HrzpaYUQH9dWRRBluJCbwQyz8ZOk=
 github.com/shtorm-7/tailscale v1.92.4-sing-box-1.13-mod.7-extended-1.0.2/go.mod h1:TYIIqO5sZpWq873rLIeO2usszSMUpR3h6WdqVVs65ug=
 github.com/shtorm-7/wireguard-go v0.0.2-beta.1-extended-1.4.3 h1:jtOA73D4F5qRV70//ahOt20KBnWvQimAFjtIiOtt0ps=
