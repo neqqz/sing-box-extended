@@ -696,13 +696,50 @@ func (c *Client) listenPacketTimeout(timeout time.Duration) (net.PacketConn, err
 	return conn, nil
 }
 
+// Close помечает Client мёртвым для НОВЫХ стримов (c.cancel()) и закрывает
+// нижележащий транспорт — но только то, что прямо сейчас простаивает.
+//
+// ВАЖНО: раньше здесь был безусловный `if closer, ok := c.roundTripper.(io.Closer); ok { closer.Close() }`.
+// Для *http2.Transport это было безобидно — у него вообще нет метода
+// Close(), только CloseIdleConnections(), так что срабатывал лишь второй
+// if ниже. А вот *http3.Transport (QUIC-режим) io.Closer РЕАЛЬНО
+// реализует, и его Close() рвёт разом ВСЕ QUIC-соединения этого
+// транспорта — включая те, что в этот самый момент обслуживают активные
+// мультиплексированные стримы (см. sagernet/quic-go/http3.Transport.Close(),
+// в отличие от его же CloseIdleConnections(), которая трогает только
+// простаивающие).
+//
+// А Client.Close() вызывается далеко не только при полном осознанном
+// завершении работы: см. removeClient() в MultiplexClient.Dial/ListenPacket
+// (провал ОДНОГО нового дозвона на клиенте, у которого могут быть другие,
+// полностью здоровые стримы) и loopHealthCheck (две неудачные проверки
+// подряд). Для h2-пути это уже давно учтено — активные стримы живут на
+// независимом от c.ctx контексте (см. roundTripTimeout) и переживают
+// Close() ровно потому, что CloseIdleConnections() их не трогает. Из-за
+// того что *http3.Transport дополнительно реализует io.Closer, QUIC-путь
+// эту защиту тихо обходил стороной — единственный неудачный дозвон нового
+// стрима валил ВСЕ остальные, никак не связанные, активные QUIC-туннели на
+// той же сессии. Внешне — ровно та же "лавина обрывов в самый неподходящий
+// момент", которую для h2 уже вылечили, плюс лишний скачок задержки на
+// каждый такой холодный QUIC-реконнект (отсюда и "постоянно большой пинг"
+// при обычном фоновом трафике с редкими потерями пакетов).
+//
+// Если на клиенте прямо сейчас есть активные стримы (c.count>0), полный
+// Close() не зовём — только CloseIdleConnections(), как и для h2. Реальное
+// закрытие произойдёт само, как только последний активный стрим
+// завершится: conn.closeFn в roundTripTimeout проверяет ровно тот же
+// c.ctx.Done() (уже закрыт после c.cancel() выше) и к этому моменту
+// count гарантированно 0 — там полный io.Closer.Close() уже безопасен.
 func (c *Client) Close() error {
 	c.cancel()
-	if closer, ok := c.roundTripper.(io.Closer); ok {
-		_ = closer.Close()
-	}
 	if t, ok := c.roundTripper.(*http2.Transport); ok {
 		t.CloseIdleConnections()
+	} else if t, ok := c.roundTripper.(*http3.Transport); ok {
+		if c.count.Load() == 0 {
+			_ = t.Close()
+		} else {
+			t.CloseIdleConnections()
+		}
 	}
 	if c.healthCheckTimer != nil {
 		c.healthCheckTimer.Stop()
