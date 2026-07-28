@@ -367,6 +367,18 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, handler http.Handler) {
 			}
 			return
 		}
+		// ВАЖНО: congestion_controller/cwnd раньше применялись только к
+		// QUIC-транспорту (см. NewCongestionControl ниже по файлу). Для
+		// скорости СКАЧИВАНИЯ через H2-путь это особенно чувствительно:
+		// именно сервер тут — отправитель, и именно его congestion control
+		// определяет throughput вниз к клиенту. Без этого H2-путь был
+		// целиком на системном дефолте ядра (обычно cubic), заметно более
+		// консервативном к потерям, чем настроенный BBR у QUIC-пути. Кастуем
+		// до *net.TCPConn здесь же, пока соединение ещё не обёрнуто в
+		// prefixListener/TLS — на нём type assertion надёжно срабатывает
+		// (см. trusttunnel.SetTCPCongestionControl, Linux-only, на прочих
+		// платформах — no-op).
+		trusttunnel.SetTCPCongestionControl(rawConn, h.options.CongestionController)
 		go h.serveConn(rawConn, handler)
 	}
 }

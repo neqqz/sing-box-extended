@@ -38,6 +38,13 @@ const resolveCacheTTL = 30 * time.Second
 // одинаково, поэтому выставляем явно, а не полагаемся на дефолт.
 type noDelayDialer struct {
 	N.Dialer
+	// congestionControl — то же значение, что и congestion_controller в
+	// конфиге (по умолчанию используется для QUIC, см. common/congestion).
+	// Здесь применяется к сырому TCP-сокету H2-пути через setsockopt
+	// TCP_CONGESTION (см. transport/trusttunnel/tcp_congestion_linux.go) —
+	// раньше H2-путь этот параметр полностью игнорировал и жил на
+	// системном дефолте ядра (обычно cubic).
+	congestionControl string
 }
 
 func (d noDelayDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
@@ -47,6 +54,7 @@ func (d noDelayDialer) DialContext(ctx context.Context, network string, destinat
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		_ = tcpConn.SetNoDelay(true)
+		trusttunnel.SetTCPCongestionControl(tcpConn, d.congestionControl)
 	}
 	return conn, nil
 }
@@ -82,7 +90,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if err != nil {
 		return nil, err
 	}
-	outboundDialer = noDelayDialer{outboundDialer}
+	outboundDialer = noDelayDialer{Dialer: outboundDialer, congestionControl: options.CongestionController}
 	serverAddr := options.ServerOptions.Build()
 	networkList := options.Network.Build()
 	tlsConfig, err := tls.NewClient(ctx, logger, options.Server, common.PtrValueOrDefault(options.TLS))
