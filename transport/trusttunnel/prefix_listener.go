@@ -182,8 +182,22 @@ func (l *PrefixListener) relayToFallback(conn net.Conn, peeked []byte) {
 		return
 	}
 	if l.isSelfLoop(target) {
-		l.logger.Error("trusttunnel inbound: fallback target ", target, " resolves back to this server, refusing to avoid a proxy loop")
-		return
+		// The SNI the prober sent resolves back to us — this legitimately
+		// happens for cert_domain, whose DNS A record has to point here
+		// for HTTP-01 ACME validation. Aborting right after ClientHello
+		// (as before) produces a distinctive "instant close, no TLS
+		// response" signature that differs from the graceful full-handshake
+		// relay every other SNI gets — itself a fingerprint an attacker
+		// correlating Certificate Transparency logs with server IPs could
+		// use to single this server out. Instead, degrade to the static
+		// fallback_server (a real, unrelated site) so this probe still gets
+		// an indistinguishable relay, same as any other SNI would.
+		if l.fallback == "" || l.isSelfLoop(l.fallback) {
+			l.logger.Error("trusttunnel inbound: fallback target ", target, " resolves back to this server and no usable fallback_server is configured; closing without a response")
+			return
+		}
+		l.logger.Debug("trusttunnel inbound: fallback target ", target, " resolves back to this server; using static fallback_server instead")
+		target = l.fallback
 	}
 
 	upstream, err := net.DialTimeout("tcp", target, fallbackDialTimeout)
