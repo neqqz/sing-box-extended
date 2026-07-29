@@ -121,6 +121,13 @@ type Inbound struct {
 	network        []string
 	randomPrefix   []byte
 	randomMask     []byte
+	// randomSecret: если задан (client_random_prefix_secret), QUIC-путь
+	// использует ServerClientRandomVerify (ротация по времени) вместо
+	// статичных randomPrefix/randomMask выше — см. NewInbound и quic.Config
+	// ниже. Тот же секрет, что и у TCP/h2-пути (transport/trusttunnel/prefix_listener.go).
+	randomSecret       []byte
+	randomPrefixLen    int
+	randomPrefixWindow int
 	// handshakeSem ограничивает число ОДНОВРЕМЕННО выполняемых TLS
 	// handshake'ов. Раньше go h.serveConn(...) запускался без всякого
 	// лимита — при burst'е из сотни+ соединений сразу (типичный триггер:
@@ -171,9 +178,25 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if options.TLS == nil || !options.TLS.Enabled {
 		return nil, C.ErrTLSRequired
 	}
-	prefix, mask, err := parseRandomPrefix(options.ClientRandomPrefix)
-	if err != nil {
-		return nil, err
+	var prefix, mask, secret []byte
+	if options.ClientRandomPrefixSecret != "" {
+		if options.ClientRandomPrefix != "" {
+			return nil, errors.New("client_random_prefix and client_random_prefix_secret are mutually exclusive; secret-based rotation replaces the static prefix entirely")
+		}
+		var err error
+		secret, err = hex.DecodeString(options.ClientRandomPrefixSecret)
+		if err != nil {
+			return nil, errors.New("client_random_prefix_secret: invalid hex: " + err.Error())
+		}
+		if len(secret) == 0 {
+			return nil, errors.New("client_random_prefix_secret: must not be empty")
+		}
+	} else {
+		var err error
+		prefix, mask, err = parseRandomPrefix(options.ClientRandomPrefix)
+		if err != nil {
+			return nil, err
+		}
 	}
 	networkList := options.Network.Build()
 	if len(networkList) == 0 {
@@ -191,8 +214,11 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 			Logger:  logger,
 			Listen:  options.ListenOptions,
 		}),
-		randomPrefix: prefix,
-		randomMask:   mask,
+		randomPrefix:       prefix,
+		randomMask:         mask,
+		randomSecret:       secret,
+		randomPrefixLen:    options.ClientRandomPrefixLen,
+		randomPrefixWindow: options.ClientRandomPrefixWindow,
 		handshakeSem: make(chan struct{}, DefaultMaxConcurrentHandshakes),
 	}
 	service := trusttunnel.NewService(trusttunnel.ServiceOptions{
@@ -328,16 +354,35 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 				return ctx
 			},
 		}
-		quicListener, err := qtls.ListenEarly(jitteredUDPConn, h.http3TLSConfig, &quic.Config{
-			MaxIdleTimeout:  trusttunnel.DefaultSessionTimeout * 2,
-			KeepAlivePeriod: trusttunnel.DefaultHealthCheckTimeout,
+		quicConfig := &quic.Config{
+			MaxIdleTimeout:     trusttunnel.DefaultSessionTimeout * 2,
+			KeepAlivePeriod:    trusttunnel.DefaultHealthCheckTimeout,
+			MaxIncomingStreams: 1 << 60,
+			Allow0RTT:          true,
+		}
+		if len(h.randomSecret) > 0 {
+			// Ротация: свежая проверка на каждое входящее соединение,
+			// с допуском ±1 окно на рассинхрон часов — та же схема, что и
+			// у h2-пути в transport/trusttunnel/prefix_listener.go.
+			secret := h.randomSecret
+			length := tls.RandomPrefixLenOrDefault(h.randomPrefixLen)
+			window := h.randomPrefixWindow
+			quicConfig.ServerClientRandomVerify = func(random [32]byte) bool {
+				now := tls.CurrentRandomPrefixWindow(time.Now().Unix(), window)
+				for _, w := range [3]int64{now - 1, now, now + 1} {
+					if bytes.Equal(random[:length], tls.DeriveRotatingRandomPrefix(secret, length, w)) {
+						return true
+					}
+				}
+				return false
+			}
+		} else {
 			// QUIC: client_random_prefix проверяется в sagernet/quic-go
 			// на уровне cryptoSetup.handleMessage (NewCryptoSetupServer).
-			ServerClientRandomPrefix: h.randomPrefix,
-			ServerClientRandomMask:   h.randomMask,
-			MaxIncomingStreams:       1 << 60,
-			Allow0RTT:                true,
-		})
+			quicConfig.ServerClientRandomPrefix = h.randomPrefix
+			quicConfig.ServerClientRandomMask = h.randomMask
+		}
+		quicListener, err := qtls.ListenEarly(jitteredUDPConn, h.http3TLSConfig, quicConfig)
 		if err != nil {
 			return err
 		}

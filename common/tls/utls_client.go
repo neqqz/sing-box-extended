@@ -206,12 +206,24 @@ func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
 
 // quicConfigWithRandom возвращает копию quic.Config с ClientRandomPrefix/Mask/HelloID.
 func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
-	if len(c.clientRandomPrefix) == 0 {
+	prefix, mask := c.clientRandomPrefix, c.clientRandomMask
+	if len(c.clientRandomPrefixSecret) > 0 {
+		// Ротация: пересчитываем заново на каждый вызов (= каждый реальный
+		// dial). Именно поэтому важно, ГДЕ этот метод вызывается — см.
+		// CreateTransport ниже, замыкание Dial должно звать этот метод
+		// заново на каждое подключение, а не переиспользовать значение,
+		// посчитанное один раз при первом вызове.
+		length := RandomPrefixLenOrDefault(c.clientRandomPrefixLen)
+		window := CurrentRandomPrefixWindow(time.Now().Unix(), c.clientRandomPrefixWindow)
+		prefix = DeriveRotatingRandomPrefix(c.clientRandomPrefixSecret, length, window)
+		mask = nil
+	}
+	if len(prefix) == 0 {
 		return cfg
 	}
 	cloned := cfg.Clone()
-	cloned.ClientRandomPrefix = c.clientRandomPrefix
-	cloned.ClientRandomMask = c.clientRandomMask
+	cloned.ClientRandomPrefix = prefix
+	cloned.ClientRandomMask = mask
 	cloned.ClientHelloID = c.id
 	return cloned
 }
@@ -225,12 +237,19 @@ func (c *UTLSClientConfig) DialEarly(ctx context.Context, conn net.PacketConn, a
 }
 
 func (c *UTLSClientConfig) CreateTransport(conn net.PacketConn, quicConnPtr **quic.Conn, serverAddr M.Socksaddr, quicConfig *quic.Config) http.RoundTripper {
-	cfg := c.quicConfigWithRandom(quicConfig)
 	return &http3.Transport{
 		TLSClientConfig: c.stdTLSConfig(),
-		QUICConfig:      cfg,
+		QUICConfig:      c.quicConfigWithRandom(quicConfig),
 		Dial: func(ctx context.Context, addr string, tlsCfg *tls.Config, dialCfg *quic.Config) (*quic.Conn, error) {
-			return quic.DialEarly(ctx, conn, serverAddr.UDPAddr(), tlsCfg, cfg)
+			// Пересчитываем заново на КАЖДЫЙ вызов этого замыкания — оно
+			// зовётся http3.Transport'ом на каждое новое QUIC-соединение
+			// за время жизни транспорта (реконнекты, доливка до
+			// multiplex.max_connections), а не один раз. Если бы мы взяли
+			// значение из внешней области видимости (посчитанное один раз
+			// при вызове CreateTransport), все соединения этого транспорта
+			// получили бы один и тот же "случайный" префикс навсегда —
+			// именно то, от чего мы уходим.
+			return quic.DialEarly(ctx, conn, serverAddr.UDPAddr(), tlsCfg, c.quicConfigWithRandom(quicConfig))
 		},
 	}
 }
