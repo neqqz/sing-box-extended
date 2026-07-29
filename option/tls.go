@@ -121,8 +121,24 @@ type OutboundTLSOptions struct {
 	CertDomain string `json:"cert_domain,omitempty"`
 	// ClientRandomPrefix: hex-строка (до 32 байт) для фиксации начала TLS ClientHello.Random.
 	// Формат: "aabbcc..." или "aabbcc.../ffff00..." (data/mask, как в TrustTunnel config).
+	// Статична на весь срок жизни конфига — те же байты на КАЖДОМ соединении.
+	// Если задан ClientRandomPrefixSecret, эта static-схема игнорируется в пользу
+	// ротации ниже.
 	ClientRandomPrefix string `json:"client_random_prefix,omitempty"`
-	ECH                *OutboundECHOptions    `json:"ech,omitempty"`
+	// ClientRandomPrefixSecret: hex общий секрет. Если задан — префикс
+	// ClientHello.Random вычисляется заново на КАЖДОМ соединении как
+	// HMAC-SHA256(secret, "trusttunnel-random-prefix-v1:" || time_window),
+	// а не берётся статично из ClientRandomPrefix. За счёт этого одинаковых
+	// байт в этом месте ClientHello не бывает дважды — full-reassembly DPI,
+	// собирающая статистику по многим соединениям, не увидит фиксированной
+	// сигнатуры, в отличие от статичного ClientRandomPrefix.
+	ClientRandomPrefixSecret string `json:"client_random_prefix_secret,omitempty"`
+	// ClientRandomPrefixLen: длина деривируемого префикса в байтах (1-32, по умолчанию 8).
+	ClientRandomPrefixLen int `json:"client_random_prefix_len,omitempty"`
+	// ClientRandomPrefixWindow: длина окна ротации в секундах (по умолчанию 60).
+	// Сервер допускает текущее и соседние окна, чтобы не ловить рассинхрон часов.
+	ClientRandomPrefixWindow int                     `json:"client_random_prefix_window,omitempty"`
+	ECH                      *OutboundECHOptions    `json:"ech,omitempty"`
 	UTLS               *OutboundUTLSOptions   `json:"utls,omitempty"`
 	Reality            *OutboundRealityOptions `json:"reality,omitempty"`
 }

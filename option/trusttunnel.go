@@ -7,7 +7,22 @@ type TrustTunnelInboundOptions struct {
 	Network              NetworkList       `json:"network,omitempty"`
 	CongestionController string            `json:"congestion_controller,omitempty"`
 	CWND                 int               `json:"cwnd,omitempty"`
+	// TimingJitterMinMS/MaxMS: если MaxMS > 0, перед каждой записью в
+	// h2/TCP-сокет добавляется случайная задержка в [MinMS, MaxMS] мс —
+	// разрушает статистику интервалов между исходящими пакетами (защита от
+	// timing-фингерпринтинга DPI). ВЫКЛЮЧЕНО по умолчанию (0) — это прямой
+	// trade-off с задержкой/пингом, включайте осознанно.
+	TimingJitterMinMS int               `json:"timing_jitter_min_ms,omitempty"`
+	TimingJitterMaxMS int               `json:"timing_jitter_max_ms,omitempty"`
 	ClientRandomPrefix   string            `json:"client_random_prefix,omitempty"`
+	// ClientRandomPrefixSecret/Len/Window — server side of the rotating-prefix
+	// scheme; must match the client's OutboundTLSOptions values of the same
+	// name. See option/tls.go for the full explanation. When
+	// ClientRandomPrefixSecret is set, it takes priority over the static
+	// ClientRandomPrefix for verification.
+	ClientRandomPrefixSecret string `json:"client_random_prefix_secret,omitempty"`
+	ClientRandomPrefixLen    int    `json:"client_random_prefix_len,omitempty"`
+	ClientRandomPrefixWindow int    `json:"client_random_prefix_window,omitempty"`
 	// FallbackServer — если задан, при неверном/отсутствующем client_random_prefix
 	// (сканер, активный зонд) сырые байты проксируются на него, а не рвутся,
 	// когда SNI из ClientHello извлечь не удалось (см. transport/trusttunnel/prefix_listener.go —
@@ -41,6 +56,8 @@ type TrustTunnelOutboundOptions struct {
 	QUIC                 bool                         `json:"quic,omitempty"`
 	CongestionController string                       `json:"congestion_controller,omitempty"`
 	CWND                 int                          `json:"cwnd,omitempty"`
+	TimingJitterMinMS    int                          `json:"timing_jitter_min_ms,omitempty"`
+	TimingJitterMaxMS    int                          `json:"timing_jitter_max_ms,omitempty"`
 	Multiplex            *TrustTunnelMultiplexOptions `json:"multiplex,omitempty"`
 	UDPPaddingMin        *int                         `json:"udp_padding_min,omitempty"`
 	UDPPaddingMax        *int                         `json:"udp_padding_max,omitempty"`

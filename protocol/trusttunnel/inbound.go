@@ -240,7 +240,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			return err
 		}
 		// TCP: pre-TLS peek, проверяем bytes[11:43] ClientHello.Random до хендшейка.
-		checkedListener, err := trusttunnel.NewPrefixListener(rawListener, h.options.ClientRandomPrefix, h.options.FallbackServer, h.logger)
+		checkedListener, err := trusttunnel.NewPrefixListener(rawListener, h.options.ClientRandomPrefix, h.options.ClientRandomPrefixSecret, h.options.ClientRandomPrefixLen, h.options.ClientRandomPrefixWindow, h.options.FallbackServer, h.logger)
 		if err != nil {
 			return err
 		}
@@ -311,6 +311,10 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		if err != nil {
 			return err
 		}
+		// TimingJitterMinMS/MaxMS=0/0 по умолчанию — оборачивание пропускается,
+		// без изменений в поведении/performance. См. transport/trusttunnel/jitter_conn.go
+		// про риски для QUIC-пути конкретно (шум в BBR/cubic RTT-замерах quic-go).
+		jitteredUDPConn := trusttunnel.NewJitterPacketConn(udpConn, h.options.TimingJitterMinMS, h.options.TimingJitterMaxMS)
 		congestionControlFactory, err := congestion.NewCongestionControl(
 			h.options.CongestionController, h.options.CWND, ntp.TimeFuncFromContext(h.ctx),
 		)
@@ -324,7 +328,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 				return ctx
 			},
 		}
-		quicListener, err := qtls.ListenEarly(udpConn, h.http3TLSConfig, &quic.Config{
+		quicListener, err := qtls.ListenEarly(jitteredUDPConn, h.http3TLSConfig, &quic.Config{
 			MaxIdleTimeout:  trusttunnel.DefaultSessionTimeout * 2,
 			KeepAlivePeriod: trusttunnel.DefaultHealthCheckTimeout,
 			// QUIC: client_random_prefix проверяется в sagernet/quic-go
@@ -379,7 +383,12 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, handler http.Handler) {
 		// (см. trusttunnel.SetTCPCongestionControl, Linux-only, на прочих
 		// платформах — no-op).
 		trusttunnel.SetTCPCongestionControl(rawConn, h.options.CongestionController)
-		go h.serveConn(rawConn, handler)
+		// TimingJitterMinMS/MaxMS: 0/0 по умолчанию — без обёртки, без
+		// накладных расходов. См. transport/trusttunnel/jitter_conn.go —
+		// это про тайминги ИСХОДЯЩИХ от сервера пакетов (важно именно для
+		// скачивания, где сервер — отправитель).
+		jitteredConn := trusttunnel.NewJitterConn(rawConn, h.options.TimingJitterMinMS, h.options.TimingJitterMaxMS)
+		go h.serveConn(jitteredConn, handler)
 	}
 }
 

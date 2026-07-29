@@ -41,9 +41,16 @@ type UTLSClientConfig struct {
 	// certDomain: если задан, cert верифицируется по этому домену вместо server_name.
 	// SNI в ClientHello остаётся = config.ServerName.
 	certDomain string
-	// clientRandomPrefix/clientRandomMask: байты для патча TLS ClientHello.Random
+	// clientRandomPrefix/clientRandomMask: байты для патча TLS ClientHello.Random.
+	// Статичные — используются, только если clientRandomPrefixSecret не задан.
 	clientRandomPrefix []byte
 	clientRandomMask   []byte
+	// clientRandomPrefixSecret: если задан, prefix для ClientHello.Random
+	// вычисляется заново в Client() на каждое соединение (см. DeriveRotatingRandomPrefix)
+	// вместо использования статичных clientRandomPrefix/clientRandomMask выше.
+	clientRandomPrefixSecret []byte
+	clientRandomPrefixLen    int
+	clientRandomPrefixWindow int
 }
 
 func (c *UTLSClientConfig) ServerName() string {
@@ -99,11 +106,22 @@ func (c *UTLSClientConfig) Client(conn net.Conn) (Conn, error) {
 			return err
 		}
 	}
+	randomPrefix, randomMask := c.clientRandomPrefix, c.clientRandomMask
+	if len(c.clientRandomPrefixSecret) > 0 {
+		// Ротация: свежий prefix на КАЖДЫЙ вызов Client() (= каждое новое
+		// соединение), а не один и тот же набор байт на весь срок жизни
+		// конфига. mask не нужен — деривированные байты уже неотличимы от
+		// случайных без секрета, полный mask=0xff по всей длине.
+		length := RandomPrefixLenOrDefault(c.clientRandomPrefixLen)
+		window := CurrentRandomPrefixWindow(time.Now().Unix(), c.clientRandomPrefixWindow)
+		randomPrefix = DeriveRotatingRandomPrefix(c.clientRandomPrefixSecret, length, window)
+		randomMask = nil
+	}
 	return &utlsALPNWrapper{
 		utlsConnWrapper:    utlsConnWrapper{utls.UClient(conn, cfg, c.id)},
 		nextProtocols:      cfg.NextProtos,
-		clientRandomPrefix: c.clientRandomPrefix,
-		clientRandomMask:   c.clientRandomMask,
+		clientRandomPrefix: randomPrefix,
+		clientRandomMask:   randomMask,
 	}, nil
 }
 
@@ -122,6 +140,9 @@ func (c *UTLSClientConfig) Clone() Config {
 		certDomain:            c.certDomain,
 		clientRandomPrefix:    c.clientRandomPrefix,
 		clientRandomMask:      c.clientRandomMask,
+		clientRandomPrefixSecret: c.clientRandomPrefixSecret,
+		clientRandomPrefixLen:    c.clientRandomPrefixLen,
+		clientRandomPrefixWindow: c.clientRandomPrefixWindow,
 	}
 }
 
@@ -434,16 +455,32 @@ func NewUTLSClient(ctx context.Context, logger logger.ContextLogger, serverAddre
 			}
 		}
 	}
+	var clientRandomPrefixSecret []byte
+	if options.ClientRandomPrefixSecret != "" {
+		clientRandomPrefixSecret, err = hex.DecodeString(options.ClientRandomPrefixSecret)
+		if err != nil {
+			return nil, E.Cause(err, "parse client_random_prefix_secret: invalid hex")
+		}
+		if len(clientRandomPrefixSecret) == 0 {
+			return nil, E.New("client_random_prefix_secret: must not be empty")
+		}
+		if options.ClientRandomPrefix != "" {
+			return nil, E.New("client_random_prefix and client_random_prefix_secret are mutually exclusive; secret-based rotation replaces the static prefix entirely")
+		}
+	}
 	var config Config = &UTLSClientConfig{
-		ctx:                   ctx,
-		config:                &tlsConfig,
-		id:                    id,
-		fragment:              options.Fragment,
-		fragmentFallbackDelay: time.Duration(options.FragmentFallbackDelay),
-		recordFragment:        options.RecordFragment,
-		certDomain:            options.CertDomain,
-		clientRandomPrefix:    clientRandomPrefix,
-		clientRandomMask:      clientRandomMask,
+		ctx:                      ctx,
+		config:                   &tlsConfig,
+		id:                       id,
+		fragment:                 options.Fragment,
+		fragmentFallbackDelay:    time.Duration(options.FragmentFallbackDelay),
+		recordFragment:           options.RecordFragment,
+		certDomain:               options.CertDomain,
+		clientRandomPrefix:       clientRandomPrefix,
+		clientRandomMask:         clientRandomMask,
+		clientRandomPrefixSecret: clientRandomPrefixSecret,
+		clientRandomPrefixLen:    options.ClientRandomPrefixLen,
+		clientRandomPrefixWindow: options.ClientRandomPrefixWindow,
 	}
 	if options.ECH != nil && options.ECH.Enabled {
 		if options.Reality != nil && options.Reality.Enabled {

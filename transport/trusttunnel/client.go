@@ -58,6 +58,12 @@ type ClientOptions struct {
 	MaxStreams        int
 	UDPPaddingMin     int
 	UDPPaddingMax     int
+	// JitterMinMS/JitterMaxMS: см. jitter_conn.go. Применяется к
+	// QUIC-пути через WriteTo на исходящем PacketConn (см. ниже, рядом с
+	// DialEarly) — отдельная точка от H2-пути, т.к. QUIC вообще не ходит
+	// через noDelayDialer.
+	JitterMinMS int
+	JitterMaxMS int
 }
 
 type Client struct {
@@ -474,11 +480,12 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 					return nil, err
 				}
 				pktConn := bufio.NewUnbindPacketConn(udpConn)
+				wrappedPktConn := NewJitterPacketConn(pktConn, options.JitterMinMS, options.JitterMaxMS)
 				var conn *quic.Conn
 				if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
-					conn, err = qd.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), cfg)
+					conn, err = qd.DialEarly(ctx, wrappedPktConn, udpConn.RemoteAddr(), cfg)
 				} else {
-					conn, err = qtls.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), options.TLSConfig, cfg)
+					conn, err = qtls.DialEarly(ctx, wrappedPktConn, udpConn.RemoteAddr(), options.TLSConfig, cfg)
 				}
 				if err != nil {
 					return nil, err

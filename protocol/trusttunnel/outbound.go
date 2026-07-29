@@ -45,6 +45,10 @@ type noDelayDialer struct {
 	// раньше H2-путь этот параметр полностью игнорировал и жил на
 	// системном дефолте ядра (обычно cubic).
 	congestionControl string
+	// jitterMinMS/jitterMaxMS — см. transport/trusttunnel/jitter_conn.go.
+	// 0/0 (дефолт) = выключено, без накладных расходов.
+	jitterMinMS int
+	jitterMaxMS int
 }
 
 func (d noDelayDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
@@ -56,7 +60,7 @@ func (d noDelayDialer) DialContext(ctx context.Context, network string, destinat
 		_ = tcpConn.SetNoDelay(true)
 		trusttunnel.SetTCPCongestionControl(tcpConn, d.congestionControl)
 	}
-	return conn, nil
+	return trusttunnel.NewJitterConn(conn, d.jitterMinMS, d.jitterMaxMS), nil
 }
 
 func RegisterOutbound(registry *outbound.Registry) {
@@ -90,7 +94,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if err != nil {
 		return nil, err
 	}
-	outboundDialer = noDelayDialer{Dialer: outboundDialer, congestionControl: options.CongestionController}
+	outboundDialer = noDelayDialer{Dialer: outboundDialer, congestionControl: options.CongestionController, jitterMinMS: options.TimingJitterMinMS, jitterMaxMS: options.TimingJitterMaxMS}
 	serverAddr := options.ServerOptions.Build()
 	networkList := options.Network.Build()
 	tlsConfig, err := tls.NewClient(ctx, logger, options.Server, common.PtrValueOrDefault(options.TLS))
@@ -110,6 +114,8 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		HealthCheck:       options.HealthCheck,
 		UDPPaddingMin:     common.PtrValueOrDefault(options.UDPPaddingMin),
 		UDPPaddingMax:     common.PtrValueOrDefault(options.UDPPaddingMax),
+		JitterMinMS:       options.TimingJitterMinMS,
+		JitterMaxMS:       options.TimingJitterMaxMS,
 	}
 	// Раньше без multiplex.enabled создавался голый *Client — у него нет
 	// самовосстановления: Close() убивает его насовсем, и любую сетевую
