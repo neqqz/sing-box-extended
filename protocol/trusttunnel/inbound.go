@@ -281,7 +281,9 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			IdleTimeout:       trusttunnel.DefaultSessionTimeout*2 + 10*time.Second,
 		}
 		h.h2Server = &http2.Server{
-			IdleTimeout: trusttunnel.DefaultSessionTimeout * 2,
+			IdleTimeout:    trusttunnel.DefaultSessionTimeout * 2,
+			DataPaddingMin: h.options.DataPaddingMin,
+			DataPaddingMax: h.options.DataPaddingMax,
 			// Дефолт x/net/http2 — 1 MB на стрим/соединение. При RTT
 			// в несколько сотен мс (типично для маршрута до зарубежного
 			// VPS из РФ) это даёт потолок throughput = window/RTT, что
@@ -355,10 +357,12 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			},
 		}
 		quicConfig := &quic.Config{
-			MaxIdleTimeout:     trusttunnel.DefaultSessionTimeout * 2,
-			KeepAlivePeriod:    trusttunnel.DefaultHealthCheckTimeout,
-			MaxIncomingStreams: 1 << 60,
-			Allow0RTT:          true,
+			MaxIdleTimeout:        trusttunnel.DefaultSessionTimeout * 2,
+			KeepAlivePeriod:       trusttunnel.DefaultHealthCheckTimeout,
+			MaxIncomingStreams:    1 << 60,
+			Allow0RTT:             true,
+			ExtraPacketPaddingMin: h.options.PacketPaddingMin,
+			ExtraPacketPaddingMax: h.options.PacketPaddingMax,
 		}
 		if len(h.randomSecret) > 0 {
 			// Ротация: свежая проверка на каждое входящее соединение,

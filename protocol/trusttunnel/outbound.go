@@ -116,6 +116,10 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		UDPPaddingMax:     common.PtrValueOrDefault(options.UDPPaddingMax),
 		JitterMinMS:       options.TimingJitterMinMS,
 		JitterMaxMS:       options.TimingJitterMaxMS,
+		DataPaddingMin:    options.DataPaddingMin,
+		DataPaddingMax:    options.DataPaddingMax,
+		PacketPaddingMin:  options.PacketPaddingMin,
+		PacketPaddingMax:  options.PacketPaddingMax,
 	}
 	// Раньше без multiplex.enabled создавался голый *Client — у него нет
 	// самовосстановления: Close() убивает его насовсем, и любую сетевую

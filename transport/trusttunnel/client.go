@@ -64,6 +64,13 @@ type ClientOptions struct {
 	// через noDelayDialer.
 	JitterMinMS int
 	JitterMaxMS int
+	// DataPaddingMin/Max (h2) и PacketPaddingMin/Max (QUIC) — см.
+	// golang.org/x/net/http2's Transport.DataPaddingMin/Max и
+	// quic-go's Config.ExtraPacketPaddingMin/Max соответственно.
+	DataPaddingMin   int
+	DataPaddingMax   int
+	PacketPaddingMin int
+	PacketPaddingMax int
 }
 
 type Client struct {
@@ -473,6 +480,8 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				// к 30-45s.
 				MaxIdleTimeout:  time.Minute * 2,
 				KeepAlivePeriod: time.Second * 90,
+				ExtraPacketPaddingMin: options.PacketPaddingMin,
+				ExtraPacketPaddingMax: options.PacketPaddingMax,
 			},
 			Dial: func(ctx context.Context, addr string, tlsCfg *stdtls.Config, cfg *quic.Config) (*quic.Conn, error) {
 				udpConn, err := options.Dialer.DialContext(ctx, N.NetworkUDP, client.server)
@@ -507,6 +516,8 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			// лишний раз будим радиомодуль на простаивающем соединении.
 			ReadIdleTimeout: time.Second * 90,
 			PingTimeout:     time.Second * 15,
+			DataPaddingMin:  options.DataPaddingMin,
+			DataPaddingMax:  options.DataPaddingMax,
 		}
 		session := &h2Session{
 			transport: transport,

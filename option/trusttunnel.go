@@ -14,6 +14,17 @@ type TrustTunnelInboundOptions struct {
 	// trade-off с задержкой/пингом, включайте осознанно.
 	TimingJitterMinMS int               `json:"timing_jitter_min_ms,omitempty"`
 	TimingJitterMaxMS int               `json:"timing_jitter_max_ms,omitempty"`
+	// DataPaddingMin/MaxMS: рандомный PADDED-паддинг на h2 DATA-фреймы
+	// (byte-размер, не мс — имя оставлено симметричным Jitter выше по
+	// смыслу поля, единица здесь именно байты). 0/0 (дефолт) — выключено.
+	DataPaddingMin int `json:"data_padding_min,omitempty"`
+	DataPaddingMax int `json:"data_padding_max,omitempty"`
+	// PacketPaddingMin/Max: рандомный PADDING-фрейм на обычные QUIC-пакеты
+	// (см. ExtraPacketPaddingMin/Max в quic-go). 0/0 (дефолт) — выключено.
+	// Не путать с UDPPaddingMin/Max выше — тот про полезную нагрузку
+	// UDP-relay протокола, этот — про размер самих QUIC-пакетов.
+	PacketPaddingMin int `json:"packet_padding_min,omitempty"`
+	PacketPaddingMax int `json:"packet_padding_max,omitempty"`
 	ClientRandomPrefix   string            `json:"client_random_prefix,omitempty"`
 	// ClientRandomPrefixSecret/Len/Window — server side of the rotating-prefix
 	// scheme; must match the client's OutboundTLSOptions values of the same
@@ -58,6 +69,10 @@ type TrustTunnelOutboundOptions struct {
 	CWND                 int                          `json:"cwnd,omitempty"`
 	TimingJitterMinMS    int                          `json:"timing_jitter_min_ms,omitempty"`
 	TimingJitterMaxMS    int                          `json:"timing_jitter_max_ms,omitempty"`
+	DataPaddingMin       int                          `json:"data_padding_min,omitempty"`
+	DataPaddingMax       int                          `json:"data_padding_max,omitempty"`
+	PacketPaddingMin     int                          `json:"packet_padding_min,omitempty"`
+	PacketPaddingMax     int                          `json:"packet_padding_max,omitempty"`
 	Multiplex            *TrustTunnelMultiplexOptions `json:"multiplex,omitempty"`
 	UDPPaddingMin        *int                         `json:"udp_padding_min,omitempty"`
 	UDPPaddingMax        *int                         `json:"udp_padding_max,omitempty"`
