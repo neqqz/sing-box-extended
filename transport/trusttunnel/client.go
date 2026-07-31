@@ -56,8 +56,10 @@ type ClientOptions struct {
 	MaxConnections    int
 	MinStreams        int
 	MaxStreams        int
-	UDPPaddingMin     int
-	UDPPaddingMax     int
+	// UDPPaddingMin/Max — паддинг полезной нагрузки UDP-relay протокола
+	// (см. randomUDPPaddingLength в protocol.go). Max<=0 — выключено.
+	UDPPaddingMin int
+	UDPPaddingMax int
 	// JitterMinMS/JitterMaxMS: см. jitter_conn.go. Применяется к
 	// QUIC-пути через WriteTo на исходящем PacketConn (см. ниже, рядом с
 	// DialEarly) — отдельная точка от H2-пути, т.к. QUIC вообще не ходит

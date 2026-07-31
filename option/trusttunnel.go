@@ -1,5 +1,25 @@
 package option
 
+// TrustTunnelPaddingOptions задаёт диапазон [Min, Max] байт случайного
+// паддинга. Используется для data_padding (h2 DATA-фреймы), packet_padding
+// (QUIC-пакеты) и udp_padding (полезная нагрузка UDP-relay протокола) — см.
+// пояснения у соответствующих полей ниже. Отсутствует (nil) по умолчанию —
+// выключено.
+type TrustTunnelPaddingOptions struct {
+	Min int `json:"min,omitempty"`
+	Max int `json:"max,omitempty"`
+}
+
+// TrustTunnelTimingOptions задаёт джиттер по времени: если MaxMS > 0, перед
+// каждой записью в сокет добавляется случайная задержка в [MinMS, MaxMS] мс —
+// разрушает статистику интервалов между исходящими пакетами (защита от
+// timing-фингерпринтинга DPI). Отсутствует (nil) по умолчанию — прямой
+// trade-off с задержкой/пингом, включайте осознанно.
+type TrustTunnelTimingOptions struct {
+	MinMS int `json:"min_ms,omitempty"`
+	MaxMS int `json:"max_ms,omitempty"`
+}
+
 type TrustTunnelInboundOptions struct {
 	ListenOptions
 	InboundTLSOptionsContainer
@@ -7,24 +27,16 @@ type TrustTunnelInboundOptions struct {
 	Network              NetworkList       `json:"network,omitempty"`
 	CongestionController string            `json:"congestion_controller,omitempty"`
 	CWND                 int               `json:"cwnd,omitempty"`
-	// TimingJitterMinMS/MaxMS: если MaxMS > 0, перед каждой записью в
-	// h2/TCP-сокет добавляется случайная задержка в [MinMS, MaxMS] мс —
-	// разрушает статистику интервалов между исходящими пакетами (защита от
-	// timing-фингерпринтинга DPI). ВЫКЛЮЧЕНО по умолчанию (0) — это прямой
-	// trade-off с задержкой/пингом, включайте осознанно.
-	TimingJitterMinMS int               `json:"timing_jitter_min_ms,omitempty"`
-	TimingJitterMaxMS int               `json:"timing_jitter_max_ms,omitempty"`
-	// DataPaddingMin/MaxMS: рандомный PADDED-паддинг на h2 DATA-фреймы
-	// (byte-размер, не мс — имя оставлено симметричным Jitter выше по
-	// смыслу поля, единица здесь именно байты). 0/0 (дефолт) — выключено.
-	DataPaddingMin int `json:"data_padding_min,omitempty"`
-	DataPaddingMax int `json:"data_padding_max,omitempty"`
-	// PacketPaddingMin/Max: рандомный PADDING-фрейм на обычные QUIC-пакеты
-	// (см. ExtraPacketPaddingMin/Max в quic-go). 0/0 (дефолт) — выключено.
-	// Не путать с UDPPaddingMin/Max выше — тот про полезную нагрузку
-	// UDP-relay протокола, этот — про размер самих QUIC-пакетов.
-	PacketPaddingMin int `json:"packet_padding_min,omitempty"`
-	PacketPaddingMax int `json:"packet_padding_max,omitempty"`
+	Timing               *TrustTunnelTimingOptions  `json:"timing,omitempty"`
+	// DataPadding: рандомный PADDED-паддинг на h2 DATA-фреймы (байты). У
+	// PADDED-флага HTTP/2 однобайтовое поле длины паддинга (RFC 7540 §6.1),
+	// поэтому Max > 255 не имеет смысла на этом пути.
+	DataPadding *TrustTunnelPaddingOptions `json:"data_padding,omitempty"`
+	// PacketPadding: то же самое, но для обычных QUIC-пакетов (см.
+	// Config.ExtraPacketPaddingMin/Max в форке quic-go). Не путать с
+	// UDPPadding ниже — тот про полезную нагрузку UDP-relay протокола
+	// поверх туннеля, этот — про размер самих QUIC-пакетов на проводе.
+	PacketPadding        *TrustTunnelPaddingOptions `json:"packet_padding,omitempty"`
 	ClientRandomPrefix   string            `json:"client_random_prefix,omitempty"`
 	// ClientRandomPrefixSecret/Len/Window — server side of the rotating-prefix
 	// scheme; must match the client's OutboundTLSOptions values of the same
@@ -40,8 +52,9 @@ type TrustTunnelInboundOptions struct {
 	// по умолчанию используется сам этот SNI, а FallbackServer лишь запасной вариант). Формат: "host:port".
 	FallbackServer       string            `json:"fallback_server,omitempty"`
 	AllowedSNI           []string          `json:"allowed_sni,omitempty"`
-	UDPPaddingMin        *int              `json:"udp_padding_min,omitempty"`
-	UDPPaddingMax        *int              `json:"udp_padding_max,omitempty"`
+	// UDPPadding — паддинг полезной нагрузки UDP-relay протокола; тот же
+	// формат [Min, Max], что и у DataPadding/PacketPadding выше.
+	UDPPadding *TrustTunnelPaddingOptions `json:"udp_padding,omitempty"`
 }
 
 type TrustTunnelUser struct {
@@ -67,13 +80,11 @@ type TrustTunnelOutboundOptions struct {
 	QUIC                 bool                         `json:"quic,omitempty"`
 	CongestionController string                       `json:"congestion_controller,omitempty"`
 	CWND                 int                          `json:"cwnd,omitempty"`
-	TimingJitterMinMS    int                          `json:"timing_jitter_min_ms,omitempty"`
-	TimingJitterMaxMS    int                          `json:"timing_jitter_max_ms,omitempty"`
-	DataPaddingMin       int                          `json:"data_padding_min,omitempty"`
-	DataPaddingMax       int                          `json:"data_padding_max,omitempty"`
-	PacketPaddingMin     int                          `json:"packet_padding_min,omitempty"`
-	PacketPaddingMax     int                          `json:"packet_padding_max,omitempty"`
+	Timing               *TrustTunnelTimingOptions    `json:"timing,omitempty"`
+	// See the matching fields on TrustTunnelInboundOptions for the format
+	// and rationale.
+	DataPadding          *TrustTunnelPaddingOptions   `json:"data_padding,omitempty"`
+	PacketPadding        *TrustTunnelPaddingOptions   `json:"packet_padding,omitempty"`
 	Multiplex            *TrustTunnelMultiplexOptions `json:"multiplex,omitempty"`
-	UDPPaddingMin        *int                         `json:"udp_padding_min,omitempty"`
-	UDPPaddingMax        *int                         `json:"udp_padding_max,omitempty"`
+	UDPPadding           *TrustTunnelPaddingOptions   `json:"udp_padding,omitempty"`
 }

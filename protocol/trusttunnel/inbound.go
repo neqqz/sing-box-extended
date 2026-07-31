@@ -221,12 +221,13 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		randomPrefixWindow: options.ClientRandomPrefixWindow,
 		handshakeSem: make(chan struct{}, DefaultMaxConcurrentHandshakes),
 	}
+	udpPaddingMin, udpPaddingMax := paddingRange(options.UDPPadding)
 	service := trusttunnel.NewService(trusttunnel.ServiceOptions{
 		Ctx:           ctx,
 		Logger:        logger,
 		Handler:       (*inboundHandler)(h),
-		UDPPaddingMin: common.PtrValueOrDefault(options.UDPPaddingMin),
-		UDPPaddingMax: common.PtrValueOrDefault(options.UDPPaddingMax),
+		UDPPaddingMin: udpPaddingMin,
+		UDPPaddingMax: udpPaddingMax,
 	})
 	userMap := make(map[string]string, len(options.Users))
 	for _, u := range options.Users {
@@ -280,10 +281,11 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       trusttunnel.DefaultSessionTimeout*2 + 10*time.Second,
 		}
+		h2DataPaddingMin, h2DataPaddingMax := paddingRange(h.options.DataPadding)
 		h.h2Server = &http2.Server{
 			IdleTimeout:    trusttunnel.DefaultSessionTimeout * 2,
-			DataPaddingMin: h.options.DataPaddingMin,
-			DataPaddingMax: h.options.DataPaddingMax,
+			DataPaddingMin: h2DataPaddingMin,
+			DataPaddingMax: h2DataPaddingMax,
 			// Дефолт x/net/http2 — 1 MB на стрим/соединение. При RTT
 			// в несколько сотен мс (типично для маршрута до зарубежного
 			// VPS из РФ) это даёт потолок throughput = window/RTT, что
@@ -339,10 +341,11 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		if err != nil {
 			return err
 		}
-		// TimingJitterMinMS/MaxMS=0/0 по умолчанию — оборачивание пропускается,
-		// без изменений в поведении/performance. См. transport/trusttunnel/jitter_conn.go
+		// Timing=nil по умолчанию — оборачивание пропускается, без изменений
+		// в поведении/performance. См. transport/trusttunnel/jitter_conn.go
 		// про риски для QUIC-пути конкретно (шум в BBR/cubic RTT-замерах quic-go).
-		jitteredUDPConn := trusttunnel.NewJitterPacketConn(udpConn, h.options.TimingJitterMinMS, h.options.TimingJitterMaxMS)
+		timingMin, timingMax := timingRange(h.options.Timing)
+		jitteredUDPConn := trusttunnel.NewJitterPacketConn(udpConn, timingMin, timingMax)
 		congestionControlFactory, err := congestion.NewCongestionControl(
 			h.options.CongestionController, h.options.CWND, ntp.TimeFuncFromContext(h.ctx),
 		)
@@ -356,13 +359,14 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 				return ctx
 			},
 		}
+		packetPaddingMin, packetPaddingMax := paddingRange(h.options.PacketPadding)
 		quicConfig := &quic.Config{
 			MaxIdleTimeout:        trusttunnel.DefaultSessionTimeout * 2,
 			KeepAlivePeriod:       trusttunnel.DefaultHealthCheckTimeout,
 			MaxIncomingStreams:    1 << 60,
 			Allow0RTT:             true,
-			ExtraPacketPaddingMin: h.options.PacketPaddingMin,
-			ExtraPacketPaddingMax: h.options.PacketPaddingMax,
+			ExtraPacketPaddingMin: packetPaddingMin,
+			ExtraPacketPaddingMax: packetPaddingMax,
 		}
 		if len(h.randomSecret) > 0 {
 			// Ротация: свежая проверка на каждое входящее соединение,
@@ -432,11 +436,11 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, handler http.Handler) {
 		// (см. trusttunnel.SetTCPCongestionControl, Linux-only, на прочих
 		// платформах — no-op).
 		trusttunnel.SetTCPCongestionControl(rawConn, h.options.CongestionController)
-		// TimingJitterMinMS/MaxMS: 0/0 по умолчанию — без обёртки, без
-		// накладных расходов. См. transport/trusttunnel/jitter_conn.go —
-		// это про тайминги ИСХОДЯЩИХ от сервера пакетов (важно именно для
-		// скачивания, где сервер — отправитель).
-		jitteredConn := trusttunnel.NewJitterConn(rawConn, h.options.TimingJitterMinMS, h.options.TimingJitterMaxMS)
+		// Timing=nil по умолчанию — без обёртки, без накладных расходов. См.
+		// transport/trusttunnel/jitter_conn.go — это про тайминги ИСХОДЯЩИХ
+		// от сервера пакетов (важно именно для скачивания, где сервер — отправитель).
+		timingMin, timingMax := timingRange(h.options.Timing)
+		jitteredConn := trusttunnel.NewJitterConn(rawConn, timingMin, timingMax)
 		go h.serveConn(jitteredConn, handler)
 	}
 }

@@ -94,13 +94,17 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if err != nil {
 		return nil, err
 	}
-	outboundDialer = noDelayDialer{Dialer: outboundDialer, congestionControl: options.CongestionController, jitterMinMS: options.TimingJitterMinMS, jitterMaxMS: options.TimingJitterMaxMS}
+	timingMin, timingMax := timingRange(options.Timing)
+	outboundDialer = noDelayDialer{Dialer: outboundDialer, congestionControl: options.CongestionController, jitterMinMS: timingMin, jitterMaxMS: timingMax}
 	serverAddr := options.ServerOptions.Build()
 	networkList := options.Network.Build()
 	tlsConfig, err := tls.NewClient(ctx, logger, options.Server, common.PtrValueOrDefault(options.TLS))
 	if err != nil {
 		return nil, err
 	}
+	udpPaddingMin, udpPaddingMax := paddingRange(options.UDPPadding)
+	dataPaddingMin, dataPaddingMax := paddingRange(options.DataPadding)
+	packetPaddingMin, packetPaddingMax := paddingRange(options.PacketPadding)
 	clientOpts := trusttunnel.ClientOptions{
 		Dialer:            outboundDialer,
 		TLSConfig:         tlsConfig,
@@ -112,14 +116,14 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		CWND:              options.CWND,
 		Logger:            logger,
 		HealthCheck:       options.HealthCheck,
-		UDPPaddingMin:     common.PtrValueOrDefault(options.UDPPaddingMin),
-		UDPPaddingMax:     common.PtrValueOrDefault(options.UDPPaddingMax),
-		JitterMinMS:       options.TimingJitterMinMS,
-		JitterMaxMS:       options.TimingJitterMaxMS,
-		DataPaddingMin:    options.DataPaddingMin,
-		DataPaddingMax:    options.DataPaddingMax,
-		PacketPaddingMin:  options.PacketPaddingMin,
-		PacketPaddingMax:  options.PacketPaddingMax,
+		UDPPaddingMin:     udpPaddingMin,
+		UDPPaddingMax:     udpPaddingMax,
+		JitterMinMS:       timingMin,
+		JitterMaxMS:       timingMax,
+		DataPaddingMin:    dataPaddingMin,
+		DataPaddingMax:    dataPaddingMax,
+		PacketPaddingMin:  packetPaddingMin,
+		PacketPaddingMax:  packetPaddingMax,
 	}
 	// Раньше без multiplex.enabled создавался голый *Client — у него нет
 	// самовосстановления: Close() убивает его насовсем, и любую сетевую
