@@ -303,13 +303,11 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			// попытке записи (net.ipv4.tcp_retries2, обычно ~15 минут на
 			// Linux) — жрёт файловый дескриптор и память втрое дольше, чем
 			// нужно, и не даёт клиенту переподключиться на этот же слот
-			// handshakeSem/учёта раньше срока. ReadIdleTimeout+PingTimeout —
-			// зеркало того же механизма, что уже стоит у клиента в
-			// *http2.Transport (см. ClientOptions ниже по коду): если от
-			// клиента нет ни одного фрейма 30s, шлём PING; нет ответа за
-			// 15s — считаем мёртвым и закрываем.
-			ReadIdleTimeout: 30 * time.Second,
-			PingTimeout:     15 * time.Second,
+			// handshakeSem/учёта раньше срока. Не запускаем фоновый H2 PING:
+			// для экономии батареи idle H2-сессия должна быть полностью
+			// без трафика, как обычный VLESS/TCP-транспорт. Клиент
+			// восстанавливает транспорт при InterfaceUpdated(), а зависшую
+			// сессию проверяет реактивно после таймаута реального стрима.
 		}
 		// ВАЖНО: net/http.Server.Serve() определяет ALPN-протокол и решает,
 		// звать ли http2.Server, через жёсткий type assertion c.rwc.(*tls.Conn)

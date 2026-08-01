@@ -512,12 +512,6 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		}
 		transport := &http2.Transport{
 			AllowHTTP: true,
-			// Мягкий low-level пинг на уровне HTTP/2: пингуем, только если
-			// от сервера не было чтения дольше ReadIdleTimeout (реактивно,
-			// а не постоянный heartbeat как у QUIC). 90s вместо 45s — реже
-			// лишний раз будим радиомодуль на простаивающем соединении.
-			ReadIdleTimeout: time.Second * 90,
-			PingTimeout:     time.Second * 15,
 			DataPaddingMin:  options.DataPaddingMin,
 			DataPaddingMax:  options.DataPaddingMax,
 		}
