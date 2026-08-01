@@ -87,4 +87,16 @@ type TrustTunnelOutboundOptions struct {
 	PacketPadding        *TrustTunnelPaddingOptions   `json:"packet_padding,omitempty"`
 	Multiplex            *TrustTunnelMultiplexOptions `json:"multiplex,omitempty"`
 	UDPPadding           *TrustTunnelPaddingOptions   `json:"udp_padding,omitempty"`
+	// DisableTCPNoDelay: по умолчанию (false) h2-путь всегда включает
+	// TCP_NODELAY на сокете — отключает алгоритм Найгла, чтобы мелкие
+	// пакеты внутри h2-мультиплекса не ждали в буфере ядра лишние ~40мс
+	// (заметно для латенси-чувствительного трафика, например игрового).
+	// Плата за это — реальная: каждая мелкая запись (а их много при
+	// мультиплексе — WINDOW_UPDATE, PING, мелкие DATA-фреймы) уходит в
+	// эфир немедленно отдельной передачей вместо накопления в одну более
+	// крупную — держит радиомодуль в высокоэнергетическом состоянии
+	// заметно дольше на мобильных. DisableTCPNoDelay: true возвращает
+	// сокет на дефолт ядра (обычно Nagle включён) — жертвуем этими ~40мс
+	// задержки на мелких пакетах ради заряда батареи.
+	DisableTCPNoDelay bool `json:"disable_tcp_no_delay,omitempty"`
 }

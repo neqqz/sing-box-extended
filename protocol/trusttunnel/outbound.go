@@ -30,8 +30,10 @@ import (
 // целевых доменов (CDN и т.п.) не меняется настолько быстро.
 const resolveCacheTTL = 30 * time.Second
 
-// noDelayDialer явно отключает алгоритм Найгла на TCP-соединениях. Без
-// этого пакеты могут задерживаться в буфере ядра ради укрупнения (обычно
+// noDelayDialer по умолчанию включает TCP_NODELAY на TCP-соединениях (можно
+// выключить через DisableTCPNoDelay в конфиге — см. пояснение у поля ниже
+// и у option.TrustTunnelOutboundOptions.DisableTCPNoDelay). Без NODELAY
+// пакеты могут задерживаться в буфере ядра ради укрупнения (обычно
 // безобидно, но для латенси-чувствительного трафика внутри H2-мультиплекса
 // — например, игрового — лишняя задержка в 40мс на каждый мелкий пакет
 // заметна). Go по умолчанию TCP_NODELAY не гарантирует на всех платформах
@@ -49,6 +51,12 @@ type noDelayDialer struct {
 	// 0/0 (дефолт) = выключено, без накладных расходов.
 	jitterMinMS int
 	jitterMaxMS int
+	// disableTCPNoDelay — см. option.TrustTunnelOutboundOptions.DisableTCPNoDelay.
+	// false (дефолт) = текущее поведение (NODELAY всегда включён, ниже
+	// латенси на мелких пакетах ценой более частых передач и, как
+	// следствие, батареи на мобильных). true = не трогаем NODELAY,
+	// остаёмся на дефолте ядра (обычно Nagle включён).
+	disableTCPNoDelay bool
 }
 
 func (d noDelayDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
@@ -57,7 +65,9 @@ func (d noDelayDialer) DialContext(ctx context.Context, network string, destinat
 		return nil, err
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_ = tcpConn.SetNoDelay(true)
+		if !d.disableTCPNoDelay {
+			_ = tcpConn.SetNoDelay(true)
+		}
 		trusttunnel.SetTCPCongestionControl(tcpConn, d.congestionControl)
 	}
 	return trusttunnel.NewJitterConn(conn, d.jitterMinMS, d.jitterMaxMS), nil
@@ -95,7 +105,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		return nil, err
 	}
 	timingMin, timingMax := timingRange(options.Timing)
-	outboundDialer = noDelayDialer{Dialer: outboundDialer, congestionControl: options.CongestionController, jitterMinMS: timingMin, jitterMaxMS: timingMax}
+	outboundDialer = noDelayDialer{Dialer: outboundDialer, congestionControl: options.CongestionController, jitterMinMS: timingMin, jitterMaxMS: timingMax, disableTCPNoDelay: options.DisableTCPNoDelay}
 	serverAddr := options.ServerOptions.Build()
 	networkList := options.Network.Build()
 	tlsConfig, err := tls.NewClient(ctx, logger, options.Server, common.PtrValueOrDefault(options.TLS))
