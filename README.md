@@ -19,7 +19,7 @@ Sing-box with extended features.
 - **Sudoku** — Traffic obfuscation protocol based on 4×4 Sudoku puzzles with low-entropy fingerprints
 - **Snell** — Lightweight encrypted proxy (v1–v5) with TLS / HTTP obfuscation
 - **SSH** — SSH client and server with certificate authentication and upstream fallback
-- **VPN** — Routed tunnel over any TCP sing-box protocol
+- **VPN** — Routed tunnel over any sing-box protocol
 - **Bond** — Link aggregation for increasing throughput
 - **Fallback** — Outbound group with priority-based switching
 - **Failover** — Automatic outbound switching with session recovery for high availability
