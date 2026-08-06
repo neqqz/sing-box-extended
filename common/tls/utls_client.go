@@ -131,15 +131,15 @@ func (c *UTLSClientConfig) SetSessionIDGenerator(generator func(clientHello []by
 
 func (c *UTLSClientConfig) Clone() Config {
 	return &UTLSClientConfig{
-		ctx:                   c.ctx,
-		config:                c.config.Clone(),
-		id:                    c.id,
-		fragment:              c.fragment,
-		fragmentFallbackDelay: c.fragmentFallbackDelay,
-		recordFragment:        c.recordFragment,
-		certDomain:            c.certDomain,
-		clientRandomPrefix:    c.clientRandomPrefix,
-		clientRandomMask:      c.clientRandomMask,
+		ctx:                      c.ctx,
+		config:                   c.config.Clone(),
+		id:                       c.id,
+		fragment:                 c.fragment,
+		fragmentFallbackDelay:    c.fragmentFallbackDelay,
+		recordFragment:           c.recordFragment,
+		certDomain:               c.certDomain,
+		clientRandomPrefix:       c.clientRandomPrefix,
+		clientRandomMask:         c.clientRandomMask,
 		clientRandomPrefixSecret: c.clientRandomPrefixSecret,
 		clientRandomPrefixLen:    c.clientRandomPrefixLen,
 		clientRandomPrefixWindow: c.clientRandomPrefixWindow,
@@ -549,10 +549,26 @@ func init() {
 
 func uTLSClientHelloID(name string) (utls.ClientHelloID, error) {
 	switch name {
-	case "chrome_psk", "chrome_psk_shuffle", "chrome_padding_psk_shuffle", "chrome_pq", "chrome_pq_psk":
-		fallthrough
 	case "chrome", "":
 		return utls.HelloChrome_Auto, nil
+	// Раньше все пять вариантов ниже падали через fallthrough на
+	// HelloChrome_Auto (так же, как апстрим сделал начиная с sing-box
+	// 1.10.0, см. docs/configuration/shared/tls.md — "Removed since
+	// sing-box 1.10.0"). В этом форке возвращаем реальные привязки:
+	// HelloChrome_Auto = HelloChrome_133 уже сам по себе PQ (X25519MLKEM768
+	// первым в KeyShare), так что "chrome_pq"/"chrome_pq_psk" тут — это
+	// более старый черновой Kyber768Draft00 (Chrome 115), а не альтернатива
+	// "включить PQ вместо не-PQ".
+	case "chrome_psk":
+		return utls.HelloChrome_100_PSK, nil
+	case "chrome_psk_shuffle":
+		return utls.HelloChrome_112_PSK_Shuf, nil
+	case "chrome_padding_psk_shuffle":
+		return utls.HelloChrome_114_Padding_PSK_Shuf, nil
+	case "chrome_pq":
+		return utls.HelloChrome_115_PQ, nil
+	case "chrome_pq_psk":
+		return utls.HelloChrome_115_PQ_PSK, nil
 	case "firefox":
 		return utls.HelloFirefox_Auto, nil
 	case "edge":

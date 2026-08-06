@@ -467,24 +467,38 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		if len(options.TLSConfig.NextProtos()) == 0 {
 			options.TLSConfig.SetNextProtos([]string{"h3"})
 		}
+		quicClientConfig := &quic.Config{
+			// Оптимизировано для мобильных: чем реже шлём keepalive,
+			// тем дольше радиомодуль может простаивать между пакетами
+			// вместо постоянного active-состояния. 90s даёт запас под
+			// MaxIdleTimeout=2m (не успевает истечь) и втрое реже будит
+			// радио, чем прежние 30s. Компромисс: у некоторых мобильных
+			// операторов NAT-маппинг для UDP живёт < 90s — тогда между
+			// keepalive'ами мэппинг может протухнуть, и следующий пакет
+			// потребует пересоздания сессии (это не баг, просто дороже
+			// одно переподключение вместо лишних keepalive'ов весь день).
+			// Если увидишь рост частоты переподключений — можно вернуть
+			// к 30-45s.
+			MaxIdleTimeout:        time.Minute * 2,
+			KeepAlivePeriod:       time.Second * 90,
+			ExtraPacketPaddingMin: options.PacketPaddingMin,
+			ExtraPacketPaddingMax: options.PacketPaddingMax,
+		}
+		if C.IsAndroid {
+			// PQ-совместимость (X25519MLKEM768 в tls.curve_preferences):
+			// quic-go зондирует путь пакетами до ~1452 байт (DPLPMTUD).
+			// На Android TUN с MTU 1280 sendto() для таких пакетов падает
+			// с EINVAL. Отключаем зондирование и фиксируем initial packet
+			// size на минимуме, который требует сам QUIC (RFC 9000: не
+			// меньше 1200) — это безопасно даже под 1280 MTU с учётом
+			// IP/UDP-заголовков. Только на Android: на десктопных ОС PMTUD
+			// отрабатывает штатно и даёт более крупный эффективный MTU, так
+			// что там его лучше не трогать.
+			quicClientConfig.DisablePathMTUDiscovery = true
+			quicClientConfig.InitialPacketSize = 1200
+		}
 		client.roundTripper = &http3.Transport{
-			QUICConfig: &quic.Config{
-				// Оптимизировано для мобильных: чем реже шлём keepalive,
-				// тем дольше радиомодуль может простаивать между пакетами
-				// вместо постоянного active-состояния. 90s даёт запас под
-				// MaxIdleTimeout=2m (не успевает истечь) и втрое реже будит
-				// радио, чем прежние 30s. Компромисс: у некоторых мобильных
-				// операторов NAT-маппинг для UDP живёт < 90s — тогда между
-				// keepalive'ами мэппинг может протухнуть, и следующий пакет
-				// потребует пересоздания сессии (это не баг, просто дороже
-				// одно переподключение вместо лишних keepalive'ов весь день).
-				// Если увидишь рост частоты переподключений — можно вернуть
-				// к 30-45s.
-				MaxIdleTimeout:  time.Minute * 2,
-				KeepAlivePeriod: time.Second * 90,
-				ExtraPacketPaddingMin: options.PacketPaddingMin,
-				ExtraPacketPaddingMax: options.PacketPaddingMax,
-			},
+			QUICConfig: quicClientConfig,
 			Dial: func(ctx context.Context, addr string, tlsCfg *stdtls.Config, cfg *quic.Config) (*quic.Conn, error) {
 				udpConn, err := options.Dialer.DialContext(ctx, N.NetworkUDP, client.server)
 				if err != nil {
@@ -511,9 +525,9 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			options.TLSConfig.SetNextProtos([]string{http2.NextProtoTLS})
 		}
 		transport := &http2.Transport{
-			AllowHTTP: true,
-			DataPaddingMin:  options.DataPaddingMin,
-			DataPaddingMax:  options.DataPaddingMax,
+			AllowHTTP:      true,
+			DataPaddingMin: options.DataPaddingMin,
+			DataPaddingMax: options.DataPaddingMax,
 		}
 		session := &h2Session{
 			transport: transport,

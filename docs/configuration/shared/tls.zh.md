@@ -432,15 +432,20 @@ uTLS 是 "crypto/tls" 的一个分支，它提供了 ClientHello 指纹识别阻
 
 可用的指纹值：
 
-!!! warning "已在 sing-box 1.10.0 移除"
+!!! info "本分支已恢复"
 
-    一些旧 chrome 指纹已被删除，并将会退到 chrome：
+    上游 sing-box 自 1.10.0 起移除了这些指纹（回退到 chrome）。本分支恢复了到底层
+    uTLS 规格的真实绑定：
 
-    :material-close: chrome_psk  
-    :material-close: chrome_psk_shuffle  
-    :material-close: chrome_padding_psk_shuffle  
-    :material-close: chrome_pq  
-    :material-close: chrome_pq_psk
+    :material-check: chrome_psk (HelloChrome_100_PSK)  
+    :material-check: chrome_psk_shuffle (HelloChrome_112_PSK_Shuf)  
+    :material-check: chrome_padding_psk_shuffle (HelloChrome_114_Padding_PSK_Shuf)  
+    :material-check: chrome_pq (HelloChrome_115_PQ, Kyber768Draft00)  
+    :material-check: chrome_pq_psk (HelloChrome_115_PQ_PSK, Kyber768Draft00)
+
+    注意：普通的 `chrome`（HelloChrome_Auto = HelloChrome_133）默认已经发送
+    X25519MLKEM768 —— 上面的 `_pq` 变体是一个更旧、独立的 Kyber 草案指纹，
+    并不是"开启了 PQ 的 chrome"。
 
 * chrome
 * firefox

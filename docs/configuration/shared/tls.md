@@ -435,15 +435,20 @@ uTLS is a fork of "crypto/tls", which provides ClientHello fingerprinting resist
 
 Available fingerprint values:
 
-!!! warning "Removed since sing-box 1.10.0"
+!!! info "Restored in this fork"
 
-    Some legacy chrome fingerprints have been removed and will fallback to chrome:
+    Upstream sing-box removed these since 1.10.0 (fallback to `chrome`). This fork
+    restores real bindings to the underlying uTLS specs:
 
-    :material-close: chrome_psk  
-    :material-close: chrome_psk_shuffle  
-    :material-close: chrome_padding_psk_shuffle  
-    :material-close: chrome_pq  
-    :material-close: chrome_pq_psk
+    :material-check: chrome_psk (HelloChrome_100_PSK)  
+    :material-check: chrome_psk_shuffle (HelloChrome_112_PSK_Shuf)  
+    :material-check: chrome_padding_psk_shuffle (HelloChrome_114_Padding_PSK_Shuf)  
+    :material-check: chrome_pq (HelloChrome_115_PQ, Kyber768Draft00)  
+    :material-check: chrome_pq_psk (HelloChrome_115_PQ_PSK, Kyber768Draft00)
+
+    Note: plain `chrome` (HelloChrome_Auto = HelloChrome_133) already sends
+    X25519MLKEM768 by default — the `_pq` variants above are an older, distinct
+    draft-Kyber fingerprint, not "chrome but with PQ turned on".
 
 * chrome
 * firefox
