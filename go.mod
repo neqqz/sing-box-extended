@@ -243,4 +243,4 @@ replace github.com/sagernet/sing => github.com/shtorm-7/sing v0.8.10-extended-1.
 
 replace github.com/sagernet/quic-go => github.com/0dinsky/quic-go v0.0.0-20260731190224-bcc992e5e04e
 
-replace golang.org/x/net => github.com/0dinsky/net v0.0.0-20260731184611-a20e9ab8f368
+replace golang.org/x/net => github.com/0dinsky/net v0.0.0-20260806072324-f543c0f32054
