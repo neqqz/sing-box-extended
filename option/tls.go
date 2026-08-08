@@ -137,10 +137,10 @@ type OutboundTLSOptions struct {
 	ClientRandomPrefixLen int `json:"client_random_prefix_len,omitempty"`
 	// ClientRandomPrefixWindow: длина окна ротации в секундах (по умолчанию 60).
 	// Сервер допускает текущее и соседние окна, чтобы не ловить рассинхрон часов.
-	ClientRandomPrefixWindow int                     `json:"client_random_prefix_window,omitempty"`
-	ECH                      *OutboundECHOptions    `json:"ech,omitempty"`
-	UTLS               *OutboundUTLSOptions   `json:"utls,omitempty"`
-	Reality            *OutboundRealityOptions `json:"reality,omitempty"`
+	ClientRandomPrefixWindow int                      `json:"client_random_prefix_window,omitempty"`
+	ECH                      *OutboundECHOptions      `json:"ech,omitempty"`
+	UTLS                     *OutboundUTLSOptions     `json:"utls,omitempty"`
+	Reality                  *OutboundRealityOptions  `json:"reality,omitempty"`
 }
 
 type OutboundTLSOptionsContainer struct {

@@ -23,11 +23,11 @@ type TrustTunnelTimingOptions struct {
 type TrustTunnelInboundOptions struct {
 	ListenOptions
 	InboundTLSOptionsContainer
-	Users                []TrustTunnelUser `json:"users,omitempty"`
-	Network              NetworkList       `json:"network,omitempty"`
-	CongestionController string            `json:"congestion_controller,omitempty"`
-	CWND                 int               `json:"cwnd,omitempty"`
-	Timing               *TrustTunnelTimingOptions  `json:"timing,omitempty"`
+	Users                []TrustTunnelUser        `json:"users,omitempty"`
+	Network              NetworkList               `json:"network,omitempty"`
+	CongestionController string                    `json:"congestion_controller,omitempty"`
+	CWND                 int                       `json:"cwnd,omitempty"`
+	Timing               *TrustTunnelTimingOptions `json:"timing,omitempty"`
 	// DataPadding: рандомный PADDED-паддинг на h2 DATA-фреймы (байты). У
 	// PADDED-флага HTTP/2 однобайтовое поле длины паддинга (RFC 7540 §6.1),
 	// поэтому Max > 255 не имеет смысла на этом пути.
@@ -36,8 +36,8 @@ type TrustTunnelInboundOptions struct {
 	// Config.ExtraPacketPaddingMin/Max в форке quic-go). Не путать с
 	// UDPPadding ниже — тот про полезную нагрузку UDP-relay протокола
 	// поверх туннеля, этот — про размер самих QUIC-пакетов на проводе.
-	PacketPadding        *TrustTunnelPaddingOptions `json:"packet_padding,omitempty"`
-	ClientRandomPrefix   string            `json:"client_random_prefix,omitempty"`
+	PacketPadding      *TrustTunnelPaddingOptions `json:"packet_padding,omitempty"`
+	ClientRandomPrefix string                     `json:"client_random_prefix,omitempty"`
 	// ClientRandomPrefixSecret/Len/Window — server side of the rotating-prefix
 	// scheme; must match the client's OutboundTLSOptions values of the same
 	// name. See option/tls.go for the full explanation. When
@@ -50,8 +50,8 @@ type TrustTunnelInboundOptions struct {
 	// (сканер, активный зонд) сырые байты проксируются на него, а не рвутся,
 	// когда SNI из ClientHello извлечь не удалось (см. transport/trusttunnel/prefix_listener.go —
 	// по умолчанию используется сам этот SNI, а FallbackServer лишь запасной вариант). Формат: "host:port".
-	FallbackServer       string            `json:"fallback_server,omitempty"`
-	AllowedSNI           []string          `json:"allowed_sni,omitempty"`
+	FallbackServer string   `json:"fallback_server,omitempty"`
+	AllowedSNI     []string `json:"allowed_sni,omitempty"`
 	// UDPPadding — паддинг полезной нагрузки UDP-relay протокола; тот же
 	// формат [Min, Max], что и у DataPadding/PacketPadding выше.
 	UDPPadding *TrustTunnelPaddingOptions `json:"udp_padding,omitempty"`
@@ -83,8 +83,8 @@ type TrustTunnelOutboundOptions struct {
 	Timing               *TrustTunnelTimingOptions    `json:"timing,omitempty"`
 	// See the matching fields on TrustTunnelInboundOptions for the format
 	// and rationale.
-	DataPadding          *TrustTunnelPaddingOptions   `json:"data_padding,omitempty"`
-	PacketPadding        *TrustTunnelPaddingOptions   `json:"packet_padding,omitempty"`
-	Multiplex            *TrustTunnelMultiplexOptions `json:"multiplex,omitempty"`
-	UDPPadding           *TrustTunnelPaddingOptions   `json:"udp_padding,omitempty"`
+	DataPadding   *TrustTunnelPaddingOptions   `json:"data_padding,omitempty"`
+	PacketPadding *TrustTunnelPaddingOptions   `json:"packet_padding,omitempty"`
+	Multiplex     *TrustTunnelMultiplexOptions `json:"multiplex,omitempty"`
+	UDPPadding    *TrustTunnelPaddingOptions   `json:"udp_padding,omitempty"`
 }

@@ -14,17 +14,18 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sagernet/quic-go"
-	"github.com/sagernet/quic-go/http3"
 	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
-	qtls "github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common/bufio"
-	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/ntp"
+	"github.com/sagernet/sing/common/logger"
+
+	"github.com/sagernet/quic-go"
+	"github.com/sagernet/quic-go/http3"
+	qtls "github.com/sagernet/sing-quic"
 	"golang.org/x/net/http2"
 )
 
@@ -56,14 +57,11 @@ type ClientOptions struct {
 	MaxConnections    int
 	MinStreams        int
 	MaxStreams        int
-	// UDPPaddingMin/Max — паддинг полезной нагрузки UDP-relay протокола
-	// (см. randomUDPPaddingLength в protocol.go). Max<=0 — выключено.
-	UDPPaddingMin int
-	UDPPaddingMax int
-	// JitterMinMS/JitterMaxMS: см. jitter_conn.go. Применяется к
-	// QUIC-пути через WriteTo на исходящем PacketConn (см. ниже, рядом с
-	// DialEarly) — отдельная точка от H2-пути, т.к. QUIC вообще не ходит
-	// через noDelayDialer.
+	UDPPaddingMin     int
+	UDPPaddingMax     int
+	// JitterMinMS/JitterMaxMS: см. jitter_conn.go. Применяется и к h2-пути
+	// (через враппер над options.Dialer в protocol/trusttunnel/outbound.go),
+	// и к QUIC-пути (напрямую здесь, на PacketConn перед DialEarly).
 	JitterMinMS int
 	JitterMaxMS int
 	// DataPaddingMin/Max (h2) и PacketPaddingMin/Max (QUIC) — см.
@@ -82,381 +80,21 @@ type Client struct {
 	serverString     string
 	auth             string
 	roundTripper     http.RoundTripper
-	session          *h2Session
-	quicConnMu       sync.RWMutex
-	quicConn         *quic.Conn
 	startOnce        sync.Once
 	healthCheck      bool
 	healthCheckTimer *time.Timer
 	count            atomic.Int64
-	udpPaddingMin    int
-	udpPaddingMax    int
-}
-
-type h2Session struct {
-	transport *http2.Transport
-	server    M.Socksaddr
-	tlsDialer tls.Dialer
-	// ctx — контекст владеющего Client'а (не запроса). Нужен ТОЛЬКО чтобы
-	// оборвать зависший дозвон нового соединения (см. ниже в
-	// GetClientConn), когда Close()/InterfaceUpdated() уже знают, что путь
-	// сдох (смена интерфейса на мобильной сети — хендовер вышки,
-	// rmnet-интерфейс пересоздан и т.п.), а сам дозвон слушает только
-	// req.Context() и без этого ждал бы полный C.TCPTimeout вслепую. На
-	// уже установленные стримы это НЕ влияет: у них свой независимый
-	// контекст (см. комментарий в roundTrip), этот ctx used только вокруг
-	// самого TCP/TLS dial.
-	ctx context.Context
-
-	mu         sync.Mutex
-	clientConn *http2.ClientConn
-	dead       bool
-	// probing защищает от одновременного запуска нескольких активных
-	// зондов (Ping) на один и тот же clientConn — когда сразу несколько
-	// стримов синхронно упираются в собственный hardTimeout на одной и
-	// той же зомби-сессии (см. probeIfSuspect), не шлём PING на каждый
-	// из них, достаточно одного.
-	probing atomic.Bool
-	// dialMu — канал-мьютекс вместо sync.Mutex по той же причине, что и
-	// MultiplexClient.mu (см. комментарий там): обычный sync.Mutex.Lock()
-	// ничем не ограничен по времени. Пока один стрим реально дозванивается
-	// (до C.TCPTimeout), остальные конкурентные стримы того же
-	// h2Session вставали в очередь на dialMu и ждали БЕЗ учёта СВОЕГО
-	// собственного req.Context() — это ожидание в очереди не считалось ни
-	// в C.TCPTimeout, ни в серверный дедлайн, оба тикали только с момента
-	// реального захвата мьютекса. В результате к тому моменту, когда
-	// стрим наконец получал dialMu, его собственный таймаут зачастую уже
-	// истёк, и он тут же валился с "operation was canceled", даже не
-	// начав дозвон — именно это давало наблюдаемую лавину обрывов http2
-	// (разброс от долей секунды до 18+s с начала стрима при
-	// C.TCPTimeout=15s) и по цепочке RST_STREAM(CANCEL) на сервере на
-	// едва открытые стримы. Канал даёт то же взаимоисключение, но
-	// ожидание прерывается по req.Context() вызывающего стрима: если
-	// стрим не дождался своей очереди на дозвон, он не тратит время
-	// впустую и не пытается дозвониться с уже просроченным бюджетом.
-	dialMu chan struct{}
-}
-
-// dialMaxAttempts/dialRetryBaseDelay/dialRetryMaxDelay — см. комментарий в
-// GetClientConn. Реальные разрывы при смене сети на мобильном (переключение
-// вышки/бирера, RRC reconnect) держатся не доли секунды, а единицы секунд
-// (по логам — до 8-9s). Фиксированной одной паузы в 300мс на это не хватает:
-// нужна экспоненциальная задержка на несколько попыток, но с потолком,
-// чтобы суммарно не съесть весь бюджет запроса (C.TCPTimeout=15s) и
-// оставить время на сам успешный дозвон+TLS после того, как путь оживёт.
-const (
-	dialMaxAttempts    = 5
-	dialRetryBaseDelay = 400 * time.Millisecond
-	dialRetryMaxDelay  = 3 * time.Second
-)
-
-// dialRetryDelay возвращает задержку перед попыткой attempt+1 (0-based
-// attempt только что провалился): экспонента с потолком dialRetryMaxDelay.
-func dialRetryDelay(attempt int) time.Duration {
-	d := dialRetryBaseDelay
-	for i := 0; i < attempt; i++ {
-		d *= 2
-		if d >= dialRetryMaxDelay {
-			return dialRetryMaxDelay
-		}
-	}
-	return d
-}
-
-// sCtxDone возвращает Done()-канал s.ctx, либо nil-канал (никогда не
-// закрывается), если s.ctx не задан — безопасно использовать в select.
-func sCtxDone(s *h2Session) <-chan struct{} {
-	if s.ctx == nil {
-		return nil
-	}
-	return s.ctx.Done()
-}
-
-// lockDial ждёт свободный слот на дозвон, но не дольше, чем жив ctx.
-func (s *h2Session) lockDial(ctx context.Context) error {
-	select {
-	case s.dialMu <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (s *h2Session) unlockDial() {
-	<-s.dialMu
-}
-
-func (s *h2Session) GetClientConn(req *http.Request, _ string) (*http2.ClientConn, error) {
-	s.mu.Lock()
-	if s.clientConn != nil && !s.dead {
-		state := s.clientConn.State()
-		if !state.Closed && !state.Closing {
-			cc := s.clientConn
-			s.mu.Unlock()
-			return cc, nil
-		}
-	}
-	s.mu.Unlock()
-
-	if err := s.lockDial(req.Context()); err != nil {
-		return nil, err
-	}
-	defer s.unlockDial()
-
-	s.mu.Lock()
-	if s.clientConn != nil && !s.dead {
-		state := s.clientConn.State()
-		if !state.Closed && !state.Closing {
-			cc := s.clientConn
-			s.mu.Unlock()
-			return cc, nil
-		}
-	}
-	s.mu.Unlock()
-
-	// Дозвон слушает req.Context() (свой таймаут стрима) И s.ctx (ctx
-	// владеющего Client'а). Раньше слушался только первый: если во время
-	// зависшего TCP/TLS-дозвона происходил реальный Close()/
-	// InterfaceUpdated() (интерфейс сменился, старый путь гарантированно
-	// мёртв), дозвон об этом не узнавал и висел до полного C.TCPTimeout —
-	// а за это время в очередь на этот же дозвон (dialMu) успевали
-	// встать остальные стримы, которые все разом падали с "context
-	// canceled/operation was canceled" по истечении СВОЕГО таймаута. Это
-	// и есть волнообразные обрывы http2-пути при смене сети на мобильных
-	// клиентах. Обрыв по s.ctx сразу освобождает dialMu и даёт следующему
-	// стриму немедленно поднять новый дозвон вместо ожидания вслепую.
-	//
-	// dialMaxAttempts/dialRetryDelay(): сам по себе провал ПЕРВОЙ попытки
-	// дозвона до сервера — частая история на мобильной сети (потеря пакета
-	// на handshake, RRC-реконнект, смена вышки) и часто самовосстанавливается
-	// за секунды, а не доли секунды. Раньше первый же провал сразу
-	// возвращался вызывающему стриму, а следующий стрим из очереди dialMu
-	// тут же повторял ровно ту же попытку с нуля — если сбой держался
-	// несколько секунд, а в очереди стояло десяток стримов, падали ВСЕ они
-	// по очереди один за другим, хотя путь мог восстановиться уже после
-	// одной-двух повторных попыток. Один разрыв на радиоинтерфейсе
-	// превращался в лавину из десятков упавших потоков вместо нескольких
-	// внутренних ретраев. Экспоненциальная пауза с потолком и несколько
-	// попыток ВНУТРИ этой критической секции (а не в соседних вызовах) даёт
-	// пути реальный шанс восстановиться за секунды, прежде чем отдать
-	// ошибку наверх и заставить следующего в очереди начинать всё заново.
-	var conn net.Conn
-	var err error
-	for attempt := 0; attempt < dialMaxAttempts; attempt++ {
-		dialCtx, dialCancel := context.WithCancel(req.Context())
-		var stop func() bool
-		if s.ctx != nil {
-			stop = context.AfterFunc(s.ctx, dialCancel)
-		}
-		conn, err = s.tlsDialer.DialContext(dialCtx, N.NetworkTCP, s.server)
-		dialCancel()
-		if stop != nil {
-			stop()
-		}
-		if err == nil {
-			break
-		}
-		if attempt == dialMaxAttempts-1 {
-			break
-		}
-		select {
-		case <-time.After(dialRetryDelay(attempt)):
-		case <-req.Context().Done():
-			return nil, req.Context().Err()
-		case <-sCtxDone(s):
-			return nil, err
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-	clientConn, err := s.transport.NewClientConn(conn)
-	if err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-
-	s.mu.Lock()
-	s.clientConn = clientConn
-	s.dead = false
-	s.mu.Unlock()
-
-	return clientConn, nil
-}
-
-func (s *h2Session) MarkDead(conn *http2.ClientConn) {
-	s.mu.Lock()
-	if conn == s.clientConn {
-		s.dead = true
-	}
-	s.mu.Unlock()
-}
-
-// probeIfSuspect реактивно проверяет живость ТЕКУЩЕГО clientConn, когда
-// стрим уже упал по СВОЕМУ собственному hardTimeout (C.TCPTimeout) на уже
-// установленной сессии — то есть GetClientConn отдал вроде бы живое
-// соединение (State() не Closed/Closing), но сервер за 15s не ответил ни
-// байтом. Без этого зонда единственный способ узнать, что путь на самом
-// деле тихо сдох (мобильный NAT молча уронил маппинг, пакеты уходят в
-// пустоту без RST/FIN) — встроенный ReadIdleTimeout/PingTimeout у
-// http2.Transport (90s+15s набегает), и всё это время КАЖДЫЙ новый стрим,
-// которому не повезёт получить именно эту сессию, будет так же вслепую
-// жечь свои 15s и падать с тем же "context canceled" — именно это и видно
-// в логе как серия падений на дозвон/чтение с одним и тем же сервером.
-// Проверяем СРАЗУ по первому такому отказу, не дожидаясь фонового пинга —
-// и если сессия правда мертва, немедленно метим её MarkDead, чтобы пул
-// перестал отдавать её новым стримам.
-func (s *h2Session) probeIfSuspect() {
-	s.mu.Lock()
-	conn := s.clientConn
-	dead := s.dead
-	s.mu.Unlock()
-	if conn == nil || dead {
-		return
-	}
-	if !s.probing.CompareAndSwap(false, true) {
-		return
-	}
-	go func() {
-		defer s.probing.Store(false)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := conn.Ping(ctx); err != nil {
-			s.MarkDead(conn)
-		}
-	}()
-}
-
-// status возвращает (hardClosed, draining) для текущего clientConn.
-// hardClosed — соединение реально мертво (transport.MarkDead его отбраковал,
-// либо http2 сообщает state.Closed): активные стримы на нём уже ни на что
-// не годны, их контекст можно смело отменять.
-// draining — получен GOAWAY, http2.ClientConn в state.Closing: НЕ новых
-// стримов, но уже открытые стримы по спецификации HTTP/2 должны доиграть
-// до конца. Это не то же самое, что "мертво".
-func (s *h2Session) status() (hardClosed, draining bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.clientConn == nil {
-		return false, false
-	}
-	if s.dead {
-		return true, false
-	}
-	state := s.clientConn.State()
-	return state.Closed, state.Closing
-}
-
-func (s *h2Session) isClosed() bool {
-	hardClosed, draining := s.status()
-	return hardClosed || draining
-}
-
-func (s *h2Session) isHardClosed() bool {
-	hardClosed, _ := s.status()
-	return hardClosed
-}
-
-func (s *h2Session) isDraining() bool {
-	_, draining := s.status()
-	return draining
-}
-
-func (c *Client) IsClosed() bool {
-	select {
-	case <-c.ctx.Done():
-		return true
-	default:
-	}
-	if c.session != nil {
-		return c.session.isClosed()
-	}
-	c.quicConnMu.RLock()
-	conn := c.quicConn
-	c.quicConnMu.RUnlock()
-	if conn != nil {
-		select {
-		case <-conn.Context().Done():
-			return true
-		default:
-		}
-	}
-	return false
-}
-
-// IsHardClosed reports whether the underlying connection is genuinely dead
-// (unusable even for streams already in flight), as opposed to merely
-// draining after a graceful GOAWAY. Only hard-dead clients should have their
-// context canceled — canceling a draining client's context kills every
-// active multiplexed stream on it even though HTTP/2 promises those streams
-// may run to completion.
-func (c *Client) IsHardClosed() bool {
-	select {
-	case <-c.ctx.Done():
-		return true
-	default:
-	}
-	if c.session != nil {
-		return c.session.isHardClosed()
-	}
-	c.quicConnMu.RLock()
-	conn := c.quicConn
-	c.quicConnMu.RUnlock()
-	if conn != nil {
-		select {
-		case <-conn.Context().Done():
-			return true
-		default:
-		}
-	}
-	return false
-}
-
-// IsDraining reports whether the client is in a graceful GOAWAY drain: no
-// new streams should be routed to it, but existing streams are left alone.
-func (c *Client) IsDraining() bool {
-	if c.session != nil {
-		return c.session.isDraining()
-	}
-	return false
-}
-
-func (c *Client) setQUICConn(conn *quic.Conn) {
-	c.quicConnMu.Lock()
-	c.quicConn = conn
-	c.quicConnMu.Unlock()
-}
-
-// EverConnected reports whether this Client ever managed to establish a
-// working underlying connection (h2 ClientConn / QUIC conn) at least once,
-// as opposed to having failed on its very first dial. Used by
-// MultiplexClient to decide whether a retry-on-fresh-client is worth the
-// extra full timeout: if we never connected even once, the server/network
-// path itself is almost certainly the problem, and dialing yet another fresh
-// client at the same destination over the same broken path will just burn a
-// second full C.TCPTimeout for an identical failure.
-func (c *Client) EverConnected() bool {
-	if c.session != nil {
-		c.session.mu.Lock()
-		defer c.session.mu.Unlock()
-		return c.session.clientConn != nil
-	}
-	c.quicConnMu.RLock()
-	defer c.quicConnMu.RUnlock()
-	return c.quicConn != nil
 }
 
 func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	client := &Client{
-		ctx:           ctx,
-		cancel:        cancel,
-		server:        options.Server,
-		serverString:  options.Server.String(),
-		auth:          buildAuth(options.Username, options.Password),
-		healthCheck:   options.HealthCheck,
-		udpPaddingMin: options.UDPPaddingMin,
-		udpPaddingMax: options.UDPPaddingMax,
+		ctx:          ctx,
+		cancel:       cancel,
+		server:       options.Server,
+		serverString: options.Server.String(),
+		auth:         buildAuth(options.Username, options.Password),
+		healthCheck:  options.HealthCheck,
 	}
 	if options.QUIC {
 		congestionControlFactory, err := congestion.NewCongestionControl(options.CongestionControl, options.CWND, ntp.TimeFuncFromContext(ctx))
@@ -467,56 +105,39 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		if len(options.TLSConfig.NextProtos()) == 0 {
 			options.TLSConfig.SetNextProtos([]string{"h3"})
 		}
-		quicClientConfig := &quic.Config{
-			// Оптимизировано для мобильных: чем реже шлём keepalive,
-			// тем дольше радиомодуль может простаивать между пакетами
-			// вместо постоянного active-состояния. 90s даёт запас под
-			// MaxIdleTimeout=2m (не успевает истечь) и втрое реже будит
-			// радио, чем прежние 30s. Компромисс: у некоторых мобильных
-			// операторов NAT-маппинг для UDP живёт < 90s — тогда между
-			// keepalive'ами мэппинг может протухнуть, и следующий пакет
-			// потребует пересоздания сессии (это не баг, просто дороже
-			// одно переподключение вместо лишних keepalive'ов весь день).
-			// Если увидишь рост частоты переподключений — можно вернуть
-			// к 30-45s.
-			MaxIdleTimeout:        time.Minute * 2,
-			KeepAlivePeriod:       time.Second * 90,
+		quicConfig := &quic.Config{
+			MaxIdleTimeout:        DefaultSessionTimeout * 2,
+			KeepAlivePeriod:       DefaultHealthCheckTimeout,
 			ExtraPacketPaddingMin: options.PacketPaddingMin,
 			ExtraPacketPaddingMax: options.PacketPaddingMax,
 		}
-		if C.IsAndroid {
-			// PQ-совместимость (X25519MLKEM768 в tls.curve_preferences):
-			// quic-go зондирует путь пакетами до ~1452 байт (DPLPMTUD).
-			// На Android TUN с MTU 1280 sendto() для таких пакетов падает
-			// с EINVAL. Отключаем зондирование и фиксируем initial packet
-			// size на минимуме, который требует сам QUIC (RFC 9000: не
-			// меньше 1200) — это безопасно даже под 1280 MTU с учётом
-			// IP/UDP-заголовков. Только на Android: на десктопных ОС PMTUD
-			// отрабатывает штатно и даёт более крупный эффективный MTU, так
-			// что там его лучше не трогать.
-			quicClientConfig.DisablePathMTUDiscovery = true
-			quicClientConfig.InitialPacketSize = 1200
-		}
 		client.roundTripper = &http3.Transport{
-			QUICConfig: quicClientConfig,
+			QUICConfig: quicConfig,
 			Dial: func(ctx context.Context, addr string, tlsCfg *stdtls.Config, cfg *quic.Config) (*quic.Conn, error) {
 				udpConn, err := options.Dialer.DialContext(ctx, N.NetworkUDP, client.server)
 				if err != nil {
 					return nil, err
 				}
-				pktConn := bufio.NewUnbindPacketConn(udpConn)
-				wrappedPktConn := NewJitterPacketConn(pktConn, options.JitterMinMS, options.JitterMaxMS)
+				pktConn := NewJitterPacketConn(bufio.NewUnbindPacketConn(udpConn), options.JitterMinMS, options.JitterMaxMS)
 				var conn *quic.Conn
+				// QUICDialer: если options.TLSConfig умеет патчить
+				// ClientHello.Random (ротация client_random_prefix_secret,
+				// см. common/tls/utls_client.go), используем именно его —
+				// иначе обычный qtls.DialEarly ничего про наш префикс не
+				// знает. Пересчитывается заново на каждый вызов этого
+				// замыкания (см. quicConfigWithRandom), а не один раз при
+				// старте — иначе все реконнекты в рамках одного
+				// multiplex.max_connections получили бы один и тот же
+				// "случайный" префикс навсегда.
 				if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
-					conn, err = qd.DialEarly(ctx, wrappedPktConn, udpConn.RemoteAddr(), cfg)
+					conn, err = qd.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), cfg)
 				} else {
-					conn, err = qtls.DialEarly(ctx, wrappedPktConn, udpConn.RemoteAddr(), options.TLSConfig, cfg)
+					conn, err = qtls.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), options.TLSConfig, cfg)
 				}
 				if err != nil {
 					return nil, err
 				}
 				conn.SetCongestionControl(congestionControlFactory(conn))
-				client.setQUICConn(conn)
 				return conn, nil
 			},
 		}
@@ -524,21 +145,15 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		if len(options.TLSConfig.NextProtos()) == 0 {
 			options.TLSConfig.SetNextProtos([]string{http2.NextProtoTLS})
 		}
-		transport := &http2.Transport{
+		tlsDialer := tls.NewDialer(options.Dialer, options.TLSConfig)
+		client.roundTripper = &http2.Transport{
+			DialTLSContext: func(ctx context.Context, network, addr string, _ *stdtls.Config) (net.Conn, error) {
+				return tlsDialer.DialContext(ctx, network, client.server)
+			},
 			AllowHTTP:      true,
 			DataPaddingMin: options.DataPaddingMin,
 			DataPaddingMax: options.DataPaddingMax,
 		}
-		session := &h2Session{
-			transport: transport,
-			server:    client.server,
-			tlsDialer: tls.NewDialer(options.Dialer, options.TLSConfig),
-			ctx:       ctx,
-			dialMu:    make(chan struct{}, 1),
-		}
-		transport.ConnPool = session
-		client.roundTripper = transport
-		client.session = session
 	}
 	return client, nil
 }
@@ -551,7 +166,6 @@ func (c *Client) start() {
 }
 
 func (c *Client) loopHealthCheck() {
-	consecutiveFailures := 0
 	for {
 		select {
 		case <-c.healthCheckTimer.C:
@@ -559,30 +173,9 @@ func (c *Client) loopHealthCheck() {
 			c.healthCheckTimer.Stop()
 			return
 		}
-		if c.count.Load() > 0 {
-			// На клиенте прямо сейчас есть живые стримы — это само по себе
-			// доказательство того, что соединение работает. Не гоняем
-			// отдельный CONNECT health-check, который на загруженном
-			// H2-соединении может ложно упереться в очередь за тем же
-			// потоком и словить фантомный таймаут, хотя данные реально идут.
-			consecutiveFailures = 0
-			c.healthCheckTimer.Reset(DefaultHealthCheckTimeout)
-			continue
-		}
 		ctx, cancel := context.WithTimeout(c.ctx, DefaultHealthCheckTimeout)
-		err := c.HealthCheck(ctx)
+		_ = c.HealthCheck(ctx)
 		cancel()
-		if err != nil {
-			consecutiveFailures++
-			// Защита батареи: если первый чек упал, ждем 15 секунд вместо жесткого спама раз в 2 секунды
-			if consecutiveFailures < 2 {
-				c.healthCheckTimer.Reset(15 * time.Second)
-				continue
-			}
-			_ = c.Close()
-			return
-		}
-		consecutiveFailures = 0
 	}
 }
 
@@ -594,81 +187,23 @@ func (c *Client) resetHealthCheckTimer() {
 }
 
 func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
-	c.roundTripTimeout(request, conn, C.TCPTimeout)
-}
-
-// roundTripTimeout — то же, что roundTrip, но с явным hard-таймаутом вместо
-// захардкоженного C.TCPTimeout. Нужен MultiplexClient.{Dial,ListenPacket} для
-// повторной попытки на только что восстановленном клиенте (см. recoverClient):
-// если первая попытка на старом клиенте уже сожгла полный C.TCPTimeout, а
-// вторая на свежем берёт ТОТ ЖЕ полный таймаут, вызывающая сторона суммарно
-// ждёт до ~2×C.TCPTimeout прежде чем узнать об ошибке (в логах — "context
-// canceled" ровно на ~30s вместо ~15s: ретрай в худшем случае делает задержку
-// перед ошибкой ХУЖЕ, чем было бы без него). Короткий таймаут на повторе даёт
-// реально восстановившемуся пути честный шанс (обычный TCP+TLS хендшейк
-// укладывается в разы меньше), но не удваивает худший случай, когда путь
-// всё ещё лежит.
-func (c *Client) roundTripTimeout(request *http.Request, conn *httpConn, timeout time.Duration) {
 	c.startOnce.Do(c.start)
 	pipeReader, pipeWriter := io.Pipe()
 	request.Body = pipeReader
 	*conn = httpConn{writer: pipeWriter, created: make(chan struct{})}
 	c.count.Add(1)
-	conn.closeFn = sync.OnceFunc(func() {
-		if c.count.Add(-1) == 0 {
-			// Клиент уже помечен мёртвым (health-check/getClient), но пока
-			// на нём были активные стримы, мы намеренно не рвали соединение
-			// (см. комментарий у cancel ниже). Как только последний стрим
-			// реально завершился — дожимаем: закрываем опустевшую
-			// TCP-сессию, иначе она повиснет открытой до серверного таймаута.
-			select {
-			case <-c.ctx.Done():
-				if closer, ok := c.roundTripper.(io.Closer); ok {
-					_ = closer.Close()
-				}
-				if t, ok := c.roundTripper.(*http2.Transport); ok {
-					t.CloseIdleConnections()
-				}
-			default:
-			}
-		}
-	})
-	// ВАЖНО: контекст запроса намеренно НЕ наследуется от c.ctx.
-	// Раньше было ctx, cancel := context.WithCancel(c.ctx) — из-за этого
-	// c.cancel() (вызывается из c.Close(), в т.ч. из loopHealthCheck при
-	// двух неудачных health-check'ах подряд) мгновенно отменял контексты
-	// ВСЕХ активных мультиплексированных стримов на этом h2-соединении
-	// разом, даже полностью живых, которые просто не успели ответить на
-	// собственный health-check из-за конкуренции за то же H2-соединение.
-	// Именно это выглядело как "отваливающийся http2": пачка не связанных
-	// между собой стримов к разным хостам падала с context canceled в один
-	// и тот же момент. Теперь у запроса свой независимый контекст с
-	// единственным источником отмены — вызывающая сторона (conn.Close())
-	// и жёсткий таймаут ниже. Смерть/переиспользование Client'а на уровне
-	// пула по-прежнему решается через IsHardClosed()/getClient() и влияет
-	// только на маршрутизацию НОВЫХ стримов, а не на уже открытые.
-	ctx, cancel := context.WithCancel(context.Background())
+	conn.closeFn = sync.OnceFunc(func() { c.count.Add(-1) })
+	ctx, cancel := context.WithCancel(c.ctx)
 	conn.cancelFn = cancel
 	go func() {
-		// timedOut отличает срабатывание НАШЕГО hardTimeout (подозрение,
-		// что путь тихо сдох) от обычной отмены вызывающей стороной
-		// (conn.Close() — штатное закрытие, ни о чём не говорит о
-		// здоровье соединения). Проверяем сессию только в первом случае.
-		var timedOut atomic.Bool
-		hardTimeout := time.AfterFunc(timeout, func() {
-			timedOut.Store(true)
-			cancel()
-		})
-		defer hardTimeout.Stop()
+		timeout := time.AfterFunc(C.TCPTimeout, cancel)
+		defer timeout.Stop()
 		request = request.WithContext(ctx)
 		response, err := c.roundTripper.RoundTrip(request)
 		if err != nil {
 			_ = pipeWriter.CloseWithError(err)
 			_ = pipeReader.CloseWithError(err)
 			conn.setup(nil, err)
-			if timedOut.Load() && c.session != nil {
-				c.session.probeIfSuspect()
-			}
 		} else if response.StatusCode != http.StatusOK {
 			_ = response.Body.Close()
 			err = fmt.Errorf("unexpected status code: %d", response.StatusCode)
@@ -695,79 +230,34 @@ func (c *Client) newConnectRequest(host, userAgent string) *http.Request {
 }
 
 func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
-	return c.dialTimeout(host, C.TCPTimeout)
-}
-
-// dialTimeout — как Dial, но с явным hard-таймаутом; см. roundTripTimeout.
-func (c *Client) dialTimeout(host string, timeout time.Duration) (net.Conn, error) {
 	conn := &tcpConn{}
-	c.roundTripTimeout(c.newConnectRequest(host, tcpUserAgent), &conn.httpConn, timeout)
-	if err := conn.waitCreated(); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
+	c.roundTrip(c.newConnectRequest(host, tcpUserAgent), &conn.httpConn)
 	return conn, nil
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
-	return c.listenPacketTimeout(C.TCPTimeout)
-}
-
-// listenPacketTimeout — как ListenPacket, но с явным hard-таймаутом; см. roundTripTimeout.
-func (c *Client) listenPacketTimeout(timeout time.Duration) (net.PacketConn, error) {
-	conn := &clientPacketConn{paddingMin: c.udpPaddingMin, paddingMax: c.udpPaddingMax}
-	c.roundTripTimeout(c.newConnectRequest(UDPMagicAddress, udpUserAgent), &conn.httpConn, timeout)
-	if err := conn.waitCreated(); err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
+	conn := &clientPacketConn{}
+	c.roundTrip(c.newConnectRequest(UDPMagicAddress, udpUserAgent), &conn.httpConn)
 	return conn, nil
 }
 
-// Close помечает Client мёртвым для НОВЫХ стримов (c.cancel()) и закрывает
-// нижележащий транспорт — но только то, что прямо сейчас простаивает.
-//
-// ВАЖНО: раньше здесь был безусловный `if closer, ok := c.roundTripper.(io.Closer); ok { closer.Close() }`.
-// Для *http2.Transport это было безобидно — у него вообще нет метода
-// Close(), только CloseIdleConnections(), так что срабатывал лишь второй
-// if ниже. А вот *http3.Transport (QUIC-режим) io.Closer РЕАЛЬНО
-// реализует, и его Close() рвёт разом ВСЕ QUIC-соединения этого
-// транспорта — включая те, что в этот самый момент обслуживают активные
-// мультиплексированные стримы (см. sagernet/quic-go/http3.Transport.Close(),
-// в отличие от его же CloseIdleConnections(), которая трогает только
-// простаивающие).
-//
-// А Client.Close() вызывается далеко не только при полном осознанном
-// завершении работы: см. removeClient() в MultiplexClient.Dial/ListenPacket
-// (провал ОДНОГО нового дозвона на клиенте, у которого могут быть другие,
-// полностью здоровые стримы) и loopHealthCheck (две неудачные проверки
-// подряд). Для h2-пути это уже давно учтено — активные стримы живут на
-// независимом от c.ctx контексте (см. roundTripTimeout) и переживают
-// Close() ровно потому, что CloseIdleConnections() их не трогает. Из-за
-// того что *http3.Transport дополнительно реализует io.Closer, QUIC-путь
-// эту защиту тихо обходил стороной — единственный неудачный дозвон нового
-// стрима валил ВСЕ остальные, никак не связанные, активные QUIC-туннели на
-// той же сессии. Внешне — ровно та же "лавина обрывов в самый неподходящий
-// момент", которую для h2 уже вылечили, плюс лишний скачок задержки на
-// каждый такой холодный QUIC-реконнект (отсюда и "постоянно большой пинг"
-// при обычном фоновом трафике с редкими потерями пакетов).
-//
-// Если на клиенте прямо сейчас есть активные стримы (c.count>0), полный
-// Close() не зовём — только CloseIdleConnections(), как и для h2. Реальное
-// закрытие произойдёт само, как только последний активный стрим
-// завершится: conn.closeFn в roundTripTimeout проверяет ровно тот же
-// c.ctx.Done() (уже закрыт после c.cancel() выше) и к этому моменту
-// count гарантированно 0 — там полный io.Closer.Close() уже безопасен.
 func (c *Client) Close() error {
 	c.cancel()
+	// QUIC (http3.Transport): io.Closer.Close() рвёт СРАЗУ ВСЕ активные
+	// QUIC-соединения на транспорте, включая мультиплексированные стримы
+	// других, ещё живых логических клиентов — если этот Close() вызван не
+	// на полном завершении, а как побочный эффект (например, MultiplexClient
+	// когда-нибудь начнёт убирать нездоровые клиенты по одному), это
+	// сносило бы заодно и здоровые. Раз в текущей MultiplexClient.getClient()
+	// такого пути нет (клиенты никогда не закрываются поодиночке вне
+	// общего MultiplexClient.Close()) — сейчас это безопасно как есть,
+	// но если появится точечное закрытие отдельных *Client — см. историю
+	// этого файла, там уже был баг именно на этом месте.
+	if closer, ok := c.roundTripper.(io.Closer); ok {
+		_ = closer.Close()
+	}
 	if t, ok := c.roundTripper.(*http2.Transport); ok {
 		t.CloseIdleConnections()
-	} else if t, ok := c.roundTripper.(*http3.Transport); ok {
-		if c.count.Load() == 0 {
-			_ = t.Close()
-		} else {
-			t.CloseIdleConnections()
-		}
 	}
 	if c.healthCheckTimer != nil {
 		c.healthCheckTimer.Stop()
@@ -788,96 +278,14 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 	return nil
 }
 
-// dialFailureBackoff — окно после провала ПЕРВОГО дозвона свежего клиента
-// (EverConnected()==false), в течение которого newClientLocked() не плодит
-// ЕЩЁ ОДНОГО параллельного кандидата поверх уже идущей попытки. Без этого
-// каждый всплеск конкурентных Dial() при недоступном сервере (например,
-// пачка приложений реконнектится сразу после смены wifi, а путь до сервера
-// в этот момент ещё не поднялся/недоступен) поднимает до maxConnections
-// параллельных клиентов одновременно, каждый из которых независимо жрёт
-// TCPConnectTimeout (5s) на дозвон к ОДНОМУ И ТОМУ ЖЕ IP сервера — и цикл
-// тут же повторяется на следующей волне запросов, раз за разом, пока путь
-// не восстановится. Внешне это выглядит как непрерывно "отваливающийся"
-// http2-путь, хотя по факту это самонагнетающееся громовое стадо дозвонов,
-// а не единичный обрыв. 3s — заметно меньше TCPConnectTimeout, чтобы не
-// тормозить настоящее восстановление пути, но достаточно, чтобы схлопнуть
-// параллельные попытки в одну серийную, пока сервер действительно недоступен.
-const dialFailureBackoff = 3 * time.Second
-
-// recoveryRetryTimeout — hard-таймаут ТОЛЬКО для повторной попытки в
-// Dial()/ListenPacket() на только что восстановленном (recoverClient) свежем
-// клиенте — см. комментарий у roundTripTimeout. Меньше C.TCPTimeout, чтобы не
-// удваивать худший случай ожидания перед ошибкой (наблюдалось в логах как
-// "context canceled" на ~30s вместо ~15s), но заметно больше типичного
-// времени TCP+TLS хендшейка на уже ожившем пути.
-const recoveryRetryTimeout = 7 * time.Second
-
 type MultiplexClient struct {
-	// ВАЖНО: раньше здесь был sync.Mutex, и getClient()/forceNewClient()
-	// держали его на ВСЁ время реального сетевого дозвона внутри
-	// newClientLocked() -> NewClient() (DNS+TCP+TLS, до нескольких секунд
-	// на деградировавшей мобильной сети). Проблема не в самой сериализации
-	// дозвонов (она даже полезна — не долбим сеть параллельными
-	// хендшейками), а в том, что sync.Mutex.Lock() ничем не ограничен: если
-	// один вызов Dial() уже дозванивается, все остальные, вставшие в
-	// очередь за мьютексом, ждали БЕЗ ТАЙМАУТА и без учёта их собственного
-	// ctx — этот простой в очереди вообще не считался ни в C.TCPTimeout, ни
-	// в серверный 20s-дедлайн (те начинали тикать только ПОСЛЕ получения
-	// мьютекса). Именно поэтому предыдущие правки таймаутов не до конца
-	// снимали burst сразу после рестарта: пока сеть ещё не разогналась
-	// после холодного старта (характерная для сотовой связи задержка
-	// перехода из RRC-idle в connected), первый дозвон мог тянуться, а все
-	// остальные стримы копились в очереди сверх любых наших таймаутов.
-	// Канал-мьютекс даёт то же самое взаимоисключение, но ожидание можно
-	// прервать по ctx вызывающего — стрим отваливается по СВОЕМУ таймауту,
-	// а не висит неопределённо долго за чужой спиной.
-	mu             chan struct{}
+	mutex          sync.Mutex
 	maxConnections int
 	minStreams     int
 	maxStreams     int
 	ctx            context.Context
 	options        ClientOptions
 	clients        []*Client
-	// backoffUntil — unix-время (наносекунды) до которого newClientLocked()
-	// не создаёт НОВЫХ клиентов поверх уже существующих. См. комментарий у
-	// dialFailureBackoff. 0 — бэкоффа сейчас нет.
-	backoffUntil atomic.Int64
-	// recoveryMu/recovering — коалесинг восстановления. Если умирает ОДНА
-	// долгоживущая сессия (см. "http2: client connection lost"), её могли
-	// одновременно использовать десяток параллельных стримов — каждый из
-	// них узнаёт о смерти независимо и раньше независимо же поднимал СВОЙ
-	// forceNewClient(), т.е. свою отдельную TCP+TLS-сессию до сервера. Пока
-	// путь ещё восстанавливается (WiFi-роуминг между точками, короткая
-	// потеря сигнала), это давало те же волны параллельных хендшейков,
-	// от которых уже лечили cold-старт в Dial()/ListenPacket(). Теперь все
-	// конкурентные вызовы recoverClient() в течение одного и того же
-	// восстановления получают ОДИН и тот же новый Client — дальше они уже
-	// делят его dialMu и общий ретрай-цикл, а не бьют в сервер параллельно
-	// каждый своим дозвоном.
-	recoveryMu sync.Mutex
-	recovering *recoveryState
-}
-
-// recoveryState — результат одной операции восстановления клиента,
-// разделяемый между всеми конкурентными вызывающими через recoverClient().
-type recoveryState struct {
-	done   chan struct{}
-	client *Client
-	err    error
-}
-
-// lock ждёт свободный слот мьютекса, но не дольше, чем жив переданный ctx.
-func (c *MultiplexClient) lock(ctx context.Context) error {
-	select {
-	case c.mu <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (c *MultiplexClient) unlock() {
-	<-c.mu
 }
 
 func NewMultiplexClient(ctx context.Context, options ClientOptions) (*MultiplexClient, error) {
@@ -892,177 +300,35 @@ func NewMultiplexClient(ctx context.Context, options ClientOptions) (*MultiplexC
 	if err != nil {
 		return nil, err
 	}
-	mc := &MultiplexClient{
-		mu:             make(chan struct{}, 1),
+	return &MultiplexClient{
 		maxConnections: maxConnections,
 		minStreams:     minStreams,
 		maxStreams:     maxStreams,
 		ctx:            ctx,
 		options:        options,
 		clients:        []*Client{client},
-	}
-	// ВАЖНО: без этого пул худел ТОЛЬКО реактивно — pruneIdleClients()
-	// вызывался лишь при запросе НОВОГО соединения (newClientLocked).
-	// Если приложения разогнали пул до maxConnections штук, а потом трафик
-	// стих (экран выключен, телефон в кармане), лишние простаивающие
-	// соединения так и оставались открытыми НАВСЕГДА. Раз в минуту
-	// принудительно прогоняем ту же логику, что и при демандовом создании
-	// клиента, чтобы пул реально сжимался обратно, когда трафика больше
-	// нет.
-	//
-	// НО: если maxConnections<=1 (без multiplex.enabled — дефолт, а также
-	// текущий пример клиента для h2), пул физически никогда не растёт
-	// больше одного клиента и prune'ить нечего — тикать раз в минуту
-	// НАВСЕГДА без единой полезной итерации (в отличие от vless/mux, у
-	// которого вообще нет ни одного собственного таймера) было чистым
-	// накладным расходом на пустом месте. Заводим этот фоновый цикл,
-	// только если пул реально может вместить больше одного соединения.
-	if maxConnections > 1 {
-		go mc.idleReaperLoop()
-	}
-	return mc, nil
-}
-
-func (c *MultiplexClient) idleReaperLoop() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-c.ctx.Done():
-			return
-		case <-ticker.C:
-			if err := c.lock(c.ctx); err != nil {
-				return
-			}
-			c.clients = pruneIdleClients(c.clients)
-			c.unlock()
-		}
-	}
+	}, nil
 }
 
 func (c *MultiplexClient) Dial(ctx context.Context, host string) (net.Conn, error) {
-	primary, err := c.getClient(ctx)
+	t, err := c.getClient()
 	if err != nil {
 		return nil, err
 	}
-	conn, err := primary.Dial(ctx, host)
-	if err == nil {
-		return conn, nil
-	}
-	// ВАЖНО: раньше isNetworkUnreachable(err) (ENETUNREACH/EHOSTUNREACH —
-	// типичный "моргнувший" хендовер вышки/включение мобильных данных на
-	// клиенте с auto_detect_interface) сбрасывал ВЕСЬ пул (c.Close()),
-	// отменяя контекст каждого Client'а в пуле и тем самым разом обрывая
-	// все туннели, которые в этот момент активно передавали данные через
-	// другие, полностью исправные соединения пула. Один неудачный дозвон
-	// нового стрима не означает, что уже установленные соединения тоже
-	// мертвы — их убьёт (и корректно вычистит) getClient()/health-check
-	// сам, если интерфейс действительно лёг. Поэтому здесь трогаем только
-	// тот единственный клиент, на котором произошёл сбой.
-	everConnected := primary.EverConnected()
-	c.removeClient(primary)
-	if !everConnected {
-		// primary ни разу не смог даже установить соединение (первый же
-		// дозвон до сервера сдох по таймауту/сети) — сервер или путь до
-		// него сейчас попросту недоступны. Ретраить на СВЕЖЕМ клиенте к
-		// ТОЙ ЖЕ дестинации по той же дохлой сети — это гарантированно
-		// ещё один полный C.TCPTimeout ради идентичного результата
-		// (именно так 15s превращались в наблюдаемые 30s на каждый
-		// стрим). Отдаём ошибку сразу — вызывающая сторона (роутер,
-		// urltest-селектор, сам клиент-приложение) отреагирует быстрее.
-		c.noteDialFailure()
-		return nil, err
-	}
-	// ВАЖНО: раньше здесь forceNewClient() вызывался безусловно, даже если
-	// путь до сервера только что упал у ДРУГОГО клиента (см. noteDialFailure
-	// выше). Из-за этого при реальном обрыве сети КАЖДЫЙ падающий стрим
-	// (а их за секунду может быть десятки) независимо поднимал СВОЙ
-	// собственный новый TCP+TLS дозвон к явно недоступному серверу — на
-	// сервере это выглядело как растущая с каждой секундой лавина
-	// TLS-хендшейков, упирающихся в handshakeSem и context deadline
-	// exceeded. even-connected клиент, который только что умер — такой же
-	// сигнал "путь сейчас недоступен", как и never-connected: уважаем тот
-	// же бэкофф, вместо того чтобы плодить ещё одного кандидата поверх уже
-	// идущей попытки восстановления.
-	if until := c.backoffUntil.Load(); until != 0 && time.Now().UnixNano() < until {
-		return nil, err
-	}
-	fresh, freshErr := c.recoverClient(ctx)
-	if freshErr != nil {
-		return nil, err
-	}
-	freshConn, freshErr := fresh.dialTimeout(host, recoveryRetryTimeout)
-	if freshErr != nil {
-		c.noteDialFailure()
-		return nil, freshErr
-	}
-	return freshConn, nil
+	return t.Dial(ctx, host)
 }
 
 func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, error) {
-	primary, err := c.getClient(ctx)
+	t, err := c.getClient()
 	if err != nil {
 		return nil, err
 	}
-	conn, err := primary.ListenPacket(ctx)
-	if err == nil {
-		return conn, nil
-	}
-	// See the comment in Dial: never nuke the whole pool over a single
-	// failed dial — only the client that actually failed is affected, and
-	// we skip the fresh-client retry entirely if this client never had a
-	// working connection to begin with (see EverConnected).
-	everConnected := primary.EverConnected()
-	c.removeClient(primary)
-	if !everConnected {
-		c.noteDialFailure()
-		return nil, err
-	}
-	// См. комментарий в Dial() — тот же бэкофф нужен и здесь, иначе волна
-	// упавших UDP-потоков плодит собственную лавину холодных дозвонов.
-	if until := c.backoffUntil.Load(); until != 0 && time.Now().UnixNano() < until {
-		return nil, err
-	}
-	fresh, freshErr := c.recoverClient(ctx)
-	if freshErr != nil {
-		return nil, err
-	}
-	freshConn, freshErr := fresh.listenPacketTimeout(recoveryRetryTimeout)
-	if freshErr != nil {
-		c.noteDialFailure()
-		return nil, freshErr
-	}
-	return freshConn, nil
-}
-
-// noteDialFailure запускает окно бэкоффа (см. dialFailureBackoff) после
-// провала первого дозвона свежего клиента — на этот период newClientLocked
-// перестаёт плодить параллельных кандидатов к тому же (видимо, недоступному)
-// серверу.
-func (c *MultiplexClient) noteDialFailure() {
-	c.backoffUntil.Store(time.Now().Add(dialFailureBackoff).UnixNano())
-}
-
-func (c *MultiplexClient) removeClient(dead *Client) {
-	_ = c.lock(context.Background())
-	for i, t := range c.clients {
-		if t == dead {
-			c.clients = append(c.clients[:i], c.clients[i+1:]...)
-			break
-		}
-	}
-	c.unlock()
-	_ = dead.Close()
+	return t.ListenPacket(ctx)
 }
 
 func (c *MultiplexClient) Close() error {
-	// Здесь намеренно context.Background(), а не c.ctx: Close() обычно
-	// вызывается КАК РАЗ когда c.ctx уже отменён (штатный шатдаун), и если
-	// бы ожидание лока было завязано на уже мёртвый ctx, Close() тут же
-	// вернул бы ошибку, ничего не закрыв. Закрытие — не пользовательский
-	// запрос с дедлайном, ему можно и подождать реальной освобождения лока.
-	_ = c.lock(context.Background())
-	defer c.unlock()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 	var errs []error
 	for _, t := range c.clients {
 		if err := t.Close(); err != nil {
@@ -1073,38 +339,11 @@ func (c *MultiplexClient) Close() error {
 	return errors.Join(errs...)
 }
 
-func (c *MultiplexClient) getClient(ctx context.Context) (*Client, error) {
-	if err := c.lock(ctx); err != nil {
-		return nil, err
-	}
-	defer c.unlock()
-
-	// Вычищаем только по-настоящему мёртвые сессии (IsHardClosed). Сессию в
-	// состоянии graceful GOAWAY-дрейна (IsDraining, но не hard-closed) не
-	// трогаем и не отменяем её контекст здесь — на ней могут быть активные
-	// мультиплексированные стримы, которым HTTP/2 обещал доиграть до конца;
-	// раньше это место било IsClosed() (Closed || Closing) и убивало такую
-	// сессию целиком при любом обычном GOAWAY/idle-таймауте сервера, разом
-	// обрывая все её активные туннели — именно это и выглядело как "вечно
-	// отваливающийся" http2-транспорт.
-	live := c.clients[:0]
-	for _, t := range c.clients {
-		if t.IsHardClosed() {
-			_ = t.Close()
-			continue
-		}
-		live = append(live, t)
-	}
-	c.clients = live
-
+func (c *MultiplexClient) getClient() (*Client, error) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 	var transport *Client
 	for _, t := range c.clients {
-		if t.IsDraining() {
-			// Дренящаяся сессия не годится для НОВЫХ стримов, но остаётся
-			// в пуле нетронутой, пока не станет hard-closed или не опустеет
-			// (тогда её приберёт pruneIdleClients/следующий проход выше).
-			continue
-		}
 		if transport == nil || t.count.Load() < transport.count.Load() {
 			transport = t
 		}
@@ -1126,126 +365,11 @@ func (c *MultiplexClient) getClient(ctx context.Context) (*Client, error) {
 	return c.newClientLocked()
 }
 
-// recoverClient коалесит конкурентные попытки восстановления после смерти
-// ранее рабочего клиента: первый вызвавший реально создаёт новый Client
-// (forceNewClient), все остальные, подоспевшие, пока эта попытка ещё не
-// завершилась, ждут её результат вместо того, чтобы параллельно поднимать
-// свои собственные TCP+TLS-сессии до того же сервера. См. комментарий у
-// поля recovering.
-func (c *MultiplexClient) recoverClient(ctx context.Context) (*Client, error) {
-	c.recoveryMu.Lock()
-	if r := c.recovering; r != nil {
-		c.recoveryMu.Unlock()
-		select {
-		case <-r.done:
-			return r.client, r.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	r := &recoveryState{done: make(chan struct{})}
-	c.recovering = r
-	c.recoveryMu.Unlock()
-
-	client, err := c.forceNewClient(ctx)
-
-	c.recoveryMu.Lock()
-	c.recovering = nil
-	c.recoveryMu.Unlock()
-
-	r.client, r.err = client, err
-	close(r.done)
-	return client, err
-}
-
-func (c *MultiplexClient) forceNewClient(ctx context.Context) (*Client, error) {
-	if err := c.lock(ctx); err != nil {
-		return nil, err
-	}
-	defer c.unlock()
-	return c.newClientLocked()
-}
-
 func (c *MultiplexClient) newClientLocked() (*Client, error) {
-	c.clients = pruneIdleClients(c.clients)
-	// ГЛАВНОЕ: не держим больше ОДНОГО клиента одновременно в состоянии
-	// "ещё ни разу не подключался" (EverConnected()==false) — НО только
-	// пока во всём пуле нет НИ ОДНОГО клиента, который уже доказал, что
-	// путь до сервера жив (EverConnected() && !IsHardClosed()). Раньше
-	// это ограничение действовало безусловно, даже когда в пуле уже
-	// были рабочие соединения: burst трафика, легитимно требующий
-	// scale-up по minStreams/maxConnections (например, 20+ конкурентных
-	// стримов от приложения при уже поднятом и здоровом пути), заводил
-	// НОВОГО клиента под запись здесь и тут же ловил это правило —
-	// каждый следующий стрим, которому тоже нужно было бы поднять свой
-	// параллельный клиент, вместо этого вставал в очередь за ЭТИМ ЖЕ
-	// единственным "ещё дозванивающимся" клиентом (см. dialMu в
-	// h2Session), хотя maxConnections честно разрешал до 8 параллельных
-	// соединений. В результате пул не мог разъехаться шире одного
-	// коннекшена быстрее, чем успевал завершиться ОДИН TCP+TLS хендшейк
-	// за раз — при небыстром хендшейке (RTT до сервера, TLS на CPU,
-	// семафор хендшейков на сервере) это и давало волну "operation was
-	// canceled" по СВОИМ таймаутам стримов, ждущих очереди на масштаб,
-	// хотя сервер был полностью доступен и часть пула уже вовсю работала.
-	// Смысл исходной защиты — не долбить параллельными хендшейками
-	// сервер, который, возможно, вообще недоступен (холодный старт /
-	// путь полностью упал, пул пуст). Как только у нас есть ХОТЯ БЫ ОДИН
-	// живой клиент, это уже не тот случай: сервер точно доступен, и
-	// параллельный scale-up новыми хендшейками — штатное поведение
-	// multiplex, а не громовое стадо в неизвестность.
-	hasProvenLiveClient := false
-	for _, t := range c.clients {
-		if t.EverConnected() && !t.IsHardClosed() {
-			hasProvenLiveClient = true
-			break
-		}
-	}
-	if !hasProvenLiveClient {
-		for _, t := range c.clients {
-			if !t.EverConnected() {
-				return t, nil
-			}
-		}
-	}
-	// Резервный бэкофф на случай, если только что убранный (removeClient)
-	// провалившийся клиент уже успел выпасть из пула, а следующий вызов
-	// сюда попал раньше, чем noteDialFailure успел от него защититься чем-то
-	// другим — не даём тут же родить новый "холодный" клиент вплотную после
-	// провала, отдаём последнего оставшегося (если пул не пуст).
-	if until := c.backoffUntil.Load(); until != 0 && time.Now().UnixNano() < until && len(c.clients) > 0 {
-		return c.clients[len(c.clients)-1], nil
-	}
 	t, err := NewClient(c.ctx, c.options)
 	if err != nil {
 		return nil, err
 	}
 	c.clients = append(c.clients, t)
 	return t, nil
-}
-
-// maxIdleReserve — сколько простаивающих (count==0) соединений держим
-// в резерве при чистке пула, вместо того чтобы закрывать их подчистую.
-// Не спасает от burst'а сразу после полного рестарта клиента/сервера
-// (там пул стартует с нуля, резервировать нечего) — для этого есть
-// серверный семафор на конкурентность handshake'ов. Но помогает в более
-// частом случае: пул нарастили под пиковую нагрузку, часть трафика
-// затихла, idle-reaper начал его подрезать — а тут снова просыпается
-// пачка приложений. Держим 2, а не 1, чтобы такое пробуждение чаще
-// попадало на уже тёплое соединение, а не упиралось в холодный дозвон.
-const maxIdleReserve = 2
-
-func pruneIdleClients(clients []*Client) []*Client {
-	kept := make([]*Client, 0, len(clients))
-	idleKeptCount := 0
-	for _, t := range clients {
-		if t.count.Load() > 0 || idleKeptCount < maxIdleReserve {
-			kept = append(kept, t)
-			if t.count.Load() == 0 {
-				idleKeptCount++
-			}
-			continue
-		}
-		_ = t.Close()
-	}
-	return kept
 }

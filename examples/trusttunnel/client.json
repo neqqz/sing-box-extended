@@ -28,11 +28,6 @@
       "password": "password1",
       "network": ["tcp", "udp"],
       "health_check": true,
-      // См. пояснение к data_padding в examples/trusttunnel/server.json.
-      // Значения на клиенте и сервере не обязаны совпадать (паддинг каждая
-      // сторона добавляет к своим исходящим пакетам независимо), но для
-      // симметричного профиля трафика в обе стороны их обычно держат одинаковыми.
-      "data_padding": { "min": 0, "max": 255 },
       "multiplex": {
         "enabled": true,
         "max_connections": 8,
@@ -57,7 +52,6 @@
       "quic": true,
       "congestion_controller": "bbr", // bbr, bbr_standard, bbr2, bbr2_variant, cubic, reno
       "cwnd": 32,
-      "packet_padding": { "min": 0, "max": 900 },
       "multiplex": {
         "enabled": true,
         "max_connections": 8,
