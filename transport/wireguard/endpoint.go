@@ -235,17 +235,30 @@ func (e *Endpoint) Start(resolve bool) error {
 		if e.options.Amnezia.I5 != "" {
 			ipcConf.WriteString("\ni5=" + e.options.Amnezia.I5)
 		}
-		if e.options.Amnezia.J1 != "" {
-			ipcConf.WriteString("\nj1=" + e.options.Amnezia.J1)
+		if e.options.Amnezia.HeaderProtectionKey != "" {
+			headerProtectionKeyBytes, err := base64.StdEncoding.DecodeString(e.options.Amnezia.HeaderProtectionKey)
+			if err != nil {
+				return E.Cause(err, "decode header protection key")
+			}
+			ipcConf.WriteString("\nheader_protection_key=" + hex.EncodeToString(headerProtectionKeyBytes))
 		}
-		if e.options.Amnezia.J2 != "" {
-			ipcConf.WriteString("\nj2=" + e.options.Amnezia.J2)
+		if e.options.Amnezia.ContentPaddingAddition != nil {
+			ipcConf.WriteString("\ncontent_padding_addition=" + e.options.Amnezia.ContentPaddingAddition.String())
 		}
-		if e.options.Amnezia.J3 != "" {
-			ipcConf.WriteString("\nj3=" + e.options.Amnezia.J3)
+		if e.options.Amnezia.RekeyAfterTime != nil {
+			ipcConf.WriteString("\nrekey_after_time=" + e.options.Amnezia.RekeyAfterTime.String())
 		}
-		if e.options.Amnezia.ITime > 0 {
-			ipcConf.WriteString("\nitime=" + strconv.FormatInt(e.options.Amnezia.ITime, 10))
+		if e.options.Amnezia.RekeyTimeout != nil {
+			ipcConf.WriteString("\nrekey_timeout=" + e.options.Amnezia.RekeyTimeout.String())
+		}
+		if e.options.Amnezia.RejectAfterTime != nil {
+			ipcConf.WriteString("\nreject_after_time=" + e.options.Amnezia.RejectAfterTime.String())
+		}
+		if e.options.Amnezia.KeepaliveTimeout != nil {
+			ipcConf.WriteString("\nkeepalive_timeout=" + e.options.Amnezia.KeepaliveTimeout.String())
+		}
+		if e.options.Amnezia.MaxHandshakeAttempts != nil {
+			ipcConf.WriteString("\nmax_handshake_attempts=" + e.options.Amnezia.MaxHandshakeAttempts.String())
 		}
 	}
 	for _, peer := range e.peers {
