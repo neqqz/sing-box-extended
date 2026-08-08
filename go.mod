@@ -264,6 +264,6 @@ replace github.com/sagernet/sing => github.com/shtorm-7/sing v0.8.10-extended-1.
 
 replace github.com/sagernet/sing-mux => github.com/shtorm-7/sing-mux v0.3.4-extended-1.1.0
 
-replace github.com/sagernet/quic-go => github.com/0dinsky/quic-go v0.0.0-20260807065223-1ac4cc8161aa
+replace github.com/sagernet/quic-go => github.com/0dinsky/quic-go v0.0.0-20260808060848-efbce7cd93e5
 
 replace golang.org/x/net => github.com/0dinsky/net v0.0.0-20260806072324-f543c0f32054
