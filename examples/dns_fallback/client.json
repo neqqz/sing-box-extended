@@ -34,7 +34,8 @@
         //   - "parallel":             query all servers concurrently. Returns
         //     the first successful response (cancelling the rest), or the last
         //     error if all servers failed.
-        "strategy": "sequential"
+        "strategy": "sequential",
+        "timeout": "10s" // overall budget for the whole fallback exchange
       }
     ],
     "disable_cache": true,

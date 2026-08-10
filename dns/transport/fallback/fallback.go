@@ -43,7 +43,7 @@ func NewTransport(ctx context.Context, logger log.ContextLogger, tag string, opt
 		}
 		servers[i] = server
 	}
-	strategy, err := CreateStrategy(options.Strategy, servers, logger)
+	strategy, err := CreateStrategy(options.Strategy, servers, logger, options.Timeout.Build())
 	if err != nil {
 		return nil, err
 	}

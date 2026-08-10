@@ -116,7 +116,8 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 	FillStreamRequest(req, sessionId, "", c.options)
 	wrc = &WaitReadCloser{Wait: make(chan struct{}), Cancel: cancel}
 	go func() {
-		resp, err := c.client.Do(req)
+		var resp *http.Response
+		resp, err = c.client.Do(req)
 		if err != nil {
 			if !uploadOnly && !errors.Is(err, context.Canceled) { // stream-down is enough
 				c.Close()

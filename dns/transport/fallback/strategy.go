@@ -2,18 +2,20 @@ package fallback
 
 import (
 	"context"
+	"time"
 
 	mDNS "github.com/miekg/dns"
 	"github.com/sagernet/sing-box/adapter"
+	C "github.com/sagernet/sing-box/constant"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 )
 
 type ExchangeStrategy = func(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error)
 
-func parallelStrategy(servers []adapter.DNSTransport, logger logger.ContextLogger) ExchangeStrategy {
+func parallelStrategy(servers []adapter.DNSTransport, logger logger.ContextLogger, timeout time.Duration) ExchangeStrategy {
 	return func(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
-		queryCtx, cancel := context.WithCancel(ctx)
+		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		type result struct {
 			response *mDNS.Msg
@@ -22,10 +24,13 @@ func parallelStrategy(servers []adapter.DNSTransport, logger logger.ContextLogge
 		results := make(chan result)
 		for _, server := range servers {
 			go func() {
-				response, err := server.Exchange(queryCtx, message)
+				response, err := checkExchangeResponse(server.Exchange(ctx, message))
+				if err != nil {
+					logger.InfoContext(ctx, E.Cause(err, "resolve failed for server ", server.Tag()))
+				}
 				select {
 				case results <- result{response, err}:
-				case <-queryCtx.Done():
+				case <-ctx.Done():
 				}
 			}()
 		}
@@ -46,12 +51,17 @@ func parallelStrategy(servers []adapter.DNSTransport, logger logger.ContextLogge
 	}
 }
 
-func sequentialStrategy(servers []adapter.DNSTransport, logger logger.ContextLogger) ExchangeStrategy {
+func sequentialStrategy(servers []adapter.DNSTransport, logger logger.ContextLogger, timeout time.Duration) ExchangeStrategy {
 	return func(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
 		var lastErr error
-		for _, server := range servers {
-			response, err := server.Exchange(ctx, message)
+		for index, server := range servers {
+			exchangeCtx, exchangeCancel := context.WithTimeout(ctx, perAttemptTimeout(ctx, len(servers)-index))
+			response, err := checkExchangeResponse(server.Exchange(exchangeCtx, message))
+			exchangeCancel()
 			if err != nil {
+				logger.InfoContext(ctx, E.Cause(err, "resolve failed for server ", server.Tag()))
 				lastErr = err
 				continue
 			}
@@ -61,12 +71,30 @@ func sequentialStrategy(servers []adapter.DNSTransport, logger logger.ContextLog
 	}
 }
 
-func CreateStrategy(strategy string, servers []adapter.DNSTransport, logger logger.ContextLogger) (ExchangeStrategy, error) {
+func checkExchangeResponse(response *mDNS.Msg, err error) (*mDNS.Msg, error) {
+	if err != nil {
+		return nil, err
+	}
+	if response.Rcode != mDNS.RcodeSuccess && response.Rcode != mDNS.RcodeNameError {
+		return nil, E.New("bad response rcode: ", mDNS.RcodeToString[response.Rcode])
+	}
+	return response, nil
+}
+
+func perAttemptTimeout(ctx context.Context, remaining int) time.Duration {
+	deadline, _ := ctx.Deadline()
+	return time.Until(deadline) / time.Duration(remaining)
+}
+
+func CreateStrategy(strategy string, servers []adapter.DNSTransport, logger logger.ContextLogger, timeout time.Duration) (ExchangeStrategy, error) {
+	if timeout <= 0 {
+		timeout = C.DNSTimeout
+	}
 	switch strategy {
 	case "parallel":
-		return parallelStrategy(servers, logger), nil
+		return parallelStrategy(servers, logger, timeout), nil
 	case "", "sequential":
-		return sequentialStrategy(servers, logger), nil
+		return sequentialStrategy(servers, logger, timeout), nil
 	default:
 		return nil, E.New("strategy not found: ", strategy)
 	}

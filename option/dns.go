@@ -427,6 +427,7 @@ type SDNSDNSServerOptions struct {
 }
 
 type FallbackDNSServerOptions struct {
-	Servers  []string `json:"servers"`
-	Strategy string   `json:"strategy,omitempty"`
+	Servers  []string           `json:"servers"`
+	Strategy string             `json:"strategy,omitempty"`
+	Timeout  badoption.Duration `json:"timeout,omitempty"`
 }
