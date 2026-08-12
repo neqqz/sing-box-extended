@@ -33,7 +33,8 @@
         "detour": "direct",
         // For getting existing MASQUE device profile, else sing-box will create new profile
         "id": "",
-        "auth_token": ""
+        "auth_token": "",
+        "license_key": ""
       },
       "udp_timeout": "5m0s",
       "udp_keepalive_period": "30s",

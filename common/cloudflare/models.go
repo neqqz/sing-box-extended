@@ -111,6 +111,10 @@ type DeviceUpdate struct {
 	Name    string `json:"name,omitempty"`
 }
 
+type UpdateAccountRequest struct {
+	License string `json:"license"`
+}
+
 type APIError struct {
 	Result   interface{} `json:"result"`
 	Success  bool        `json:"success"`

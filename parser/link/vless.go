@@ -70,9 +70,10 @@ func parseVLESSLink(link string) (option.Outbound, error) {
 			case "xhttp":
 				Transport.Type = C.V2RayTransportTypeXHTTP
 				if alpn, exists := proxy["alpn"]; exists && alpn != "" {
-					TLSOptions.ALPN = []string{alpn}
+					TLSOptions.ALPN = strings.Split(alpn, ",")
+				} else {
+					TLSOptions.ALPN = []string{"h2", "http/1.1"}
 				}
-				TLSOptions.ALPN = []string{"h2", "http/1.1"}
 				if host, exists := proxy["host"]; exists && host != "" {
 					Transport.XHTTPOptions.Host = host
 				}

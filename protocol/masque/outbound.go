@@ -302,6 +302,11 @@ func (w *Outbound) createConfig() (*Config, error) {
 			return nil, err
 		}
 	}
+	if w.options.Profile.LicenseKey != "" && profile.Account.License != w.options.Profile.LicenseKey {
+		if _, err = api.UpdateAccount(w.ctx, profile.Token, profile.ID, w.options.Profile.LicenseKey); err != nil {
+			return nil, E.New("failed to apply license key: ", err)
+		}
+	}
 	privateKey, publicKey, err := masque.GenerateEcKeyPair()
 	if err != nil {
 		return nil, E.New("failed to generate key pair: ", err)

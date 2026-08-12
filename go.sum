@@ -460,8 +460,8 @@ github.com/shtorm-7/sing-vmess v0.2.8-extended-1.0.0 h1:OjvqZOhYSi9eIJGYC0iPDPqv
 github.com/shtorm-7/sing-vmess v0.2.8-extended-1.0.0/go.mod h1:P11scgTxMxVVQ8dlM27yNm3Cro40mD0+gHbnqrNGDuY=
 github.com/shtorm-7/tailscale v1.92.4-sing-box-1.13-mod.9-extended-1.0.2 h1:ho7bMq/aUFnNhFbdtrqlW3gyZAsnCtYMXEcyoSNo65Q=
 github.com/shtorm-7/tailscale v1.92.4-sing-box-1.13-mod.9-extended-1.0.2/go.mod h1:rPn4ZaNbMdbCNBRj3bYCTFCHqB2LcxDgJJrFoaTavTc=
-github.com/shtorm-7/wireguard-go v0.0.4-extended-1.5.2 h1:iwxPpBj9Tbx3hTkv4ZaWjaIGtypFXVqAa47JG1d00nU=
-github.com/shtorm-7/wireguard-go v0.0.4-extended-1.5.2/go.mod h1:1VZmkU7yPAZVE0XKufUqqAhEY1RnWUcyZLmry85y+7A=
+github.com/shtorm-7/wireguard-go v0.0.4-extended-1.5.3 h1:3lUfBaJQnJlhDUUrfBUU/AUy1wlqE6emQLkBUg0+7DI=
+github.com/shtorm-7/wireguard-go v0.0.4-extended-1.5.3/go.mod h1:1VZmkU7yPAZVE0XKufUqqAhEY1RnWUcyZLmry85y+7A=
 github.com/shtorm-7/workerpool v0.5.0 h1:NPZuNgyH0EUm4aQsTL09xR1iV+7GCFw6jX9Z4aAVp2s=
 github.com/shtorm-7/workerpool v0.5.0/go.mod h1:NI0pUZgmGu0BdKO9j3mct1DNZmgXbyTS9foorljdH6E=
 github.com/spf13/cobra v1.10.2 h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU=

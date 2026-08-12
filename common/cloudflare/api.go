@@ -92,6 +92,32 @@ func (api *CloudflareApi) EnrollKey(ctx context.Context, authToken string, id st
 	return profile, json.NewDecoder(response.Body).Decode(profile)
 }
 
+func (api *CloudflareApi) UpdateAccount(ctx context.Context, authToken string, id string, license string) (*Account, error) {
+	data := UpdateAccountRequest{License: license}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal json: %v", err)
+	}
+	request, err := http.NewRequest("PUT", ApiUrl+"/"+ApiVersion+"/reg/"+id+"/account", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range Headers {
+		request.Header.Set(k, v)
+	}
+	request.Header.Set("Authorization", "Bearer "+authToken)
+	response, err := api.client.Do(request.WithContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to update account: %v", response.StatusCode)
+	}
+	account := new(Account)
+	return account, json.NewDecoder(response.Body).Decode(account)
+}
+
 func (api *CloudflareApi) GetProfile(ctx context.Context, authToken string, id string) (*CloudflareProfile, error) {
 	request, err := http.NewRequest("GET", ApiUrl+"/"+ApiVersion+"/reg/"+id, nil)
 	if err != nil {
