@@ -1,6 +1,6 @@
 module github.com/sagernet/sing-box
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/AliRizaAynaci/gorl/v2 v2.2.0
