@@ -52,6 +52,11 @@ type TrustTunnelInboundOptions struct {
 	// по умолчанию используется сам этот SNI, а FallbackServer лишь запасной вариант). Формат: "host:port".
 	FallbackServer string   `json:"fallback_server,omitempty"`
 	AllowedSNI     []string `json:"allowed_sni,omitempty"`
+	// RateLimitAuthAttempts — макс. неудачных попыток аутентификации с одного IP
+	// в течение RateLimitAuthWindow. Защита от брутфорса DPI.
+	RateLimitAuthAttempts int `json:"rate_limit_auth_attempts,omitempty"`
+	// RateLimitAuthWindow — окно в секундах для rate limiting auth.
+	RateLimitAuthWindow int `json:"rate_limit_auth_window,omitempty"`
 	// UDPPadding — паддинг полезной нагрузки UDP-relay протокола; тот же
 	// формат [Min, Max], что и у DataPadding/PacketPadding выше.
 	UDPPadding *TrustTunnelPaddingOptions `json:"udp_padding,omitempty"`

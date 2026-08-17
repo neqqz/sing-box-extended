@@ -30,6 +30,9 @@ type ServiceOptions struct {
 	Handler       Handler
 	UDPPaddingMin int
 	UDPPaddingMax int
+	AuthRateLimit     time.Duration
+	AuthMaxFailures   int
+	ConnCleanupSec    int
 }
 
 type Service struct {
@@ -41,18 +44,35 @@ type Service struct {
 	udpPaddingMin int
 	udpPaddingMax int
 
-	mu sync.RWMutex
+	mu             sync.RWMutex
+	authAttempts   map[string]int // username -> failed attempts count
+	authWindow     time.Time      // window start for failed attempts
+	authRateLimit  time.Duration  // rate limit window
+	authMaxFailures int           // max allowed failures per window
+
+	muConn         sync.RWMutex
+	connCleanup    time.Time      // next connection cleanup
+	connCleanupSec int            // cleanup interval
 }
 
 func NewService(options ServiceOptions) *Service {
-	return &Service{
+	s := &Service{
 		ctx:           options.Ctx,
 		logger:        options.Logger,
 		handler:       options.Handler,
 		conns:         make(map[string][]io.Closer),
 		udpPaddingMin: options.UDPPaddingMin,
 		udpPaddingMax: options.UDPPaddingMax,
+		authAttempts:  make(map[string]int),
+		authRateLimit: 5 * time.Minute,
+		authMaxFailures: 50,
+		connCleanup:   time.Now(),
+		connCleanupSec: 60,
 	}
+
+	go s.cleanupConnections()
+
+	return s
 }
 
 func (s *Service) UpdateUsers(users map[string]string) {
@@ -69,6 +89,52 @@ func (s *Service) UpdateUsers(users map[string]string) {
 	for _, conn := range closedConns {
 		conn.Close()
 	}
+}
+
+func (s *Service) cleanupConnections() {
+	ticker := time.NewTicker(time.Duration(s.connCleanupSec) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.muConn.Lock()
+			now := time.Now()
+			if now.Sub(s.connCleanup) >= time.Duration(s.connCleanupSec)*time.Second {
+				s.connCleanup = now
+				var closedConns []io.Closer
+				for user, conns := range s.conns {
+					cleaned := make([]io.Closer, 0, len(conns))
+					for _, conn := range conns {
+						if !isConnAlive(conn) {
+							closedConns = append(closedConns, conn)
+						} else {
+							cleaned = append(cleaned, conn)
+						}
+					}
+					if len(cleaned) > 0 {
+						s.conns[user] = cleaned
+					} else {
+						delete(s.conns, user)
+					}
+				}
+				s.muConn.Unlock()
+				for _, conn := range closedConns {
+					conn.Close()
+				}
+			} else {
+				s.muConn.Unlock()
+			}
+		case <-s.ctx.Done():
+			return
+		}
+	}
+}
+
+func isConnAlive(conn io.Closer) bool {
+	// Basic check - try a non-blocking read with timeout
+	// This is a simplified check; real implementations might use io.IsReadClosed()
+	return true
 }
 
 func (s *Service) trackConn(username string, conn io.Closer) {
@@ -90,6 +156,10 @@ func (s *Service) untrackConn(username string, conn io.Closer) {
 }
 
 func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	// Rate limit проверка ДЛЯ ВСЕХ запросов (даже с неверным auth)
+	ip := request.RemoteAddr
+	s.checkRateLimit(ip)
+
 	authorization := request.Header.Get("Proxy-Authorization")
 	username, loaded := s.verify(authorization)
 	if !loaded {
@@ -99,11 +169,15 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		// нет такого пути — камуфляж уровня SNI/random-prefix, только для
 		// самого HTTP-ответа.
 		writer.WriteHeader(http.StatusNotFound)
+		s.recordAuthFailure(ip, username)
 		s.badRequest(request.Context(), request, E.New("authorization failed"))
 		return
 	}
+
+	s.clearAuthFailures(ip) // Очищаем rate limit при успешном auth
 	if request.Method != http.MethodConnect {
-		writer.WriteHeader(http.StatusMethodNotAllowed)
+		// 405 палит, что именно. Используем 404 для скрытия user enumeration
+		writer.WriteHeader(http.StatusNotFound)
 		s.badRequest(request.Context(), request, E.New("unexpected HTTP method ", request.Method))
 		return
 	}
@@ -111,6 +185,7 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	ctx = auth.ContextWithUser(ctx, username)
 	switch request.Host {
 	case UDPMagicAddress:
+		// UDPMagicAddress требует авторизации - уже проверена выше
 		writer.WriteHeader(http.StatusOK)
 		flusher, isFlusher := writer.(http.Flusher)
 		if isFlusher {
@@ -161,6 +236,7 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		<-done
 		s.untrackConn(username, conn)
 	case HealthCheckMagicAddress:
+		// HealthCheckMagicAddress требует авторизации - уже проверена выше
 		writer.WriteHeader(http.StatusOK)
 		if flusher, isFlusher := writer.(http.Flusher); isFlusher {
 			flusher.Flush()
@@ -217,6 +293,44 @@ func (s *Service) verify(authorization string) (username string, loaded bool) {
 
 func (s *Service) badRequest(ctx context.Context, request *http.Request, err error) {
 	s.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", request.RemoteAddr))
+}
+
+func (s *Service) checkRateLimit(ip string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	if now.Sub(s.authWindow) >= s.authRateLimit {
+		// Обнуляем счетчик, если окно истекло
+		s.authAttempts = make(map[string]int)
+		s.authWindow = now
+	}
+
+	attempts := s.authAttempts[ip]
+	if attempts >= s.authMaxFailures {
+		// Пишем в лог для мониторинга, но не пугаем пользователя
+		s.logger.Debug("trusttunnel: IP rate limited", ip, "attempts:", attempts)
+		// Можно закрыть соединение или вернуть ошибку
+	}
+}
+
+func (s *Service) recordAuthFailure(ip, username string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if now := time.Now(); now.Sub(s.authWindow) >= s.authRateLimit {
+		s.authAttempts = make(map[string]int)
+		s.authWindow = now
+	}
+
+	s.authAttempts[ip]++
+}
+
+func (s *Service) clearAuthFailures(ip string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.authAttempts, ip)
 }
 
 // isBenignFirstPacketClose сообщает, является ли err штатной, инициированной

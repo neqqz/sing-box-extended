@@ -121,6 +121,7 @@ type Inbound struct {
 	network        []string
 	randomPrefix   []byte
 	randomMask     []byte
+	ipWhitelist    []string
 	// randomSecret: если задан (client_random_prefix_secret), QUIC-путь
 	// использует ServerClientRandomVerify (ротация по времени) вместо
 	// статичных randomPrefix/randomMask выше — см. NewInbound и quic.Config
@@ -228,6 +229,9 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		Handler:       (*inboundHandler)(h),
 		UDPPaddingMin: udpPaddingMin,
 		UDPPaddingMax: udpPaddingMax,
+		AuthRateLimit:     time.Duration(h.options.RateLimitAuthWindow) * time.Second,
+		AuthMaxFailures:   h.options.RateLimitAuthAttempts,
+		ConnCleanupSec:    60,
 	})
 	userMap := make(map[string]string, len(options.Users))
 	for _, u := range options.Users {
@@ -283,7 +287,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		}
 		h2DataPaddingMin, h2DataPaddingMax := paddingRange(h.options.DataPadding)
 		h.h2Server = &http2.Server{
-			IdleTimeout:    trusttunnel.DefaultSessionTimeout * 2,
+			IdleTimeout:    20 * time.Second,
 			DataPaddingMin: h2DataPaddingMin,
 			DataPaddingMax: h2DataPaddingMax,
 			// Дефолт x/net/http2 — 1 MB на стрим/соединение. При RTT

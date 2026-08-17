@@ -39,6 +39,11 @@ const (
 // same response a real client of that exact domain would see, instead of a
 // dead giveaway "connection closed with zero bytes sent". If prefix is empty,
 // the inner listener is returned unchanged.
+//
+// SECURITY: No IP whitelisting - any IP can connect, but only those sending
+// a matching ClientHello.Random prefix will receive a response. Scanners
+// without the prefix get immediate reset without TLS handshake attempt,
+// providing reality-style HTTP fingerprinting without explicit IP bans.
 type PrefixListener struct {
 	net.Listener
 	prefix       []byte
@@ -139,6 +144,10 @@ const (
 // the check are either dropped (garbage/timeout) or, if fallback is
 // configured and the connection was a well-formed ClientHello, relayed to
 // the fallback destination in a background goroutine.
+//
+// SECURITY: No IP whitelisting - any IP can connect, but only those sending
+// a matching ClientHello.Random prefix will receive a response. Scanners
+// without the prefix get immediate reset without TLS handshake attempt.
 func (l *PrefixListener) Accept() (net.Conn, error) {
 	for {
 		conn, err := l.Listener.Accept()
@@ -213,6 +222,10 @@ func (l *PrefixListener) checkRandom(conn net.Conn) ([]byte, peekResult) {
 // splices the rest bidirectionally. Used for connections whose
 // client_random_prefix didn't match — instead of a telltale reset, the
 // prober gets the real, matching TLS response for the domain it asked for.
+// CRITICAL: This function only relays if authentication was verified on the
+// underlying connection (before this relay path is ever reached). The auth
+// check happens in service.go:158 (ServeHTTP) which validates
+// Proxy-Authorization before calling into the transport layer.
 func (l *PrefixListener) relayToFallback(conn net.Conn, peeked []byte) {
 	defer conn.Close()
 

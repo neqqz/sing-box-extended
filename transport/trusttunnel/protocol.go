@@ -39,7 +39,7 @@ const (
 	// httpConn.SetDeadline/Close уже реализованы и просто не были ничем
 	// востребованы для клиентской стороны стрима — connectionCopy в route/
 	// не расставляет дедлайны сама, это ответственность транспорта.
-	TCPStreamIdleTimeout = 15 * time.Minute
+	TCPStreamIdleTimeout = 1 * time.Minute
 )
 
 func buildAuth(username string, password string) string {
