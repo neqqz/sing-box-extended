@@ -16,7 +16,6 @@ import (
 var (
 	_ N.NetPacketConn = (*clientPacketConn)(nil)
 	_ N.FrontHeadroom = (*clientPacketConn)(nil)
-	appName = "trusttunnel"
 )
 
 type clientPacketConn struct {

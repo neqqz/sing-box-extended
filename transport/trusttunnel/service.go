@@ -132,8 +132,19 @@ func (s *Service) cleanupConnections() {
 }
 
 func isConnAlive(conn io.Closer) bool {
-	// Basic check - try a non-blocking read with timeout
-	// This is a simplified check; real implementations might use io.IsReadClosed()
+	// Проверяем, закрыт ли underlying io.ReadCloser
+	// Для httpConn это проверка через h.body == nil
+	if httpConn, ok := conn.(interface{ Body() io.ReadCloser }); ok {
+		body := httpConn.Body()
+		return body != nil
+	}
+	// Для h2ConnWrapper проверяем через поле closed (закрыто в CloseWrapper)
+	if wrapper, ok := conn.(*h2ConnWrapper); ok {
+		wrapper.access.Lock()
+		defer wrapper.access.Unlock()
+		return !wrapper.closed
+	}
+	// Для остальных типов соединений считаем их живыми
 	return true
 }
 

@@ -149,6 +149,12 @@ func (h *httpConn) waitCreated() error {
 	return h.createErr
 }
 
+func (h *httpConn) Body() io.ReadCloser {
+	h.mtx.Lock()
+	defer h.mtx.Unlock()
+	return h.body
+}
+
 func (h *httpConn) Close() error {
 	h.mtx.Lock()
 	h.closed = true
