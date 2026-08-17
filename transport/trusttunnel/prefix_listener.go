@@ -163,7 +163,6 @@ func (l *PrefixListener) Accept() (net.Conn, error) {
 				go l.relayToFallback(conn, peeked)
 				continue
 			}
-			l.logger.Debug("trusttunnel inbound: client_random_prefix mismatch, dropping")
 			conn.Close()
 		default: // peekNotClientHello, peekReadFailed
 			conn.Close()
