@@ -22,7 +22,6 @@ const (
 	// Random is 32 bytes: buf[11:43].
 	tlsClientRandomOffset = 11
 	tlsClientRandomEnd    = 43
-	tlsPeekLen            = tlsClientRandomEnd // enough to verify + read full Random
 	tlsPeekTimeout        = 5 * time.Second
 	fallbackDialTimeout   = 5 * time.Second
 	// maxClientHelloCapture bounds how much of the stream we buffer while
@@ -172,19 +171,39 @@ func (l *PrefixListener) Accept() (net.Conn, error) {
 
 // checkRandom peeks at the TLS ClientHello and verifies the Random prefix/mask.
 // Returns the peeked bytes (always, when read succeeded) and the outcome.
+//
+// In secret (rotating) mode this now reads the WHOLE ClientHello record
+// (bounded by maxClientHelloCapture), not just the first 43 bytes, because
+// verification needs the key_share extension too — see the doc comment on
+// DeriveRotatingRandomPrefixBound for why a static (secret,window)-only check
+// is replayable by anyone who can see the wire (which, for the DPI this
+// exists to defeat, is always).
 func (l *PrefixListener) checkRandom(conn net.Conn) ([]byte, peekResult) {
 	if err := conn.SetReadDeadline(time.Now().Add(tlsPeekTimeout)); err != nil {
 		return nil, peekReadFailed
 	}
 	defer conn.SetReadDeadline(time.Time{}) //nolint:errcheck
 
-	buf := make([]byte, tlsPeekLen)
-	if _, err := io.ReadFull(conn, buf); err != nil {
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(conn, header); err != nil {
 		return nil, peekReadFailed
 	}
-
-	// Minimal sanity: TLS content_type=0x16 (Handshake), handshake_type=0x01 (ClientHello).
-	if buf[0] != 0x16 || buf[5] != 0x01 {
+	if header[0] != 0x16 { // content_type = Handshake
+		l.logger.Debug("trusttunnel inbound: dropping non-ClientHello TCP connection")
+		return header, peekNotClientHello
+	}
+	recordLen := int(header[3])<<8 | int(header[4])
+	if recordLen <= 0 || recordLen > maxClientHelloCapture {
+		l.logger.Debug("trusttunnel inbound: dropping oversized/empty TLS record")
+		return header, peekNotClientHello
+	}
+	buf := make([]byte, 5+recordLen)
+	copy(buf, header)
+	if _, err := io.ReadFull(conn, buf[5:]); err != nil {
+		return buf[:5], peekReadFailed
+	}
+	// handshake_type = ClientHello(0x01); also guards the buf[11:43] slice below.
+	if len(buf) < tlsClientRandomEnd || buf[5] != 0x01 {
 		l.logger.Debug("trusttunnel inbound: dropping non-ClientHello TCP connection")
 		return buf, peekNotClientHello
 	}
@@ -192,14 +211,22 @@ func (l *PrefixListener) checkRandom(conn net.Conn) ([]byte, peekResult) {
 	random := buf[tlsClientRandomOffset:tlsClientRandomEnd]
 
 	if len(l.secret) > 0 {
-		// Rotating mode: derive the expected prefix for the current window
-		// and its immediate neighbors (network delay / clock skew between
-		// client and server can put a connection one window off in either
-		// direction) and accept a match against any of them.
 		length := sboxtls.RandomPrefixLenOrDefault(l.prefixLen)
+		bind, ok := extractKeyShareData(buf)
+		if !ok {
+			// A compliant TLS 1.3 ClientHello always carries key_share.
+			// No key_share means either a non-1.3 client (we require 1.3 —
+			// see min_version in the trusttunnel-in tls config) or an
+			// attacker who copied a sniffed Random into a hand-built
+			// ClientHello without one. Either way: treat like a wrong prefix.
+			return buf, peekMismatch
+		}
+		// Accept the current window and its immediate neighbors (network
+		// delay / clock skew between client and server can put a connection
+		// one window off in either direction).
 		now := sboxtls.CurrentRandomPrefixWindow(time.Now().Unix(), l.windowSeconds)
 		for _, window := range [3]int64{now - 1, now, now + 1} {
-			expected := sboxtls.DeriveRotatingRandomPrefix(l.secret, length, window)
+			expected := sboxtls.DeriveRotatingRandomPrefixBound(l.secret, length, window, bind)
 			if bytes.Equal(random[:length], expected) {
 				return buf, peekMatched
 			}
@@ -213,6 +240,70 @@ func (l *PrefixListener) checkRandom(conn net.Conn) ([]byte, peekResult) {
 		}
 	}
 	return buf, peekMatched
+}
+
+// extractKeyShareData walks a raw ClientHello handshake message (buf,
+// starting at the TLS record header) far enough to find the key_share
+// extension (type 0x0033, RFC 8446 §4.2.8) and returns its body with the
+// leading 2-byte client_shares_length stripped — i.e. the concatenated
+// group+length+key_exchange entries exactly as they sit on the wire. This
+// must byte-for-byte match serializeKeyShares in common/tls/utls_client.go,
+// which builds the same bytes from the client's own parsed hello.KeyShares —
+// that agreement is what DeriveRotatingRandomPrefixBound relies on.
+//
+// Returns ok=false on anything short, truncated, or missing the extension;
+// callers must treat that as a mismatch, never fall back to trusting Random
+// alone.
+func extractKeyShareData(buf []byte) ([]byte, bool) {
+	// buf[0:5] record header, buf[5:9] handshake header, buf[9:11]
+	// client_version, buf[11:43] random (all already validated by the caller).
+	pos := 43
+	if pos+1 > len(buf) {
+		return nil, false
+	}
+	sessionIDLen := int(buf[pos])
+	pos++
+	pos += sessionIDLen
+	if pos+2 > len(buf) {
+		return nil, false
+	}
+	cipherSuitesLen := int(buf[pos])<<8 | int(buf[pos+1])
+	pos += 2 + cipherSuitesLen
+	if pos+1 > len(buf) {
+		return nil, false
+	}
+	compressionMethodsLen := int(buf[pos])
+	pos += 1 + compressionMethodsLen
+	if pos+2 > len(buf) {
+		return nil, false
+	}
+	extensionsLen := int(buf[pos])<<8 | int(buf[pos+1])
+	pos += 2
+	end := pos + extensionsLen
+	if end > len(buf) {
+		return nil, false
+	}
+	for pos+4 <= end {
+		extType := int(buf[pos])<<8 | int(buf[pos+1])
+		extLen := int(buf[pos+2])<<8 | int(buf[pos+3])
+		pos += 4
+		if pos+extLen > end {
+			return nil, false
+		}
+		if extType == 0x0033 { // key_share
+			data := buf[pos : pos+extLen]
+			if len(data) < 2 {
+				return nil, false
+			}
+			sharesLen := int(data[0])<<8 | int(data[1])
+			if 2+sharesLen > len(data) {
+				return nil, false
+			}
+			return data[2 : 2+sharesLen], true
+		}
+		pos += extLen
+	}
+	return nil, false
 }
 
 // relayToFallback figures out which real domain to impersonate for this probe

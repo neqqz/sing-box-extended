@@ -3,9 +3,11 @@
 package tls
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/hex"
 	"math/rand"
 	"net"
@@ -106,23 +108,42 @@ func (c *UTLSClientConfig) Client(conn net.Conn) (Conn, error) {
 			return err
 		}
 	}
-	randomPrefix, randomMask := c.clientRandomPrefix, c.clientRandomMask
-	if len(c.clientRandomPrefixSecret) > 0 {
-		// Ротация: свежий prefix на КАЖДЫЙ вызов Client() (= каждое новое
-		// соединение), а не один и тот же набор байт на весь срок жизни
-		// конфига. mask не нужен — деривированные байты уже неотличимы от
-		// случайных без секрета, полный mask=0xff по всей длине.
-		length := RandomPrefixLenOrDefault(c.clientRandomPrefixLen)
-		window := CurrentRandomPrefixWindow(time.Now().Unix(), c.clientRandomPrefixWindow)
-		randomPrefix = DeriveRotatingRandomPrefix(c.clientRandomPrefixSecret, length, window)
-		randomMask = nil
-	}
+	// Ротация: раньше значение вычислялось прямо здесь, один раз на вызов
+	// Client(). Так больше нельзя — привязка к key_share (см.
+	// DeriveRotatingRandomPrefixBound) требует уже сгенерированного
+	// hello.KeyShares, а он появляется только после BuildHandshakeState(),
+	// которого на этом этапе ещё не было. Поэтому для secret-режима сами
+	// байты префикса теперь считаются в HandshakeContext ниже; сюда просто
+	// прокидываем secret/len/window как есть.
 	return &utlsALPNWrapper{
-		utlsConnWrapper:    utlsConnWrapper{utls.UClient(conn, cfg, c.id)},
-		nextProtocols:      cfg.NextProtos,
-		clientRandomPrefix: randomPrefix,
-		clientRandomMask:   randomMask,
+		utlsConnWrapper:          utlsConnWrapper{utls.UClient(conn, cfg, c.id)},
+		nextProtocols:            cfg.NextProtos,
+		clientRandomPrefix:       c.clientRandomPrefix,
+		clientRandomMask:         c.clientRandomMask,
+		clientRandomPrefixSecret: c.clientRandomPrefixSecret,
+		clientRandomPrefixLen:    c.clientRandomPrefixLen,
+		clientRandomPrefixWindow: c.clientRandomPrefixWindow,
 	}, nil
+}
+
+// serializeKeyShares восстанавливает wire-формат key_share extension entries
+// (group + key_exchange с 2-байтовой длиной, RFC 8446 §4.2.8) из уже
+// сгенерированного uTLS'ом hello.KeyShares, в том же порядке, в котором они
+// уйдут на провод. Это ровно то же самое, что сервер потом достаёт из сырых
+// байт реального ClientHello сам (см. extractKeyShareData в
+// transport/trusttunnel/prefix_listener.go) — обе стороны должны получить
+// побайтово одинаковый результат, иначе DeriveRotatingRandomPrefixBound не
+// сойдётся.
+func serializeKeyShares(shares []utls.KeyShare) []byte {
+	var buf bytes.Buffer
+	for _, ks := range shares {
+		var hdr [4]byte
+		binary.BigEndian.PutUint16(hdr[0:2], uint16(ks.Group))
+		binary.BigEndian.PutUint16(hdr[2:4], uint16(len(ks.Data)))
+		buf.Write(hdr[:])
+		buf.Write(ks.Data)
+	}
+	return buf.Bytes()
 }
 
 func (c *UTLSClientConfig) SetSessionIDGenerator(generator func(clientHello []byte, sessionID []byte) error) {
@@ -302,10 +323,20 @@ type utlsALPNWrapper struct {
 	nextProtocols      []string
 	clientRandomPrefix []byte
 	clientRandomMask   []byte
+	// Ротация (см. common/tls/random_prefix_rotation.go). Когда
+	// clientRandomPrefixSecret задан, clientRandomPrefix/Mask выше
+	// игнорируются, а реальные байты префикса считаются ниже, в
+	// HandshakeContext, уже после BuildHandshakeState() — привязанными к
+	// hello.KeyShares этого конкретного соединения, а не к одному и тому же
+	// значению для всех клиентов в течение окна (как было раньше).
+	clientRandomPrefixSecret []byte
+	clientRandomPrefixLen    int
+	clientRandomPrefixWindow int
 }
 
 func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
-	if len(c.nextProtocols) > 0 || len(c.clientRandomPrefix) > 0 {
+	needsBuild := len(c.nextProtocols) > 0 || len(c.clientRandomPrefix) > 0 || len(c.clientRandomPrefixSecret) > 0
+	if needsBuild {
 		err := c.BuildHandshakeState()
 		if err != nil {
 			return err
@@ -323,20 +354,35 @@ func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
 				}
 			}
 		}
+
+		randomPrefix, randomMask := c.clientRandomPrefix, c.clientRandomMask
+		if len(c.clientRandomPrefixSecret) > 0 {
+			// hello.KeyShares уже сгенерирован BuildHandshakeState() выше —
+			// вот почему это нельзя было посчитать заранее в Client().
+			var bind []byte
+			if hello := c.HandshakeState.Hello; hello != nil {
+				bind = serializeKeyShares(hello.KeyShares)
+			}
+			length := RandomPrefixLenOrDefault(c.clientRandomPrefixLen)
+			window := CurrentRandomPrefixWindow(time.Now().Unix(), c.clientRandomPrefixWindow)
+			randomPrefix = DeriveRotatingRandomPrefixBound(c.clientRandomPrefixSecret, length, window, bind)
+			randomMask = nil
+		}
+
 		// Патч ClientHello.Random — применяем prefix с маской (in-place)
-		if len(c.clientRandomPrefix) > 0 {
+		if len(randomPrefix) > 0 {
 			hello := c.HandshakeState.Hello
 			if hello != nil && len(hello.Random) == 32 {
-				prefixLen := len(c.clientRandomPrefix)
+				prefixLen := len(randomPrefix)
 				if prefixLen > 32 {
 					prefixLen = 32
 				}
 				for i := 0; i < prefixLen; i++ {
 					var mask byte = 0xff
-					if i < len(c.clientRandomMask) {
-						mask = c.clientRandomMask[i]
+					if i < len(randomMask) {
+						mask = randomMask[i]
 					}
-					hello.Random[i] = (c.clientRandomPrefix[i] & mask) | (hello.Random[i] & ^mask)
+					hello.Random[i] = (randomPrefix[i] & mask) | (hello.Random[i] & ^mask)
 				}
 				// Sync Raw buffer
 				if len(hello.Raw) >= 38 {

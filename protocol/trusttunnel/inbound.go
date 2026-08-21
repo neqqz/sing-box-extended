@@ -372,8 +372,19 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		}
 		if len(h.randomSecret) > 0 {
 			// Ротация: свежая проверка на каждое входящее соединение,
-			// с допуском ±1 окно на рассинхрон часов — та же схема, что и
-			// у h2-пути в transport/trusttunnel/prefix_listener.go.
+			// с допуском ±1 окно на рассинхрон часов.
+			//
+			// TODO(security): в отличие от h2-пути (см.
+			// transport/trusttunnel/prefix_listener.go), здесь всё ещё
+			// НЕбиндящая DeriveRotatingRandomPrefix — значение одинаково
+			// для всех клиентов в течение окна и реплеится в самодельный
+			// ClientHello с чужим key_share (подробности — в doc-комментарии
+			// DeriveRotatingRandomPrefixBound в common/tls/random_prefix_rotation.go).
+			// Закрыть аналогично h2 здесь нельзя без изменений в форке
+			// sagernet/quic-go: ServerClientRandomVerify ниже получает от
+			// него только random [32]byte, без key_share. Нужно завести в
+			// том форке проброс key_share в этот коллбэк и только тогда
+			// переключить это место на DeriveRotatingRandomPrefixBound.
 			secret := h.randomSecret
 			length := tls.RandomPrefixLenOrDefault(h.randomPrefixLen)
 			window := h.randomPrefixWindow
