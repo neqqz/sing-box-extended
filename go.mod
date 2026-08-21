@@ -56,7 +56,7 @@ require (
 	github.com/sagernet/quic-go v0.61.0-sing-box-mod.4
 	github.com/sagernet/sing v0.8.13
 	github.com/sagernet/sing-mux v0.3.5
-	github.com/sagernet/sing-quic v0.6.4
+	github.com/sagernet/sing-quic v0.6.4-0.20260803041914-d83826c306d7
 	github.com/sagernet/sing-shadowsocks v0.2.9
 	github.com/sagernet/sing-shadowsocks2 v0.2.2
 	github.com/sagernet/sing-shadowtls v0.2.1
@@ -132,22 +132,17 @@ require (
 	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
 	github.com/huandu/go-clone v1.7.3 // indirect
 	github.com/huandu/xstrings v1.5.0 // indirect
-	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.2 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/klauspost/reedsolomon v1.14.2 // indirect
-	github.com/koron/go-ssdp v0.9.1 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/lib/pq v1.12.3 // indirect
 	github.com/libdns/libdns v1.1.1 // indirect
-	github.com/libp2p/go-nat v1.0.1-0.20250821073202-01afc089f138 // indirect
-	github.com/libp2p/go-netroute v0.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect
 	github.com/mdlayher/socket v0.6.1 // indirect
