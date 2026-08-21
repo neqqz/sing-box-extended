@@ -9,10 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
-	"reflect"
 	"strings"
 	"sync"
-	"unsafe"
 
 	"github.com/sagernet/quic-go/http3"
 	common "github.com/sagernet/sing-box/common/xray"
@@ -48,20 +46,6 @@ type DefaultDialerClient struct {
 	mtx sync.RWMutex
 }
 
-type clientConnPool struct {
-	t     *http2.Transport
-	mu    sync.Mutex
-	conns map[string][]*http2.ClientConn // key is host:port
-}
-
-type efaceWords struct {
-	typ  unsafe.Pointer
-	data unsafe.Pointer
-}
-
-//go:linkname transportConnPool golang.org/x/net/http2.(*Transport).connPool
-func transportConnPool(t *http2.Transport) http2.ClientConnPool
-
 func (c *DefaultDialerClient) Close() {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
@@ -69,23 +53,15 @@ func (c *DefaultDialerClient) Close() {
 		return
 	}
 	c.closed = true
-	switch transport := c.client.Transport.(type) {
+	switch t := c.client.Transport.(type) {
 	case *http.Transport:
-		transport.CloseIdleConnections()
+		t.CloseIdleConnections()
 	case *http2.Transport:
-		connPool := transportConnPool(transport)
-		p := (*clientConnPool)((*efaceWords)(unsafe.Pointer(&connPool)).data)
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		for _, vv := range p.conns {
-			for _, cc := range vv {
-				cc.Close()
-			}
-		}
+		t.CloseIdleConnections()
 	case *http3.Transport:
-		transport.Close()
+		t.Close()
 	default:
-		panic(E.New("unknown transport type: ", reflect.TypeOf(transport)))
+		// ignore unknown transport types
 	}
 }
 
