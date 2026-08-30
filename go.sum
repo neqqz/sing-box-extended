@@ -273,8 +273,8 @@ github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOF
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
 github.com/neqqz/net v0.0.0-20260829092801-f6b0cdfffaa3 h1:IbBI8tyiHEwnPM8ynpWmHVlY8X1jQbJtD0YMRowAtBM=
 github.com/neqqz/net v0.0.0-20260829092801-f6b0cdfffaa3/go.mod h1:oC5XXVbjUr9dMFHo0zKubaUqa9U39RKu8reB7FcT8/I=
-github.com/neqqz/quic-go v0.0.0-20260829092814-cf9b28b1cfe5 h1:xmyy+q2kl7eyq4HRSg+E6HTkMw8kC9KrhlAOAuRILJk=
-github.com/neqqz/quic-go v0.0.0-20260829092814-cf9b28b1cfe5/go.mod h1:hmLC8GJPp+BrpBgrgJnacvI4fZGIhasuy1ROJJ8GR4E=
+github.com/neqqz/quic-go v0.0.0-20260830214346-287782cffe4e h1:j80DTYTk+PUF5TyO5BuEz7MA+fRjdqpqDcqqhlKcuts=
+github.com/neqqz/quic-go v0.0.0-20260830214346-287782cffe4e/go.mod h1:hmLC8GJPp+BrpBgrgJnacvI4fZGIhasuy1ROJJ8GR4E=
 github.com/neqqz/sing-quic v0.0.0-20260830095211-0e3f15fbd737 h1:LQNTCsZrnuQUYn7qofuq25ZlQEWXPkPBMXScxMEBU3U=
 github.com/neqqz/sing-quic v0.0.0-20260830095211-0e3f15fbd737/go.mod h1:K5bWvITOm4vE10fwLfrWpw27bCoVJ+tfQ79tOWg+Ko8=
 github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 h1:zYyBkD/k9seD2A7fsi6Oo2LfFZAehjjQMERAvZLEDnQ=
