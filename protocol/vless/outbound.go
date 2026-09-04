@@ -158,7 +158,7 @@ func (h *Outbound) MultiplexEnabled() bool {
 	return h.multiplexDialer != nil
 }
 
-func (h *Outbound) InterfaceUpdated() {
+func (h *Outbound) InterfaceUpdated(ctx context.Context) {
 	if h.transport != nil {
 		h.transport.Close()
 	}
@@ -214,10 +214,13 @@ func (h *vlessDialer) DialContext(ctx context.Context, network string, destinati
 	}
 
 	if h.encryption != nil {
-		conn, err = h.encryption.Handshake(conn)
+		var encConn net.Conn
+		encConn, err = h.encryption.Handshake(conn)
 		if err != nil {
+			common.Close(conn)
 			return nil, E.Cause(err, "encryption handshake")
 		}
+		conn = encConn
 	}
 
 	var visionBaseConn net.Conn
@@ -299,11 +302,13 @@ func (h *vlessDialer) ListenPacket(ctx context.Context, destination M.Socksaddr)
 		return nil, err
 	}
 	if h.encryption != nil {
-		conn, err = h.encryption.Handshake(conn)
+		var encConn net.Conn
+		encConn, err = h.encryption.Handshake(conn)
 		if err != nil {
 			common.Close(conn)
 			return nil, E.Cause(err, "encryption handshake")
 		}
+		conn = encConn
 	}
 	if h.xudp {
 		return h.client.DialEarlyXUDPPacketConn(conn, destination)

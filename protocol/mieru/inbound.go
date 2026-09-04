@@ -309,13 +309,17 @@ func buildMieruServerConfig(_ context.Context, options option.MieruInboundOption
 			UserHintIsMandatory: proto.Bool(true),
 		}
 	}
+	config := &mierupb.ServerConfig{
+		PortBindings:     portBindings,
+		Users:            users,
+		TrafficPattern:   trafficPattern,
+		AdvancedSettings: advancedSettings,
+	}
+	if options.MTU != 0 {
+		config.Mtu = proto.Int32(int32(options.MTU))
+	}
 	return &mieruserver.ServerConfig{
-		Config: &mierupb.ServerConfig{
-			PortBindings:     portBindings,
-			Users:            users,
-			TrafficPattern:   trafficPattern,
-			AdvancedSettings: advancedSettings,
-		},
+		Config: config,
 	}, userNames, nil
 }
 

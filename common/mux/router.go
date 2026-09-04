@@ -45,7 +45,7 @@ func NewRouterWithOptions(router adapter.ConnectionRouterEx, logger logger.Conte
 			return log.ContextWithNewID(ctx)
 		},
 		Logger:    logger,
-		HandlerEx: adapter.NewRouteContextHandlerEx(router),
+		HandlerEx: adapter.NewRouteContextHandler(router),
 		Padding:   options.Padding,
 		Brutal:    brutalOptions,
 	})

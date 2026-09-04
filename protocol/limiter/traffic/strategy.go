@@ -40,7 +40,7 @@ func (s *DefaultWrapStrategy) wrapConn(ctx context.Context, conn net.Conn, metad
 	if err != nil {
 		return nil, err
 	}
-	_, err = limiter.Reserve(0)
+	err = limiter.Can(1)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,7 @@ func (s *DefaultWrapStrategy) wrapPacketConn(ctx context.Context, conn net.Packe
 	if err != nil {
 		return nil, err
 	}
-	_, err = limiter.Reserve(0)
+	err = limiter.Can(1)
 	if err != nil {
 		return nil, err
 	}

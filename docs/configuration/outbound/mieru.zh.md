@@ -20,6 +20,8 @@ icon: material/new-box
   "password": "hjkl",
   "multiplexing": "MULTIPLEXING_LOW",
   "traffic_pattern": "GgQIARAK",
+  "mtu": 1400,
+  "handshake_mode": "HANDSHAKE_STANDARD",
 
   ... // 拨号字段
 }
@@ -70,6 +72,14 @@ mieru 密码。
 #### traffic_pattern
 
 一个 base64 字符串用于微调网络行为。
+
+#### mtu
+
+L2 载荷的最大传输单元。仅适用于 UDP 传输方式的出站流量。
+
+#### handshake_mode
+
+客户端建立连接时的握手模式。可设为 `HANDSHAKE_STANDARD`（1-RTT，客户端等待代理服务器建立到目标地址的连接后再发送载荷）或 `HANDSHAKE_NO_WAIT`（0-RTT，客户端在连接代理服务器的同时发送载荷）。
 
 ### 拨号字段
 

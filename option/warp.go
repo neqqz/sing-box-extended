@@ -13,6 +13,8 @@ type WARPEndpointOptions struct {
 	DisablePauses               bool               `json:"disable_pauses,omitempty"`
 	Amnezia                     *WARPAmnezia       `json:"amnezia,omitempty"`
 	Profile                     CloudflareProfile  `json:"profile,omitempty"`
+	Address                     string             `json:"address,omitempty"`
+	Port                        uint16             `json:"port,omitempty"`
 	DialerOptions
 }
 

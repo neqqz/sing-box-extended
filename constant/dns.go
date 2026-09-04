@@ -16,7 +16,6 @@ const (
 
 const (
 	DNSTypeLegacy      = "legacy"
-	DNSTypeLegacyRcode = "legacy_rcode"
 	DNSTypeUDP         = "udp"
 	DNSTypeTCP         = "tcp"
 	DNSTypeTLS         = "tls"
@@ -27,9 +26,12 @@ const (
 	DNSTypeHosts       = "hosts"
 	DNSTypeFakeIP      = "fakeip"
 	DNSTypeDHCP        = "dhcp"
+	DNSTypeMDNS        = "mdns"
 	DNSTypeTailscale   = "tailscale"
 	DNSTypeSDNS        = "sdns"
 	DNSTypeFallback    = "fallback"
+	DNSTypeOpenConnect = "openconnect"
+	DNSTypeOpenVPN     = "openvpn"
 )
 
 const (

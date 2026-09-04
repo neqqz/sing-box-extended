@@ -14,10 +14,8 @@ Sing-box with extended features.
 - **MASQUE** — Cloudflare MASQUE proxy over QUIC / HTTP-2
 - **MTProxy** — Telegram MTProxy server with FakeTLS and domain fronting
 - **Mieru** — Secure, hard to classify, hard to probe network protocol
-- **OpenVPN** — OpenVPN client with tls-auth, tls-crypt and tls-crypt-v2 support
 - **TrustTunnel** — AdGuard's obfuscated VPN protocol, indistinguishable from HTTPS traffic
 - **Sudoku** — Traffic obfuscation protocol based on 4×4 Sudoku puzzles with low-entropy fingerprints
-- **Snell** — Lightweight encrypted proxy (v1–v5) with TLS / HTTP obfuscation
 - **SSH** — SSH client and server with certificate authentication and upstream fallback
 - **Call** — Traffic tunneling through video-call platforms (VK, Dion, Telemost, WBStream)
 - **VPN** — Routed tunnel over any sing-box protocol
@@ -36,7 +34,7 @@ Sing-box with extended features.
 - **Rate Limiter** — Request rate limiting
 
 ### Encryption & Obfuscation
-- **Amnezia 3.0** — WireGuard traffic obfuscation
+- **Amnezia 3.1** — WireGuard traffic obfuscation
 - **VLESS encryption** — XRAY encryption for VLESS protocol
 
 ### Transports

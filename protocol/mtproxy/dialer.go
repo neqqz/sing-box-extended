@@ -9,10 +9,10 @@ import (
 )
 
 type Dialer struct {
-	handler adapter.ConnectionHandlerFuncEx
+	handler adapter.ConnectionHandlerFunc
 }
 
-func NewDialer(handler adapter.ConnectionHandlerFuncEx) *Dialer {
+func NewDialer(handler adapter.ConnectionHandlerFunc) *Dialer {
 	return &Dialer{handler}
 }
 

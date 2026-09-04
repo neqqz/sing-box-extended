@@ -19,6 +19,7 @@ icon: material/new-box
     }
   ],
   "traffic_pattern": "GgQIARAK",
+  "mtu": 1400
 }
 ```
 
@@ -47,3 +48,7 @@ icon: material/new-box
 #### user_hint_is_mandatory
 
 客户端若不发送用户提示，代理服务器将拒绝连接。
+
+#### mtu
+
+L2 载荷的最大传输单元。仅适用于 UDP 传输方式的出站流量。

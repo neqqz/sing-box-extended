@@ -101,7 +101,7 @@ func (h *Inbound) Close() error {
 	return h.listener.Close()
 }
 
-func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
 	h.handleConn(ctx, conn, metadata, onClose)
 }
 

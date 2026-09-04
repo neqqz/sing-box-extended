@@ -160,10 +160,9 @@ func (i *TrafficLimiterStrategyManager) DeleteTrafficLimiter(username string) {
 }
 
 type TrafficLimiter struct {
-	manager  CM.NodeManager
-	limiter  CM.TrafficLimiter
-	new      uint64
-	reserved uint64
+	manager CM.NodeManager
+	limiter CM.TrafficLimiter
+	new     uint64
 
 	mtx sync.Mutex
 }
@@ -172,34 +171,34 @@ func NewTrafficLimiter(manager CM.NodeManager, limiter CM.TrafficLimiter) *Traff
 	return &TrafficLimiter{manager: manager, limiter: limiter}
 }
 
-func (l *TrafficLimiter) Reserve(n uint64) (uint64, error) {
+func (l *TrafficLimiter) Can(n uint64) error {
 	l.mtx.Lock()
 	defer l.mtx.Unlock()
-	used := l.limiter.RawUsed + l.reserved
-	if used >= l.limiter.RawQuota {
-		return 0, E.New("traffic limit exceeded")
+	if l.limiter.RawUsed == l.limiter.RawQuota {
+		return E.New("traffic limit exceeded")
 	}
-	remaining := l.limiter.RawQuota - used
-	if n > remaining {
-		l.reserved += remaining
-		return remaining, E.New("traffic limit exceeded")
+	if l.limiter.RawUsed+n > l.limiter.RawQuota {
+		l.new += l.limiter.RawQuota - l.limiter.RawUsed
+		l.limiter.RawUsed = l.limiter.RawQuota
+		return E.New("traffic limit exceeded")
 	}
-	l.reserved += n
-	return n, nil
+	return nil
 }
 
-func (l *TrafficLimiter) Commit(reserved uint64, n uint64) {
-	if reserved == 0 && n == 0 {
-		return
-	}
+func (l *TrafficLimiter) Add(n uint64) error {
 	l.mtx.Lock()
 	defer l.mtx.Unlock()
-	if reserved > l.reserved {
-		reserved = l.reserved
+	if l.limiter.RawUsed == l.limiter.RawQuota {
+		return E.New("traffic limit exceeded")
 	}
-	l.reserved -= reserved
+	if l.limiter.RawUsed+n > l.limiter.RawQuota {
+		l.new += l.limiter.RawQuota - l.limiter.RawUsed
+		l.limiter.RawUsed = l.limiter.RawQuota
+		return E.New("traffic limit exceeded")
+	}
 	l.limiter.RawUsed += n
 	l.new += n
+	return nil
 }
 
 func (l *TrafficLimiter) UpdateRemainingTraffic() error {

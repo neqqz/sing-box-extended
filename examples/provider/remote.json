@@ -94,5 +94,11 @@
     "final": "auto",
     "default_domain_resolver": "default",
     "auto_detect_interface": true
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "store_providers": true // For persisting fetched subscriptions across restarts
+    }
   }
 }

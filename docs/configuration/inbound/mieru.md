@@ -19,6 +19,7 @@ icon: material/new-box
     }
   ],
   "traffic_pattern": "GgQIARAK",
+  "mtu": 1400
 }
 ```
 
@@ -47,3 +48,7 @@ A base64 string to fine tune network behavior.
 #### user_hint_is_mandatory
 
 If proxy client doesn't sent user hint, proxy server will refuse the connection.
+
+#### mtu
+
+Maximum transmission unit of L2 payload. Only applies to UDP transport egress traffic.

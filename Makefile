@@ -24,7 +24,7 @@ DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 
 CRONET_GO_PATH ?= $(shell pwd)/cronet-go
 
-.PHONY: test release docs build
+.PHONY: test release docs build schema
 
 build:
 	go build $(MAIN_PARAMS) $(MAIN)
@@ -57,6 +57,9 @@ ci_build:
 generate_completions:
 	go run -v --tags "$(TAGS),generate,generate_completions" $(MAIN)
 
+schema:
+	go run -ldflags "$(LDFLAGS_SHARED)" --tags "$(TAGS)" $(MAIN) schema -o docs/schema.json
+
 install:
 	go build -o $(PREFIX)/bin/$(NAME) $(MAIN_PARAMS) $(MAIN)
 
@@ -78,8 +81,7 @@ lint_install:
 
 proto:
 	@go run ./cmd/internal/protogen
-	@gofumpt -l -w .
-	@gofumpt -l -w .
+	@golangci-lint fmt
 
 proto_install:
 	go install -v google.golang.org/protobuf/cmd/protoc-gen-go@latest
@@ -118,6 +120,9 @@ release_docker:
 update_android_version:
 	go run ./cmd/internal/update_android_version
 
+update_desktop_version:
+	go run ./cmd/internal/update_desktop_version
+
 build_android:
 	cd ../sing-box-for-android && ./gradlew :app:clean :app:assembleOtherRelease && ./gradlew --stop
 
@@ -136,34 +141,48 @@ release_android: lib_android update_android_version build_android upload_android
 publish_android:
 	cd ../sing-box-for-android && ./gradlew :app:publishPlayReleaseBundle && ./gradlew --stop
 
+build_desktop_windows:
+	cd ../sing-box-for-desktop && pnpm install --frozen-lockfile && pnpm run package:win
+
+build_desktop_linux:
+	cd ../sing-box-for-desktop && pnpm install --frozen-lockfile && pnpm run package:linux
+
+upload_desktop:
+	mkdir -p dist/release_desktop
+	cp ../sing-box-for-desktop/release/SFW-*.exe dist/release_desktop 2>/dev/null || true
+	cp ../sing-box-for-desktop/release/SFL-*.deb ../sing-box-for-desktop/release/SFL-*.rpm ../sing-box-for-desktop/release/SFL-*.pkg.tar.zst dist/release_desktop 2>/dev/null || true
+	ghr --replace --draft --prerelease -p 5 "v${VERSION}" dist/release_desktop
+	./codeberg-release.sh --replace --draft --prerelease -p 5 "v${VERSION}" dist/release_desktop
+	rm -rf dist/release_desktop
+
+release_desktop: update_desktop_version build_desktop_windows build_desktop_linux upload_desktop
+
 # TODO: find why and remove `-destination 'generic/platform=iOS'`
 # TODO: remove xcode clean when fix control widget fixed
 build_ios:
 	cd ../sing-box-for-apple && \
 	rm -rf build/SFI.xcarchive && \
-	xcodebuild clean -scheme SFI && \
-	xcodebuild archive -scheme SFI -configuration Release -destination 'generic/platform=iOS' -archivePath build/SFI.xcarchive -allowProvisioningUpdates | xcbeautify | grep -A 10 -e "Archive Succeeded" -e "ARCHIVE FAILED" -e "❌"
+	xcodebuild clean -scheme SFI -derivedDataPath build/SFI.dd && \
+	xcodebuild archive -scheme SFI -configuration Release -destination 'generic/platform=iOS' -archivePath build/SFI.xcarchive -derivedDataPath build/SFI.dd -allowProvisioningUpdates | xcbeautify | grep -A 10 -e "Archive Succeeded" -e "ARCHIVE FAILED" -e "❌"
 
 upload_ios_app_store:
 	cd ../sing-box-for-apple && \
 	xcodebuild -exportArchive -archivePath build/SFI.xcarchive -exportOptionsPlist SFI/Upload.plist -allowProvisioningUpdates
 
-export_ios_ipa:
-	cd ../sing-box-for-apple && \
-	xcodebuild -exportArchive -archivePath build/SFI.xcarchive -exportOptionsPlist SFI/Export.plist -allowProvisioningUpdates -exportPath build/SFI && \
-	cp build/SFI/sing-box.ipa dist/SFI.ipa
+build_ios_deb:
+	$(MAKE) -C ../sing-box-for-apple build_ios_deb
 
-upload_ios_ipa:
-	cd dist && \
-	cp SFI.ipa "SFI-${VERSION}.ipa" && \
-	ghr --replace --draft --prerelease "v${VERSION}" "SFI-${VERSION}.ipa"
+upload_ios_deb:
+	ghr --replace --draft --prerelease "v${VERSION}" ../sing-box-for-apple/build/jailbreak/"SFI-${VERSION}-iphoneos-arm64.deb"
 
 release_ios: build_ios upload_ios_app_store
+
+release_ios_deb: build_ios_deb upload_ios_deb
 
 build_macos:
 	cd ../sing-box-for-apple && \
 	rm -rf build/SFM.xcarchive && \
-	xcodebuild archive -scheme SFM -configuration Release -archivePath build/SFM.xcarchive -allowProvisioningUpdates | xcbeautify | grep -A 10 -e "Archive Succeeded" -e "ARCHIVE FAILED" -e "❌"
+	xcodebuild archive -scheme SFM -configuration Release -archivePath build/SFM.xcarchive -derivedDataPath build/SFM.dd -allowProvisioningUpdates | xcbeautify | grep -A 10 -e "Archive Succeeded" -e "ARCHIVE FAILED" -e "❌"
 
 upload_macos_app_store:
 	cd ../sing-box-for-apple && \
@@ -232,7 +251,7 @@ replace_macos_standalone: build_macos_pkg notarize_macos_pkg upload_macos_pkg up
 build_tvos:
 	cd ../sing-box-for-apple && \
 	rm -rf build/SFT.xcarchive && \
-	xcodebuild archive -scheme SFT -configuration Release -archivePath build/SFT.xcarchive -allowProvisioningUpdates | xcbeautify | grep -A 10 -e "Archive Succeeded" -e "ARCHIVE FAILED" -e "❌"
+	xcodebuild archive -scheme SFT -configuration Release -archivePath build/SFT.xcarchive -derivedDataPath build/SFT.dd -allowProvisioningUpdates | xcbeautify | grep -A 10 -e "Archive Succeeded" -e "ARCHIVE FAILED" -e "❌"
 
 upload_tvos_app_store:
 	cd ../sing-box-for-apple && \
@@ -297,8 +316,8 @@ lib_apple_new:
 	$(SING_FFI) generate --config $(LIBBOX_FFI_CONFIG) --platform-type apple
 
 lib_install:
-	go install -v github.com/sagernet/gomobile/cmd/gomobile@v0.1.12
-	go install -v github.com/sagernet/gomobile/cmd/gobind@v0.1.12
+	go install -v github.com/sagernet/gomobile/cmd/gomobile@v0.1.13
+	go install -v github.com/sagernet/gomobile/cmd/gobind@v0.1.13
 
 docs:
 	venv/bin/mkdocs serve

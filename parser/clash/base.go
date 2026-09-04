@@ -160,11 +160,13 @@ type DialerOptions struct {
 
 func (b *DialerOptions) Build() option.DialerOptions {
 	return option.DialerOptions{
-		Detour:        b.DialerProxy,
-		BindInterface: b.Interface,
-		TCPFastOpen:   b.TFO,
-		TCPMultiPath:  b.MPTCP,
-		RoutingMark:   option.FwMark(b.RoutingMark),
+		Detour: b.DialerProxy,
+		AbstractDialerOptions: option.AbstractDialerOptions{
+			BindInterface: b.Interface,
+			TCPFastOpen:   b.TFO,
+			TCPMultiPath:  b.MPTCP,
+			RoutingMark:   option.FwMark(b.RoutingMark),
+		},
 	}
 }
 

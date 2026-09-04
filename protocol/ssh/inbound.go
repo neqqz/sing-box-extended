@@ -121,7 +121,7 @@ func (h *Inbound) UpdateUsers(users []option.SSHUser) {
 	h.service.UpdateUsers(users)
 }
 
-func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+func (h *Inbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
 	metadata.Inbound = h.Tag()
 	metadata.InboundType = h.Type()
 	serverConn, channels, requests, err := ssh.NewServerConn(conn, h.serverConfig)

@@ -26,7 +26,6 @@ import (
 	"github.com/sagernet/sing-box/option"
 	qtls "github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common"
-	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -346,7 +345,7 @@ func createHTTPClient(ctx context.Context, dest M.Socksaddr, dialer N.Dialer, op
 				if dErr != nil {
 					return nil, dErr
 				}
-				conn, dErr := qtls.DialEarly(ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), tlsConfig, cfg)
+				conn, dErr := qtls.DialEarly(ctx, udpConn, tlsConfig, cfg)
 				if dErr != nil {
 					_ = udpConn.Close()
 					return nil, dErr

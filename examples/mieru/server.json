@@ -17,7 +17,8 @@
           "password": "password"
         }
       ],
-      "traffic_pattern": "GgQIARAK"
+      "traffic_pattern": "GgQIARAK",
+      "mtu": 1400
     }
   ],
   "outbounds": [

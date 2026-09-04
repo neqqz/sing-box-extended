@@ -11,6 +11,8 @@ type MieruOutboundOptions struct {
 	Password         string                     `json:"password,omitempty"`
 	Multiplexing     string                     `json:"multiplexing,omitempty"`
 	TrafficPattern   string                     `json:"traffic_pattern,omitempty"`
+	MTU              uint32                     `json:"mtu,omitempty"`
+	HandshakeMode    string                     `json:"handshake_mode,omitempty"`
 }
 
 type MieruInboundOptions struct {
@@ -20,6 +22,7 @@ type MieruInboundOptions struct {
 	Transport           string                     `json:"transport,omitempty"`
 	TrafficPattern      string                     `json:"traffic_pattern,omitempty"`
 	UserHintIsMandatory bool                       `json:"user_hint_is_mandatory,omitempty"`
+	MTU                 uint32                     `json:"mtu,omitempty"`
 }
 
 type MieruUser struct {

@@ -4,7 +4,7 @@ import "github.com/sagernet/sing/common/json/badoption"
 
 type SelectorOutboundOptions struct {
 	GroupCommonOption
-	Default                   string `json:"default,omitempty"`
+	Default                   string `json:"default,omitempty" reference:"outbound"`
 	InterruptExistConnections bool   `json:"interrupt_exist_connections,omitempty"`
 }
 
@@ -23,7 +23,7 @@ type FallbackOutboundOptions struct {
 }
 
 type GroupCommonOption struct {
-	Outbounds       []string                   `json:"outbounds"`
+	Outbounds       []string                   `json:"outbounds" reference:"outbound"`
 	Providers       badoption.Listable[string] `json:"providers,omitempty"`
 	Exclude         *badoption.Regexp          `json:"exclude,omitempty"`
 	Include         *badoption.Regexp          `json:"include,omitempty"`

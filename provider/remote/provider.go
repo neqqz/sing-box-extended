@@ -106,7 +106,7 @@ func NewProviderRemote(ctx context.Context, router adapter.Router, logFactory lo
 
 func (s *ProviderRemote) Start() error {
 	s.cacheFile = service.FromContext[adapter.CacheFile](s.ctx)
-	if s.cacheFile != nil {
+	if s.cacheFile != nil && s.cacheFile.StoreProviders() {
 		if saveSub := s.cacheFile.LoadSubscription(s.Tag()); saveSub != nil {
 			content, _ := boxCommon.DecodeBase64URLSafe(string(saveSub.Content))
 			firstLine, others := getFirstLine(content)
@@ -207,7 +207,7 @@ func (s *ProviderRemote) fetch(ctx context.Context) error {
 	case http.StatusNotModified:
 		s.subscriptionInfo = info
 		s.lastUpdated = time.Now()
-		if s.cacheFile != nil {
+		if s.cacheFile != nil && s.cacheFile.StoreProviders() {
 			saveSub := s.cacheFile.LoadSubscription(s.Tag())
 			if saveSub != nil {
 				if hasInfo {
@@ -251,7 +251,7 @@ func (s *ProviderRemote) fetch(ctx context.Context) error {
 	s.UpdateGroups()
 	s.subscriptionInfo = info
 	s.lastUpdated = time.Now()
-	if s.cacheFile != nil {
+	if s.cacheFile != nil && s.cacheFile.StoreProviders() {
 		content, _ := json.Marshal(option.Options{
 			Outbounds: s.lastOutOpts,
 		})

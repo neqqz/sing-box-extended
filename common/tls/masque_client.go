@@ -58,7 +58,15 @@ func NewMASQUEClient(ctx context.Context, logger logger.ContextLogger, serverNam
 			return nil
 		}
 	}
-	var config Config = &STDClientConfig{ctx, &tlsConfig, options.Fragment, time.Duration(options.FragmentFallbackDelay), options.RecordFragment}
+	var config Config = &STDClientConfig{
+		ctx:                   ctx,
+		config:                &tlsConfig,
+		serverName:            serverName,
+		fragment:              options.Fragment,
+		fragmentFallbackDelay: time.Duration(options.FragmentFallbackDelay),
+		recordFragment:        options.RecordFragment,
+	}
+	config.SetServerName(serverName)
 	if options.KernelRx || options.KernelTx {
 		if !C.IsLinux {
 			return nil, E.New("kTLS is only supported on Linux")

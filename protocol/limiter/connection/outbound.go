@@ -13,6 +13,7 @@ import (
 	"github.com/sagernet/sing-box/route"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
+	F "github.com/sagernet/sing/common/format"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -64,7 +65,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		}
 	}
 	logFactory := service.FromContext[log.Factory](ctx)
-	r := route.NewRouter(ctx, logFactory, options.Route, option.DNSOptions{})
+	r := route.NewRouter(ctx, logFactory, F.ToString("router/", C.TypeConnectionLimiter, "[", tag, "]"), options.Route, option.DNSOptions{})
 	err = r.Initialize(options.Route.Rules, options.Route.RuleSet)
 	if err != nil {
 		return nil, err
@@ -146,8 +147,6 @@ func (h *Outbound) NewConnectionEx(ctx context.Context, conn net.Conn, metadata 
 	if lockCtx != nil {
 		go connChecker(lockCtx, conn.Close)
 	}
-	metadata.Inbound = h.Tag()
-	metadata.InboundType = h.Type()
 	h.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 	return
 }
@@ -163,8 +162,6 @@ func (h *Outbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn,
 	if lockCtx != nil {
 		go connChecker(lockCtx, conn.Close)
 	}
-	metadata.Inbound = h.Tag()
-	metadata.InboundType = h.Type()
 	h.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
 	return
 }

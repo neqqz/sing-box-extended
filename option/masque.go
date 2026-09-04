@@ -14,6 +14,8 @@ type MASQUEOutboundOptions struct {
 	UseHTTP2             bool                             `json:"use_http2,omitempty"`
 	UseIPv6              bool                             `json:"use_ipv6,omitempty"`
 	Profile              CloudflareProfile                `json:"profile,omitempty"`
+	Address              string                           `json:"address,omitempty"`
+	Port                 uint16                           `json:"port,omitempty"`
 	UDPTimeout           badoption.Duration               `json:"udp_timeout,omitempty"`
 	UDPKeepalivePeriod   badoption.Duration               `json:"udp_keepalive_period,omitempty"`
 	UDPInitialPacketSize uint16                           `json:"udp_initial_packet_size,omitempty"`

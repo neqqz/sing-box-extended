@@ -36,6 +36,9 @@
         "auth_token": "",
         "license_key": ""
       },
+      // Optional: override the endpoint instead of using the one returned by Cloudflare
+      "address": "",
+      "port": 0,
       "udp_timeout": "5m0s",
       "udp_keepalive_period": "30s",
       "udp_initial_packet_size": 0,

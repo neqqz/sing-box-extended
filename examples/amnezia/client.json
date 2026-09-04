@@ -46,11 +46,11 @@
         "i5": "<b 0xc70000000108...",
         "header_protection_key": "QGg8AFRn6qKfTB7cT3FWH1WGx3np+OKzlNuQUrqIBmI=",
         "content_padding_addition": "50-100",
-        "rekey_after_time": 120,
-        "rekey_timeout": 5,
-        "reject_after_time": 180,
-        "keepalive_timeout": 10,
-        "max_handshake_attempts": 20
+        "rekey_after_time": "100-140",
+        "rekey_timeout": "4-6",
+        "reject_after_time": "160-200",
+        "keepalive_timeout": "8-12",
+        "max_handshake_attempts": "15-20"
       }
     }
   ],

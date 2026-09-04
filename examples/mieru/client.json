@@ -36,7 +36,10 @@
       // valid: MULTIPLEXING_DEFAULT / MULTIPLEXING_OFF / MULTIPLEXING_LOW
       //        MULTIPLEXING_MIDDLE / MULTIPLEXING_HIGH
       "multiplexing": "MULTIPLEXING_LOW",
-      "traffic_pattern": "GgQIARAK"
+      "traffic_pattern": "GgQIARAK",
+      "mtu": 1400,
+      // valid: HANDSHAKE_DEFAULT / HANDSHAKE_STANDARD / HANDSHAKE_NO_WAIT
+      "handshake_mode": "HANDSHAKE_STANDARD"
     }
   ],
   "route": {

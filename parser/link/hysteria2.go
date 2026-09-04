@@ -39,8 +39,8 @@ func parseHysteria2Link(link string) (option.Outbound, error) {
 		case "down":
 			options.DownMbps, _ = strconv.Atoi(value)
 		case "obfs":
-			if value == "salamander" {
-				Obfs.Type = "salamander"
+			if value == "salamander" || value == "gecko" {
+				Obfs.Type = value
 				options.Obfs = Obfs
 			}
 		case "obfs-password":
