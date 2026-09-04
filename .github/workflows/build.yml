@@ -685,7 +685,8 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 9.15.9
+          run_install: false
 
       - name: Set tag
         shell: bash
@@ -698,9 +699,21 @@ jobs:
         run: |
           go run ./cmd/internal/update_desktop_version --ci --nightly || true
 
+      - name: Fix broken packageManager pin
+        working-directory: clients/desktop
+        shell: bash
+        run: |
+          # package.json pins broken pnpm@11.13.0 — override it
+          if command -v jq >/dev/null 2>&1; then
+            jq '.packageManager = "pnpm@9.15.9"' package.json > package.json.tmp && mv package.json.tmp package.json
+          else
+            sed -i 's/"packageManager": "pnpm@[^"]*"/"packageManager": "pnpm@9.15.9"/' package.json || true
+          fi
+          cat package.json | head -30 || true
+
       - name: Install desktop deps
         working-directory: clients/desktop
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --config.strict-peer-dependencies=false
 
       - name: Build desktop (${{ matrix.target }})
         working-directory: clients/desktop
@@ -784,3 +797,4 @@ jobs:
           ghr --replace -p 5 "v${VERSION}" dist
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
