@@ -120,21 +120,23 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				if err != nil {
 					return nil, err
 				}
-				pktConn := NewJitterPacketConn(bufio.NewUnbindPacketConn(udpConn), options.JitterMinMS, options.JitterMaxMS)
 				var conn *quic.Conn
 				// QUICDialer: если options.TLSConfig умеет патчить
 				// ClientHello.Random (ротация client_random_prefix_secret,
 				// см. common/tls/utls_client.go), используем именно его —
 				// иначе обычный qtls.DialEarly ничего про наш префикс не
 				// знает. Пересчитывается заново на каждый вызов этого
-				// замыкания (см. quicConfigWithRandom), а не один раз при
-				// старте — иначе все реконнекты в рамках одного
-				// multiplex.max_connections получили бы один и тот же
-				// "случайный" префикс навсегда.
+				// замыкания, а не один раз при старте — иначе все
+				// реконнекты в рамках одного multiplex.max_connections
+				// получили бы один и тот же "случайный" префикс навсегда.
+				//
+				// qtls.DialEarly принимает net.Conn.
+				// tls.QUICDialer.DialEarly принимает net.PacketConn + addr.
 				if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
+					pktConn := NewJitterPacketConn(bufio.NewUnbindPacketConn(udpConn), options.JitterMinMS, options.JitterMaxMS)
 					conn, err = qd.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), cfg)
 				} else {
-					conn, err = qtls.DialEarly(ctx, pktConn, options.TLSConfig, cfg)
+					conn, err = qtls.DialEarly(ctx, udpConn, options.TLSConfig, cfg)
 				}
 				if err != nil {
 					_ = udpConn.Close()
