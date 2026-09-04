@@ -19,6 +19,7 @@ import (
 	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -133,9 +134,10 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
 					conn, err = qd.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), cfg)
 				} else {
-					conn, err = qtls.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), options.TLSConfig, cfg)
+					conn, err = qtls.DialEarly(ctx, pktConn, options.TLSConfig, cfg)
 				}
 				if err != nil {
+					_ = udpConn.Close()
 					return nil, err
 				}
 				conn.SetCongestionControl(congestionControlFactory(conn))
