@@ -193,6 +193,7 @@ jobs:
         run: go run ./cmd/internal/admin_panel_pack -dir service/admin_panel/dist
 
       - name: Verify admin panel dist
+        shell: bash
         run: |
           test -f service/admin_panel/dist/index.html
           ls -la service/admin_panel/dist | head -20
@@ -501,6 +502,7 @@ jobs:
         run: go run ./cmd/internal/admin_panel_pack -dir service/admin_panel/dist
 
       - name: Verify admin panel dist
+        shell: bash
         run: |
           test -f service/admin_panel/dist/index.html
           ls -la service/admin_panel/dist | head -20
@@ -627,6 +629,7 @@ jobs:
         run: go run ./cmd/internal/admin_panel_pack -dir service/admin_panel/dist
 
       - name: Verify admin panel dist
+        shell: bash
         run: |
           test -f service/admin_panel/dist/index.html
           ls -la service/admin_panel/dist | head -20
@@ -738,6 +741,25 @@ jobs:
         shell: bash
         run: |
           go run ./cmd/internal/update_desktop_version --ci --nightly || true
+
+      # Desktop daemon (build_boxdd) on Linux uses DEFAULT_BUILD_TAGS_OTHERS
+      # which includes with_admin_panel → //go:embed dist must exist.
+      - name: Install admin panel frontend deps
+        working-directory: service/admin_panel/web
+        run: npm install --no-fund --no-audit
+
+      - name: Build admin panel frontend
+        working-directory: service/admin_panel/web
+        run: npm run build
+
+      - name: Pack admin panel assets
+        run: go run ./cmd/internal/admin_panel_pack -dir service/admin_panel/dist
+
+      - name: Verify admin panel dist
+        shell: bash
+        run: |
+          test -f service/admin_panel/dist/index.html
+          ls -la service/admin_panel/dist | head -20
 
       - name: Fix packageManager pin
         working-directory: clients/desktop
