@@ -776,6 +776,15 @@ jobs:
         working-directory: clients/desktop
         run: pnpm install --no-frozen-lockfile
 
+      # electron-builder fpm needs bsdtar for pacman packages on Linux
+      - name: Install Linux packaging tools
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools rpm
+          command -v bsdtar
+          bsdtar --version | head -1
+
       - name: Build desktop (${{ matrix.target }})
         working-directory: clients/desktop
         run: pnpm run package:${{ matrix.target }}
