@@ -237,7 +237,7 @@ func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 // этом не сразу. MultiplexClient.Close() обнуляет пул, следующий
 // Dial()/ListenPacket() сам поднимет свежий транспорт — как и у остальных
 // протоколов, без ручного пересоздания объекта здесь.
-func (h *Outbound) InterfaceUpdated() {
+func (h *Outbound) InterfaceUpdated(ctx context.Context) {
 	_ = h.client.Close()
 }
 
