@@ -183,11 +183,19 @@ jobs:
 
       - name: Install frontend deps
         working-directory: service/admin_panel/web
-        run: npm install
+        run: npm install --no-fund --no-audit
 
       - name: Build frontend
         working-directory: service/admin_panel/web
         run: npm run build
+
+      - name: Pack admin panel assets
+        run: go run ./cmd/internal/admin_panel_pack -dir service/admin_panel/dist
+
+      - name: Verify admin panel dist
+        run: |
+          test -f service/admin_panel/dist/index.html
+          ls -la service/admin_panel/dist | head -20
         
       - name: Download Chromium toolchain
         if: matrix.naive && matrix.variant != 'purego'
@@ -483,11 +491,19 @@ jobs:
 
       - name: Install frontend deps
         working-directory: service/admin_panel/web
-        run: npm install
+        run: npm install --no-fund --no-audit
 
       - name: Build frontend
         working-directory: service/admin_panel/web
         run: npm run build
+
+      - name: Pack admin panel assets
+        run: go run ./cmd/internal/admin_panel_pack -dir service/admin_panel/dist
+
+      - name: Verify admin panel dist
+        run: |
+          test -f service/admin_panel/dist/index.html
+          ls -la service/admin_panel/dist | head -20
         
       - name: Set tag
         run: |-
@@ -591,6 +607,30 @@ jobs:
         run: |-
           git ls-remote --exit-code --tags origin v${{ needs.calculate_version.outputs.version }} || echo "PUBLISHED=false" >> "$GITHUB_ENV"
           git tag v${{ needs.calculate_version.outputs.version }} -f
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: service/admin_panel/web/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: service/admin_panel/web
+        run: npm install --no-fund --no-audit
+
+      - name: Build frontend
+        working-directory: service/admin_panel/web
+        run: npm run build
+
+      - name: Pack admin panel assets
+        run: go run ./cmd/internal/admin_panel_pack -dir service/admin_panel/dist
+
+      - name: Verify admin panel dist
+        run: |
+          test -f service/admin_panel/dist/index.html
+          ls -la service/admin_panel/dist | head -20
+
       - name: Build library
         run: |-
           make lib_install
