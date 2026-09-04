@@ -5,69 +5,146 @@ go 1.27.0
 require (
 	filippo.io/age v1.3.1
 	filippo.io/edwards25519 v1.2.0
-	filippo.io/hpke v0.4.0 // indirect
-	github.com/AdguardTeam/golibs v0.35.16 // indirect
 	github.com/AliRizaAynaci/gorl/v2 v2.2.0
 	github.com/Diniboy1123/connect-ip-go v0.0.0-20260613064811-66cba32d7d33
+	github.com/ameshkov/dnscrypt/v2 v2.4.0
+	github.com/anthropics/anthropic-sdk-go v1.66.0
+	github.com/anytls/sing-anytls v0.0.13
+	github.com/caddyserver/certmagic v0.25.4
+	github.com/coder/websocket v1.8.15
+	github.com/creack/pty v1.1.24
+	github.com/cretz/bine v0.2.0
+	github.com/database64128/tfo-go/v2 v2.3.3
+	github.com/dblohm7/wingoes v0.0.0-20260526185140-fb298caac7ca
+	github.com/dolonet/mtg-multi v1.11.0
+	github.com/enfein/mieru/v3 v3.36.0
+	github.com/go-chi/chi/v5 v5.3.2
+	github.com/go-chi/render v1.0.3
+	github.com/go-playground/validator/v10 v10.30.3
+	github.com/gobwas/ws v1.4.0
+	github.com/godbus/dbus/v5 v5.2.2
+	github.com/gofrs/uuid/v5 v5.5.1
+	github.com/golang-migrate/migrate/v4 v4.19.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
+	github.com/huandu/go-sqlbuilder v1.42.1
+	github.com/insomniacslk/dhcp v0.0.0-20260728151720-c308df0fdcef
+	github.com/jackc/pgx/v5 v5.10.0
+	github.com/keybase/go-keychain v0.0.1
+	github.com/klauspost/cpuid/v2 v2.4.0
+	github.com/libdns/acmedns v0.5.0
+	github.com/libdns/alidns v1.0.7
+	github.com/libdns/cloudflare v0.2.2
+	github.com/logrusorgru/aurora v2.0.3+incompatible
+	github.com/mattn/go-runewidth v0.0.27
+	github.com/metacubex/utls v1.8.7
+	github.com/mholt/acmez/v3 v3.1.6
+	github.com/miekg/dns v1.1.73
+	github.com/openai/openai-go/v3 v3.52.0
+	github.com/oschwald/maxminddb-golang v1.13.1
+	github.com/pion/datachannel v1.6.2
+	github.com/pion/interceptor v0.1.47
+	github.com/pion/rtp v1.10.5
+	github.com/pion/webrtc/v4 v4.2.18
+	github.com/pkg/sftp v1.13.10
+	github.com/quic-go/quic-go v0.60.0
+	github.com/rasky/go-lzo v0.0.0-20200203143853-96a758eda86e
+	github.com/sagernet/asc-go v0.0.0-20260827085112-8f8226245b0d
+	github.com/sagernet/bbolt v0.0.0-20260823094646-e24805439c9c
+	github.com/sagernet/cors v1.2.1
+	github.com/sagernet/cronet-go v0.0.0-20260831031307-45832ab07484
+	github.com/sagernet/cronet-go/all v0.0.0-20260831031307-45832ab07484
+	github.com/sagernet/fswatch v0.1.2
+	github.com/sagernet/gliderssh v0.3.4-0.20260531100337-2194faca5648
+	github.com/sagernet/gomobile v0.1.13
+	github.com/sagernet/gvisor v0.0.0-20250811-sing-box-mod.1
+	github.com/sagernet/quic-go v0.61.0-sing-box-mod.4
+	github.com/sagernet/sing v0.9.0-beta.4
+	github.com/sagernet/sing-cloudflared v0.1.3-0.20260706062323-d9787e794aa3
+	github.com/sagernet/sing-mux v0.3.5
+	github.com/sagernet/sing-openconnect v0.0.0-20260810065514-53aa8058f8df
+	github.com/sagernet/sing-openvpn v0.0.0-20260729104525-103eb5fe5eb6
+	github.com/sagernet/sing-quic v0.7.0-beta.4
+	github.com/sagernet/sing-shadowsocks v0.2.9
+	github.com/sagernet/sing-shadowsocks2 v0.2.2
+	github.com/sagernet/sing-shadowtls v0.2.1
+	github.com/sagernet/sing-snell v0.0.0-20260829071736-20f2eaec77c3
+	github.com/sagernet/sing-tun v0.9.0-beta.4
+	github.com/sagernet/sing-usbip v0.0.0-20260817040617-28bd42667eca
+	github.com/sagernet/sing-vmess v0.2.8
+	github.com/sagernet/smux v1.5.50-sing-box-mod.1
+	github.com/sagernet/tailscale v1.102.1
+	github.com/sagernet/wireguard-go v0.0.20201121
+	github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854
+	github.com/shtorm-7/go-cache/v2 v2.1.0-extended-1.2.0
+	github.com/shtorm-7/workerpool v0.5.0
+	github.com/spf13/cobra v1.10.2
+	github.com/stretchr/testify v1.12.0
+	github.com/vishvananda/netns v0.0.5
+	github.com/xtaci/kcp-go/v5 v5.6.72
+	github.com/yosida95/uritemplate/v3 v3.0.2
+	go.uber.org/zap v1.28.0
+	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
+	golang.org/x/crypto v0.55.0
+	golang.org/x/exp v0.0.0-20260820142414-ca536658362e
+	golang.org/x/mod v0.40.0
+	golang.org/x/net v0.58.0
+	golang.org/x/sync v0.22.0
+	golang.org/x/sys v0.47.0
+	golang.org/x/time v0.15.0
+	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
+	google.golang.org/grpc v1.83.1
+	google.golang.org/protobuf v1.36.12
+	gopkg.in/yaml.v3 v3.0.1
+	howett.net/plist v1.0.1
+	lukechampine.com/blake3 v1.4.1
+	modernc.org/sqlite v1.57.0
+)
+
+require (
+	filippo.io/hpke v0.4.0 // indirect
+	github.com/AdguardTeam/golibs v0.35.16 // indirect
 	github.com/OneOfOne/xxhash v1.2.8 // indirect
 	github.com/RyuaNerin/go-krypto v1.3.0 // indirect
 	github.com/ajg/form v1.9.0 // indirect
 	github.com/akutz/memconn v0.1.0 // indirect
 	github.com/alexbrainman/sspi v0.0.0-20250919150558-7d374ff0d59e // indirect
-	github.com/ameshkov/dnscrypt/v2 v2.4.0
 	github.com/ameshkov/dnsstamps v1.0.3 // indirect
 	github.com/anchore/go-lzo v0.1.0 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
-	github.com/anthropics/anthropic-sdk-go v1.66.0
-	github.com/anytls/sing-anytls v0.0.13
 	github.com/axiomhq/hyperloglog v0.0.0-20240319100328-84253e514e02 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.6.1 // indirect
-	github.com/caddyserver/certmagic v0.25.4
 	github.com/caddyserver/zerossl v0.1.5 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
-	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-iptables v0.8.0 // indirect
 	github.com/coreos/go-oidc/v3 v3.17.0 // indirect
-	github.com/creack/pty v1.1.24
-	github.com/cretz/bine v0.2.0
 	github.com/database64128/netx-go v0.1.1 // indirect
-	github.com/database64128/tfo-go/v2 v2.3.3
-	github.com/dblohm7/wingoes v0.0.0-20260526185140-fb298caac7ca
 	github.com/dgrijalva/jwt-go/v4 v4.0.0-preview1 // indirect
 	github.com/dgryski/go-camellia v0.0.0-20191119043421-69a8a13fb23d // indirect
 	github.com/dgryski/go-metro v0.0.0-20180109044635-280f6062b5bc // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/docker/docker v28.5.2+incompatible // indirect
 	github.com/docker/go-connections v0.7.0 // indirect
-	github.com/dolonet/mtg-multi v1.11.0
 	github.com/dunglas/httpsfv v1.1.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.10.2 // indirect
-	github.com/enfein/mieru/v3 v3.36.0
 	github.com/florianl/go-nfqueue/v2 v2.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.3 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.15 // indirect
 	github.com/gaissmai/bart v0.29.0 // indirect
-	github.com/go-chi/chi/v5 v5.3.2
-	github.com/go-chi/render v1.0.3
 	github.com/go-jose/go-jose/v4 v4.1.3 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
-	github.com/go-playground/validator/v10 v10.30.3
 	github.com/go4org/hashtriemap v0.0.0-20251130024219-545ba229f689 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
-	github.com/gobwas/ws v1.4.0
-	github.com/godbus/dbus/v5 v5.2.2
-	github.com/gofrs/uuid/v5 v5.5.1
-	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/certificate-transparency-go v1.3.2 // indirect
@@ -75,64 +152,44 @@ require (
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/google/nftables v0.3.0 // indirect
-	github.com/google/uuid v1.6.0
-	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
 	github.com/huandu/go-clone v1.7.3 // indirect
-	github.com/huandu/go-sqlbuilder v1.42.1
 	github.com/huandu/xstrings v1.5.0 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/insomniacslk/dhcp v0.0.0-20260728151720-c308df0fdcef
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.2 // indirect
-	github.com/keybase/go-keychain v0.0.1
 	github.com/klauspost/compress v1.19.2 // indirect
-	github.com/klauspost/cpuid/v2 v2.4.0
 	github.com/klauspost/reedsolomon v1.14.2 // indirect
 	github.com/koron/go-ssdp v0.0.4 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/lib/pq v1.12.3 // indirect
-	github.com/libdns/acmedns v0.5.0
-	github.com/libdns/alidns v1.0.7
-	github.com/libdns/cloudflare v0.2.2
 	github.com/libdns/libdns v1.1.1 // indirect
 	github.com/libp2p/go-nat v1.0.1-0.20250821073202-01afc089f138 // indirect
 	github.com/libp2p/go-netroute v0.2.1 // indirect
-	github.com/logrusorgru/aurora v2.0.3+incompatible
 	github.com/mattn/go-isatty v0.0.24 // indirect
-	github.com/mattn/go-runewidth v0.0.27
 	github.com/mdlayher/netlink v1.11.2 // indirect
 	github.com/mdlayher/socket v0.6.1 // indirect
-	github.com/metacubex/utls v1.8.7
-	github.com/mholt/acmez/v3 v3.1.6
-	github.com/miekg/dns v1.1.73
 	github.com/mitchellh/go-ps v1.0.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/openai/openai-go/v3 v3.52.0
 	github.com/opencontainers/image-spec v1.1.1 // indirect
-	github.com/oschwald/maxminddb-golang v1.13.1
 	github.com/panjf2000/ants/v2 v2.12.1 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.29 // indirect
-	github.com/pion/datachannel v1.6.2
 	github.com/pion/dtls/v3 v3.1.5 // indirect
 	github.com/pion/ice/v4 v4.4.1 // indirect
-	github.com/pion/interceptor v0.1.47
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/mdns/v2 v2.1.0 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.17 // indirect
-	github.com/pion/rtp v1.10.5
 	github.com/pion/sctp v1.11.1 // indirect
 	github.com/pion/sdp/v3 v3.0.19 // indirect
 	github.com/pion/srtp/v3 v3.0.13 // indirect
@@ -140,22 +197,13 @@ require (
 	github.com/pion/transport/v4 v4.1.0 // indirect
 	github.com/pion/turn/v4 v4.1.4 // indirect
 	github.com/pion/turn/v5 v5.0.13 // indirect
-	github.com/pion/webrtc/v4 v4.2.18
 	github.com/pires/go-proxyproto v0.15.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pkg/sftp v1.13.10
 	github.com/prometheus-community/pro-bing v0.9.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/quic-go/quic-go v0.60.0
-	github.com/rasky/go-lzo v0.0.0-20200203143853-96a758eda86e
 	github.com/redis/go-redis/v9 v9.22.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/safchain/ethtool v0.7.0 // indirect
-	github.com/sagernet/asc-go v0.0.0-20260827085112-8f8226245b0d
-	github.com/sagernet/bbolt v0.0.0-20260823094646-e24805439c9c
-	github.com/sagernet/cors v1.2.1
-	github.com/sagernet/cronet-go v0.0.0-20260831031307-45832ab07484
-	github.com/sagernet/cronet-go/all v0.0.0-20260831031307-45832ab07484
 	github.com/sagernet/cronet-go/lib/android_386 v0.0.0-20260831030607-f80ef37265e5 // indirect
 	github.com/sagernet/cronet-go/lib/android_amd64 v0.0.0-20260831030607-f80ef37265e5 // indirect
 	github.com/sagernet/cronet-go/lib/android_arm v0.0.0-20260831030607-f80ef37265e5 // indirect
@@ -185,38 +233,12 @@ require (
 	github.com/sagernet/cronet-go/lib/tvos_arm64_simulator v0.0.0-20260831030607-f80ef37265e5 // indirect
 	github.com/sagernet/cronet-go/lib/windows_amd64 v0.0.0-20260831030607-f80ef37265e5 // indirect
 	github.com/sagernet/cronet-go/lib/windows_arm64 v0.0.0-20260831030607-f80ef37265e5 // indirect
-	github.com/sagernet/fswatch v0.1.2
-	github.com/sagernet/gliderssh v0.3.4-0.20260531100337-2194faca5648
-	github.com/sagernet/gomobile v0.1.13
-	github.com/sagernet/gvisor v0.0.0-20250811-sing-box-mod.1
 	github.com/sagernet/netlink v0.0.0-20260814022025-64455d367bbf // indirect
 	github.com/sagernet/nftables v0.3.0-mod.4 // indirect
-	github.com/sagernet/quic-go v0.61.0-sing-box-mod.4
-	github.com/sagernet/sing v0.9.0-beta.4
-	github.com/sagernet/sing-cloudflared v0.1.3-0.20260706062323-d9787e794aa3
-	github.com/sagernet/sing-mux v0.3.5
-	github.com/sagernet/sing-openconnect v0.0.0-20260810065514-53aa8058f8df
-	github.com/sagernet/sing-openvpn v0.0.0-20260729104525-103eb5fe5eb6
-	github.com/sagernet/sing-quic v0.7.0-beta.4
-	github.com/sagernet/sing-shadowsocks v0.2.9
-	github.com/sagernet/sing-shadowsocks2 v0.2.2
-	github.com/sagernet/sing-shadowtls v0.2.1
-	github.com/sagernet/sing-snell v0.0.0-20260829071736-20f2eaec77c3
-	github.com/sagernet/sing-tun v0.9.0-beta.4
-	github.com/sagernet/sing-usbip v0.0.0-20260817040617-28bd42667eca
-	github.com/sagernet/sing-vmess v0.2.8
-	github.com/sagernet/smux v1.5.50-sing-box-mod.1
-	github.com/sagernet/tailscale v1.102.1
-	github.com/sagernet/wireguard-go v0.0.20201121
-	github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854
-	github.com/shtorm-7/go-cache/v2 v2.1.0-extended-1.2.0
 	github.com/shtorm-7/rmux v1.0.1 // indirect
-	github.com/shtorm-7/workerpool v0.5.0
 	github.com/smallstep/pkcs7 v0.1.1 // indirect
-	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
-	github.com/stretchr/testify v1.12.0
 	github.com/tailscale/certstore v0.1.1-0.20260409135935-3638fb84b77d // indirect
 	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55 // indirect
 	github.com/tailscale/goupnp v1.0.1-0.20210804011211-c64d0f06ea05 // indirect
@@ -231,11 +253,8 @@ require (
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/tylertreat/BoomFilters v0.0.0-20251117164519-53813c36cc1b // indirect
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect
-	github.com/vishvananda/netns v0.0.5
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	github.com/xtaci/kcp-go/v5 v5.6.72
-	github.com/yosida95/uritemplate/v3 v3.0.2
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	github.com/zeebo/assert v1.3.0 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
@@ -244,37 +263,21 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.44.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go.uber.org/zap v1.28.0
 	go.uber.org/zap/exp v0.3.0 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
-	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
-	golang.org/x/crypto v0.55.0
-	golang.org/x/exp v0.0.0-20260820142414-ca536658362e
-	golang.org/x/mod v0.40.0
-	golang.org/x/net v0.58.0
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.22.0
-	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	golang.org/x/time v0.15.0
 	golang.org/x/tools v0.47.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
-	google.golang.org/grpc v1.83.1
-	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1
-	howett.net/plist v1.0.1
-	lukechampine.com/blake3 v1.4.1
 	modernc.org/libc v1.75.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
-	modernc.org/sqlite v1.57.0
 	zombiezen.com/go/capnproto2 v2.18.2+incompatible // indirect
 )
 
@@ -298,6 +301,6 @@ replace github.com/sagernet/sing-mux => github.com/shtorm-7/sing-mux v0.3.5-exte
 
 replace github.com/sagernet/quic-go => github.com/neqqz/quic-go v0.0.0-20260830214346-287782cffe4e
 
-replace golang.org/x/net => github.com/neqqz/net af7b9ff
+replace golang.org/x/net => github.com/neqqz/net v0.0.0-20260902045216-af7b9ff61180
 
 replace github.com/sagernet/sing-quic => github.com/neqqz/sing-quic v0.0.0-20260830095211-0e3f15fbd737
