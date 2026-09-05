@@ -1,6 +1,6 @@
 module github.com/sagernet/sing-box
 
-go 1.27.1
+go 1.26.7
 
 require (
 	filippo.io/age v1.3.1
