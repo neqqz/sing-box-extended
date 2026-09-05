@@ -51,7 +51,7 @@ type CacheFile struct {
 	storeDNS           bool
 	storeWARPConfig    bool
 	storeMASQUEConfig  bool
-	storeProviders     bool
+	storeSubscriptions bool
 	disableExpire      bool
 	rdrcTimeout        time.Duration
 	optimisticTimeout  time.Duration
@@ -106,23 +106,23 @@ func New(ctx context.Context, logger logger.Logger, options option.CacheFileOpti
 		}
 	}
 	return &CacheFile{
-		ctx:               ctx,
-		logger:            logger,
-		path:              filemanager.BasePath(ctx, path),
-		cacheID:           cacheIDBytes,
-		cacheIDText:       options.CacheID,
-		storeFakeIP:       options.StoreFakeIP,
-		storeRDRC:         options.StoreRDRC,
-		storeDNS:          options.StoreDNS,
-		storeWARPConfig:   options.StoreWARPConfig,
-		storeMASQUEConfig: options.StoreMASQUEConfig,
-		storeProviders:    options.StoreProviders,
-		rdrcTimeout:       rdrcTimeout,
-		saveDomain:        make(map[netip.Addr]string),
-		saveAddress4:      make(map[string]netip.Addr),
-		saveAddress6:      make(map[string]netip.Addr),
-		saveRDRC:          make(map[saveCacheKey]bool),
-		saveDNSCache:      make(map[saveCacheKey]saveDNSCacheEntry),
+		ctx:                ctx,
+		logger:             logger,
+		path:               filemanager.BasePath(ctx, path),
+		cacheID:            cacheIDBytes,
+		cacheIDText:        options.CacheID,
+		storeFakeIP:        options.StoreFakeIP,
+		storeRDRC:          options.StoreRDRC,
+		storeDNS:           options.StoreDNS,
+		storeWARPConfig:    options.StoreWARPConfig,
+		storeMASQUEConfig:  options.StoreMASQUEConfig,
+		storeSubscriptions: options.StoreSubscriptions,
+		rdrcTimeout:        rdrcTimeout,
+		saveDomain:         make(map[netip.Addr]string),
+		saveAddress4:       make(map[string]netip.Addr),
+		saveAddress6:       make(map[string]netip.Addr),
+		saveRDRC:           make(map[saveCacheKey]bool),
+		saveDNSCache:       make(map[saveCacheKey]saveDNSCacheEntry),
 	}
 }
 
@@ -487,8 +487,8 @@ func (c *CacheFile) StoreMASQUEConfig() bool {
 	return c.storeMASQUEConfig
 }
 
-func (c *CacheFile) StoreProviders() bool {
-	return c.storeProviders
+func (c *CacheFile) StoreSubscriptions() bool {
+	return c.storeSubscriptions
 }
 
 func (c *CacheFile) LoadWARPConfig(tag string) *adapter.SavedBinary {
