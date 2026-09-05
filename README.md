@@ -34,7 +34,7 @@ Sing-box with extended features.
 - **Rate Limiter** — Request rate limiting
 
 ### Encryption & Obfuscation
-- **Amnezia 3.0** — WireGuard traffic obfuscation
+- **Amnezia 3.1** — WireGuard traffic obfuscation
 - **VLESS encryption** — XRAY encryption for VLESS protocol
 
 ### Transports
