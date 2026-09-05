@@ -78,8 +78,8 @@ require (
 	github.com/sagernet/sing-usbip v0.0.0-20260817040617-28bd42667eca
 	github.com/sagernet/sing-vmess v0.2.8
 	github.com/sagernet/smux v1.5.50-sing-box-mod.1
-	github.com/sagernet/tailscale v1.102.1
-	github.com/sagernet/wireguard-go v0.0.20201121
+        github.com/sagernet/tailscale v1.102.1-sing-box-1.14-mod.4
+	github.com/sagernet/wireguard-go v0.0.5-extended-1.6.1
 	github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854
 	github.com/shtorm-7/go-cache/v2 v2.1.0-extended-1.2.0
 	github.com/shtorm-7/workerpool v0.5.0
@@ -271,7 +271,7 @@ require (
 	zombiezen.com/go/capnproto2 v2.18.2+incompatible // indirect
 )
 
-replace github.com/sagernet/wireguard-go => github.com/shtorm-7/wireguard-go v0.0.5-extended-1.6.0
+replace github.com/sagernet/wireguard-go => github.com/shtorm-7/wireguard-go v0.0.5-extended-1.6.1
 
 replace github.com/sagernet/tailscale => github.com/shtorm-7/tailscale v1.102.1-sing-box-1.14-mod.4-extended-1.0.3
 

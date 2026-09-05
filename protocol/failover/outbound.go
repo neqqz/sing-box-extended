@@ -27,6 +27,7 @@ type Failover struct {
 	outbound.Adapter
 	ctx       context.Context
 	outbound  adapter.OutboundManager
+	outbounds []adapter.Outbound
 	logger    logger.ContextLogger
 	dial      DialStrategy
 	uotClient *uot.Client
@@ -50,17 +51,28 @@ func NewFailover(ctx context.Context, router adapter.Router, logger log.ContextL
 		return nil, err
 	}
 	outbound := &Failover{
-		Adapter:  outbound.NewAdapter(C.TypeFailover, tag, []string{N.NetworkTCP, N.NetworkUDP}, []string{}),
-		ctx:      ctx,
-		outbound: service.FromContext[adapter.OutboundManager](ctx),
-		logger:   logger,
-		dial:     dial,
+		Adapter:   outbound.NewAdapter(C.TypeFailover, tag, []string{N.NetworkTCP, N.NetworkUDP}, []string{}),
+		ctx:       ctx,
+		outbound:  service.FromContext[adapter.OutboundManager](ctx),
+		outbounds: outbounds,
+		logger:    logger,
+		dial:      dial,
 	}
 	outbound.uotClient = &uot.Client{
 		Dialer:  outbound,
 		Version: uot.Version,
 	}
 	return outbound, nil
+}
+
+func (f *Failover) Start(stage adapter.StartStage) error {
+	for _, outbound := range f.outbounds {
+		err := adapter.LegacyStart(outbound, stage)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *Failover) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {

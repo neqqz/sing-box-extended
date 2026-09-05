@@ -36,11 +36,12 @@ type Adapter struct {
 	callbackAccess sync.Mutex
 	callbacks      list.List[adapter.ProviderUpdateCallback]
 
-	link         string
-	enabled      bool
-	removeEmojis bool
-	timeout      time.Duration
-	interval     time.Duration
+	link                  string
+	enabled               bool
+	removeEmojis          bool
+	overrideDialerOptions *option.DialerOptions
+	timeout               time.Duration
+	interval              time.Duration
 }
 
 func NewAdapter(ctx context.Context, router adapter.Router, outbound adapter.OutboundManager, logFactory log.Factory, logger log.ContextLogger, providerTag string, providerType string, options option.ProviderHealthCheckOptions) Adapter {
@@ -73,6 +74,10 @@ func NewAdapter(ctx context.Context, router adapter.Router, outbound adapter.Out
 
 func (a *Adapter) SetRemoveEmojis(remove bool) {
 	a.removeEmojis = remove
+}
+
+func (a *Adapter) SetOverrideDialerOptions(options *option.DialerOptions) {
+	a.overrideDialerOptions = options
 }
 
 func (a *Adapter) Start() error {
@@ -119,6 +124,11 @@ func (a *Adapter) UpdateOutbounds(oldOpts []option.Outbound, newOpts []option.Ou
 		oldOptByTag[opt.Tag] = opt
 	}
 	for i, opt := range newOpts {
+		if a.overrideDialerOptions != nil {
+			if wrapper, ok := opt.Options.(option.DialerOptionsWrapper); ok {
+				wrapper.ReplaceDialerOptions(*a.overrideDialerOptions)
+			}
+		}
 		var tag string
 		if opt.Tag != "" {
 			tag = F.ToString(a.providerTag, "/", opt.Tag)

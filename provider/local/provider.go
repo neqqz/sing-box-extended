@@ -52,6 +52,7 @@ func NewProviderInline(ctx context.Context, router adapter.Router, logFactory lo
 		logger:  logger,
 	}
 	p.SetRemoveEmojis(options.RemoveEmojis)
+	p.SetOverrideDialerOptions(options.OverrideDialerOptions)
 	p.UpdateOutbounds(nil, options.Outbounds)
 	return p, nil
 }
@@ -71,6 +72,7 @@ func NewProviderLocal(ctx context.Context, router adapter.Router, logFactory log
 		provider: service.FromContext[adapter.ProviderManager](ctx),
 	}
 	provider.SetRemoveEmojis(options.RemoveEmojis)
+	provider.SetOverrideDialerOptions(options.OverrideDialerOptions)
 	filePath := filemanager.BasePath(ctx, options.Path)
 	provider.path, _ = filepath.Abs(filePath)
 	watcher, err := fswatch.NewWatcher(fswatch.Options{

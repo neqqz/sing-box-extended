@@ -50,6 +50,10 @@
       "path": "subscriptions/my-sub.txt",
       // Remove emoji flags from proxy names.
       "remove_emojis": true,
+      // Override dial fields on every outbound from this provider.
+      "override_dialer_options": {
+        // Dial fields
+      },
       "health_check": {
         "enabled": true,
         "url": "https://www.gstatic.com/generate_204",

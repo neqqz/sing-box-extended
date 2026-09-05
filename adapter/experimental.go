@@ -43,7 +43,7 @@ type CacheFile interface {
 
 	StoreWARPConfig() bool
 	StoreMASQUEConfig() bool
-	StoreProviders() bool
+	StoreSubscriptions() bool
 
 	StoreDNS() bool
 	DNSCacheStore

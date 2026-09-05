@@ -82,6 +82,10 @@
       "include": "(?i)hk|jp|sg|us",
       // Remove emoji flags from proxy names.
       "remove_emojis": true,
+      // Override dial fields on every outbound from this provider.
+      "override_dialer_options": {
+        // Dial fields
+      },
       "health_check": {
         "enabled": true,
         "url": "https://www.gstatic.com/generate_204",
@@ -98,7 +102,7 @@
   "experimental": {
     "cache_file": {
       "enabled": true,
-      "store_providers": true // For persisting fetched subscriptions across restarts
+      "store_subscriptions": true // For persisting fetched subscriptions across restarts
     }
   }
 }
