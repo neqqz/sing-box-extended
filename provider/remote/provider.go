@@ -101,6 +101,7 @@ func NewProviderRemote(ctx context.Context, router adapter.Router, logFactory lo
 		include:        (*regexp.Regexp)(options.Include),
 	}
 	p.SetRemoveEmojis(options.RemoveEmojis)
+	p.SetOverrideDialerOptions(options.OverrideDialerOptions)
 	return p, nil
 }
 

@@ -47,28 +47,31 @@ func (h *Provider) UnmarshalJSONContext(ctx context.Context, content []byte) err
 }
 
 type ProviderLocalOptions struct {
-	Path         string                     `json:"path"`
-	RemoveEmojis bool                       `json:"remove_emojis,omitempty"`
-	HealthCheck  ProviderHealthCheckOptions `json:"health_check,omitempty"`
+	Path                  string                     `json:"path"`
+	RemoveEmojis          bool                       `json:"remove_emojis,omitempty"`
+	HealthCheck           ProviderHealthCheckOptions `json:"health_check,omitempty"`
+	OverrideDialerOptions *DialerOptions             `json:"override_dialer_options,omitempty"`
 }
 
 type ProviderRemoteOptions struct {
-	URL            string             `json:"url"`
-	UserAgent      string             `json:"user_agent,omitempty"`
-	Headers        badoption.HTTPHeader   `json:"headers,omitempty"`
-	DownloadDetour string             `json:"download_detour,omitempty"`
-	UpdateInterval badoption.Duration `json:"update_interval,omitempty"`
+	URL            string               `json:"url"`
+	UserAgent      string               `json:"user_agent,omitempty"`
+	Headers        badoption.HTTPHeader `json:"headers,omitempty"`
+	DownloadDetour string               `json:"download_detour,omitempty"`
+	UpdateInterval badoption.Duration   `json:"update_interval,omitempty"`
 
-	Exclude      *badoption.Regexp          `json:"exclude,omitempty"`
-	Include      *badoption.Regexp          `json:"include,omitempty"`
-	RemoveEmojis bool                       `json:"remove_emojis,omitempty"`
-	HealthCheck  ProviderHealthCheckOptions `json:"health_check,omitempty"`
+	Exclude               *badoption.Regexp          `json:"exclude,omitempty"`
+	Include               *badoption.Regexp          `json:"include,omitempty"`
+	RemoveEmojis          bool                       `json:"remove_emojis,omitempty"`
+	HealthCheck           ProviderHealthCheckOptions `json:"health_check,omitempty"`
+	OverrideDialerOptions *DialerOptions             `json:"override_dialer_options,omitempty"`
 }
 
 type ProviderInlineOptions struct {
-	Outbounds    []Outbound                 `json:"outbounds,omitempty"`
-	RemoveEmojis bool                       `json:"remove_emojis,omitempty"`
-	HealthCheck  ProviderHealthCheckOptions `json:"health_check,omitempty"`
+	Outbounds             []Outbound                 `json:"outbounds,omitempty"`
+	RemoveEmojis          bool                       `json:"remove_emojis,omitempty"`
+	HealthCheck           ProviderHealthCheckOptions `json:"health_check,omitempty"`
+	OverrideDialerOptions *DialerOptions             `json:"override_dialer_options,omitempty"`
 }
 
 type ProviderHealthCheckOptions struct {
