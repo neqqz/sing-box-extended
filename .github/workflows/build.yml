@@ -785,9 +785,30 @@ jobs:
           command -v bsdtar
           bsdtar --version | head -1
 
+      - name: Write Windows signing config
+        if: matrix.target == 'win'
+        working-directory: clients/desktop
+        shell: bash
+        run: |
+          echo "${{ secrets.WIN_SIGNING_PFX_BASE64 }}" | base64 -d > signing.local.pfx
+          cat > signing.local.json <<EOF
+          {
+            "windows": {
+              "certificateFile": "signing.local.pfx",
+              "certificatePassword": "${{ secrets.WIN_SIGNING_PFX_PASSWORD }}"
+            }
+          }
+          EOF
+
       - name: Build desktop (${{ matrix.target }})
         working-directory: clients/desktop
         run: pnpm run package:${{ matrix.target }}
+
+      - name: Clean up signing material
+        if: always() && matrix.target == 'win'
+        working-directory: clients/desktop
+        shell: bash
+        run: rm -f signing.local.pfx signing.local.json
 
       - name: Collect artifacts
         shell: bash
