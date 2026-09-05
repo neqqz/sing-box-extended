@@ -78,6 +78,10 @@ func NewClientEndpoint(ctx context.Context, router adapter.Router, logger log.Co
 }
 
 func (c *ClientEndpoint) Start(stage adapter.StartStage) error {
+	err := adapter.LegacyStart(c.outbound, stage)
+	if err != nil {
+		return err
+	}
 	if stage != adapter.StartStatePostStart {
 		return nil
 	}

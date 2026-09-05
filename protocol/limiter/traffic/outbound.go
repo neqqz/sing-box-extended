@@ -23,6 +23,8 @@ func RegisterOutbound(registry *outbound.Registry) {
 	outbound.Register[option.TrafficLimiterOutboundOptions](registry, C.TypeTrafficLimiter, NewOutbound)
 }
 
+var _ adapter.Lifecycle = (*Outbound)(nil)
+
 type Outbound struct {
 	outbound.Adapter
 	ctx         context.Context
@@ -63,19 +65,19 @@ func (h *Outbound) Network() []string {
 	return []string{N.NetworkTCP, N.NetworkUDP}
 }
 
-func (h *Outbound) Start() error {
-	detour, loaded := h.outbound.Outbound(h.outboundTag)
-	if !loaded {
-		return E.New("outbound not found: ", h.outboundTag)
-	}
-	h.detour = detour
-	for _, stage := range []adapter.StartStage{adapter.StartStateStart, adapter.StartStatePostStart, adapter.StartStateStarted} {
-		err := h.router.Start(stage)
-		if err != nil {
-			return err
+func (h *Outbound) Start(stage adapter.StartStage) error {
+	if stage == adapter.StartStateStart {
+		detour, loaded := h.outbound.Outbound(h.outboundTag)
+		if !loaded {
+			return E.New("outbound not found: ", h.outboundTag)
 		}
+		h.detour = detour
 	}
-	return nil
+	return h.router.Start(stage)
+}
+
+func (h *Outbound) Close() error {
+	return h.router.Close()
 }
 
 func (h *Outbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
