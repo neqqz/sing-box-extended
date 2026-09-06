@@ -144,8 +144,12 @@ func (c *UTLSClientConfig) Client(conn net.Conn) (Conn, error) {
 	// которого на этом этапе ещё не было. Поэтому для secret-режима сами
 	// байты префикса теперь считаются в HandshakeContext ниже; сюда просто
 	// прокидываем secret/len/window как есть.
+	uconn, err := c.buildUConn(conn, cfg)
+	if err != nil {
+		return nil, err
+	}
 	return &utlsALPNWrapper{
-		utlsConnWrapper:          utlsConnWrapper{utls.UClient(conn, cfg, c.id)},
+		utlsConnWrapper:          utlsConnWrapper{uconn},
 		nextProtocols:            cfg.NextProtos,
 		clientRandomPrefix:       c.clientRandomPrefix,
 		clientRandomMask:         c.clientRandomMask,
@@ -153,6 +157,96 @@ func (c *UTLSClientConfig) Client(conn net.Conn) (Conn, error) {
 		clientRandomPrefixLen:    c.clientRandomPrefixLen,
 		clientRandomPrefixWindow: c.clientRandomPrefixWindow,
 	}, nil
+}
+
+// injectCurvePreferences патчит уже готовый ClientHelloSpec конкретного
+// fingerprint'а (firefox/safari/edge/360/qq/ios/android/...), заменяя его
+// список групп в supported_groups/key_share на explicit curve_preferences
+// пользователя — ровно тот же список, что для QUIC уже понимает
+// stdTLSConfig() ниже (общий "curve_preferences" в tls-блоке, а не
+// какая-то отдельная опция под utls). Ведущий GREASE (если он был в
+// оригинальном спеке) сохраняется первым элементом — это ничего не стоит
+// и чуть меньше отличает нас от настоящего браузера.
+//
+// Реальную PQ-криптографию (генерацию ML-KEM-ключа и склейку с X25519,
+// если пользователь укажет X25519MLKEM768) делает не этот код, а сам
+// uTLS — внутри (*UConn).ApplyPreset() уже есть универсальный, не
+// привязанный к Chrome путь генерации key_share для любой записи
+// KeyShareExtension с пустым Data (см. случай *KeyShareExtension в
+// u_parrots.go — так же генерируется key share для HelloChrome_Auto). Мы
+// только заменяем список групп в чужом спеке — дальше всё как для Chrome.
+//
+// Возвращает false, если у спека вообще нет KeyShareExtension/
+// SupportedCurvesExtension (TLS 1.2-only паррот — заменять там нечего,
+// там нет key_share в принципе).
+func injectCurvePreferences(spec *utls.ClientHelloSpec, prefs []utls.CurveID) bool {
+	var hasCurves, hasKeyShare bool
+	for _, ext := range spec.Extensions {
+		switch e := ext.(type) {
+		case *utls.SupportedCurvesExtension:
+			hasCurves = true
+			e.Curves = withLeadingGREASE(e.Curves, prefs)
+		case *utls.KeyShareExtension:
+			hasKeyShare = true
+			shares := make([]utls.KeyShare, len(prefs))
+			for i, curve := range prefs {
+				shares[i] = utls.KeyShare{Group: curve}
+			}
+			e.KeyShares = withLeadingGREASEKeyShare(e.KeyShares, shares)
+		}
+	}
+	return hasCurves && hasKeyShare
+}
+
+// withLeadingGREASE/withLeadingGREASEKeyShare сохраняют ведущий
+// GREASE-плейсхолдер оригинального списка (если он там был) перед новым
+// списком групп/key share.
+func withLeadingGREASE(original []utls.CurveID, prefs []utls.CurveID) []utls.CurveID {
+	out := make([]utls.CurveID, 0, len(prefs)+1)
+	if len(original) > 0 && original[0] == utls.CurveID(utls.GREASE_PLACEHOLDER) {
+		out = append(out, utls.CurveID(utls.GREASE_PLACEHOLDER))
+	}
+	return append(out, prefs...)
+}
+
+func withLeadingGREASEKeyShare(original []utls.KeyShare, prefs []utls.KeyShare) []utls.KeyShare {
+	out := make([]utls.KeyShare, 0, len(prefs)+1)
+	if len(original) > 0 && original[0].Group == utls.CurveID(utls.GREASE_PLACEHOLDER) {
+		out = append(out, utls.KeyShare{Group: utls.CurveID(utls.GREASE_PLACEHOLDER), Data: []byte{0}})
+	}
+	return append(out, prefs...)
+}
+
+// buildUConn создаёт *utls.UConn для соединения. Если curve_preferences в
+// конфиге не задан (дефолт) — поведение как раньше, один в один по
+// выбранному fingerprint'у. Если задан — берём НЕЗАВИСИМУЮ копию
+// ClientHelloSpec для c.id заново на КАЖДОЕ соединение (не кэшируем и не
+// переиспользуем один объект между коннектами: (*UConn).ApplyPreset
+// мутирует срезы Extensions на месте — например, при регрейсинге
+// GREASE-плейсхолдеров — так что общий спек на несколько параллельных
+// коннектов был бы гонкой по данным, это прямо оговорено в комментарии к
+// ApplyPreset в самом uTLS), патчим её списком групп из
+// c.config.CurvePreferences и уже патченную скармливаем через
+// HelloCustom+ApplyPreset.
+func (c *UTLSClientConfig) buildUConn(conn net.Conn, cfg *utls.Config) (*utls.UConn, error) {
+	if len(cfg.CurvePreferences) == 0 {
+		return utls.UClient(conn, cfg, c.id), nil
+	}
+	spec, err := utls.UTLSIdToSpec(c.id)
+	if err != nil {
+		// custom/неизвестный ID (сюда не должны попадать валидные
+		// fingerprint'ы из uTLSClientHelloID) — работаем как раньше.
+		return utls.UClient(conn, cfg, c.id), nil
+	}
+	if !injectCurvePreferences(&spec, cfg.CurvePreferences) {
+		// TLS 1.2-only спек — заменять нечего.
+		return utls.UClient(conn, cfg, c.id), nil
+	}
+	uconn := utls.UClient(conn, cfg, utls.HelloCustom)
+	if err := uconn.ApplyPreset(&spec); err != nil {
+		return nil, E.Cause(err, "apply curve_preferences to client hello spec")
+	}
+	return uconn, nil
 }
 
 // serializeKeyShares восстанавливает wire-формат key_share extension entries
@@ -481,6 +575,15 @@ func newUTLSClient(ctx context.Context, logger logger.ContextLogger, serverAddre
 			return nil, E.Cause(err, "parse max_version")
 		}
 		tlsConfig.MaxVersion = maxVersion
+	}
+	// Раньше curve_preferences читался только в stdTLSConfig() (QUIC) —
+	// для uTLS-пути (H2) tlsConfig.CurvePreferences никогда не заполнялся,
+	// так что явное указание curve_preferences в конфиге фактически не
+	// действовало на H2 вообще. Здесь — тот же цикл, что в std_client.go
+	// для обычного TLS-движка, чтобы оба транспорта читали одно и то же
+	// поле одинаково.
+	for _, curve := range options.CurvePreferences {
+		tlsConfig.CurvePreferences = append(tlsConfig.CurvePreferences, utls.CurveID(curve))
 	}
 	if options.CipherSuites != nil {
 	find:
