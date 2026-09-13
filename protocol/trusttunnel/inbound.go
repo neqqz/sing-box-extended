@@ -449,6 +449,12 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, handler http.Handler) {
 		// (см. trusttunnel.SetTCPCongestionControl, Linux-only, на прочих
 		// платформах — no-op).
 		trusttunnel.SetTCPCongestionControl(rawConn, h.options.CongestionController)
+		// См. transport/trusttunnel/tcp_usertimeout_linux.go — тот же
+		// разрыв, что и на клиенте (outbound.go), но с серверной стороны:
+		// без этого сервер может держать сокет с "активным" стримом,
+		// зависшим из-за молча сдохшего на мобильной сети клиента, десятки
+		// минут (см. комментарий у h.h2Server.IdleTimeout ниже).
+		trusttunnel.SetTCPUserTimeout(rawConn, trusttunnel.DefaultTCPUserTimeout)
 		// Timing=nil по умолчанию — без обёртки, без накладных расходов. См.
 		// transport/trusttunnel/jitter_conn.go — это про тайминги ИСХОДЯЩИХ
 		// от сервера пакетов (важно именно для скачивания, где сервер — отправитель).

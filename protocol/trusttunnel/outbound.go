@@ -63,6 +63,13 @@ func (d noDelayDialer) DialContext(ctx context.Context, network string, destinat
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		trusttunnel.SetTCPCongestionControl(tcpConn, d.congestionControl)
+		// См. transport/trusttunnel/tcp_usertimeout_linux.go: без этого
+		// молча сдохший на мобильной сети (carrier NAT) путь во время
+		// активной передачи обнаруживается только через ~11-15 минут
+		// (дефолты ядра для retries2/keepalive), и всё это время
+		// MultiplexClient продолжает выдавать этот же мёртвый *Client
+		// на новые запросы.
+		trusttunnel.SetTCPUserTimeout(tcpConn, trusttunnel.DefaultTCPUserTimeout)
 	}
 	return trusttunnel.NewJitterConn(conn, d.jitterMinMS, d.jitterMaxMS), nil
 }
