@@ -168,8 +168,15 @@ func (s *Service) untrackConn(username string, conn io.Closer) {
 
 func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	// Rate limit проверка ДЛЯ ВСЕХ запросов (даже с неверным auth)
-	ip := request.RemoteAddr
-	s.checkRateLimit(ip)
+	ip := rateLimitKey(request.RemoteAddr)
+	if s.isRateLimited(ip) {
+		// Тот же 404, что и ниже на провал авторизации — отдельный код
+		// ответа для "слишком много попыток" сам по себе был бы сигнатурой,
+		// по которой сканер отличил бы trusttunnel от обычного 404-сервера.
+		writer.WriteHeader(http.StatusNotFound)
+		s.badRequest(request.Context(), request, E.New("rate limited"))
+		return
+	}
 
 	authorization := request.Header.Get("Proxy-Authorization")
 	username, loaded := s.verify(authorization)
@@ -306,23 +313,37 @@ func (s *Service) badRequest(ctx context.Context, request *http.Request, err err
 	s.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", request.RemoteAddr))
 }
 
-func (s *Service) checkRateLimit(ip string) {
+// rateLimitKey извлекает хост без порта из RemoteAddr. Раньше ключом был
+// весь RemoteAddr (host:port) — а поскольку сканер/DPI-проба обычно шлёт
+// каждую попытку с НОВОГО TCP-соединения (новый исходный порт), это
+// гарантированно раскладывало его попытки по разным ключам, и счётчик
+// никогда не накапливался против одного и того же атакующего.
+func rateLimitKey(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
+}
+
+// isRateLimited сообщает, превышен ли лимит неудачных попыток авторизации
+// для ip. В отличие от прежней checkRateLimit, результат реально
+// используется вызывающим кодом (см. ServeHTTP) — раньше эта проверка
+// только считала попытки и писала debug-лог, ничего не блокируя.
+func (s *Service) isRateLimited(ip string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
 	if now.Sub(s.authWindow) >= s.authRateLimit {
-		// Обнуляем счетчик, если окно истекло
+		// Окно истекло — сбрасываем счётчики, до истечения лимита ещё
+		// далеко в любом случае.
 		s.authAttempts = make(map[string]int)
 		s.authWindow = now
+		return false
 	}
 
-	attempts := s.authAttempts[ip]
-	if attempts >= s.authMaxFailures {
-		// Пишем в лог для мониторинга, но не пугаем пользователя
-		s.logger.Debug("trusttunnel: IP rate limited", ip, "attempts:", attempts)
-		// Можно закрыть соединение или вернуть ошибку
-	}
+	return s.authAttempts[ip] >= s.authMaxFailures
 }
 
 func (s *Service) recordAuthFailure(ip, username string) {
