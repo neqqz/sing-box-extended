@@ -6,8 +6,10 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -327,52 +329,98 @@ func readFullClientHello(conn net.Conn) (wire, logical []byte, ok bool) {
 func extractKeyShareData(buf []byte) ([]byte, bool) {
 	// buf[0:5] record header, buf[5:9] handshake header, buf[9:11]
 	// client_version, buf[11:43] random (all already validated by the caller).
-	pos := 43
-	if pos+1 > len(buf) {
+	if len(buf) < 43 {
 		return nil, false
 	}
-	sessionIDLen := int(buf[pos])
+	return extractKeyShareFromClientHelloBody(buf[9:])
+}
+
+// ExtractKeyShareFromHandshakeMessage is extractKeyShareData's counterpart
+// for QUIC: buf there is the raw TLS Handshake message as delivered to a
+// QUIC CRYPTO stream — i.e. starting at the 4-byte handshake header
+// (1-byte type + 3-byte length), with no preceding 5-byte TLS record
+// header, since QUIC doesn't use TLS record framing at all. Used by
+// protocol/trusttunnel/inbound.go's QUIC path (see the ServerClientRandomVerify
+// callback wired through github.com/neqqz/quic-go) to bind that path's
+// rotating random-prefix check to key_share the same way the TCP/H2 path
+// already does via extractKeyShareData above.
+func ExtractKeyShareFromHandshakeMessage(buf []byte) ([]byte, bool) {
+	// buf[0:4] handshake header, buf[4:6] client_version, buf[6:38] random.
+	if len(buf) < 38 || buf[0] != 0x01 {
+		return nil, false
+	}
+	return extractKeyShareFromClientHelloBody(buf[4:])
+}
+
+// extractKeyShareFromClientHelloBody does the actual walk, shared by both
+// entry points above. body starts at client_version (2 bytes), followed by
+// random (32 bytes), session_id, cipher_suites, compression_methods, and
+// finally extensions — identical ClientHello body layout regardless of
+// whether it arrived wrapped in a TLS record (TCP) or bare (QUIC CRYPTO).
+func extractKeyShareFromClientHelloBody(body []byte) ([]byte, bool) {
+	// TEMP DIAGNOSTIC LOGGING — remove once extraction is confirmed working.
+	fmt.Fprintf(os.Stderr, "[randbind][server][parse] body len=%d hex(first 96)=%s\n", len(body), hex.EncodeToString(body[:min(96, len(body))]))
+	pos := 34 // 2 (client_version) + 32 (random)
+	if pos+1 > len(body) {
+		fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: body too short for session_id length byte (pos=%d len=%d)\n", pos, len(body))
+		return nil, false
+	}
+	sessionIDLen := int(body[pos])
 	pos++
 	pos += sessionIDLen
-	if pos+2 > len(buf) {
+	fmt.Fprintf(os.Stderr, "[randbind][server][parse] sessionIDLen=%d, pos after=%d\n", sessionIDLen, pos)
+	if pos+2 > len(body) {
+		fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: body too short for cipher_suites length (pos=%d len=%d)\n", pos, len(body))
 		return nil, false
 	}
-	cipherSuitesLen := int(buf[pos])<<8 | int(buf[pos+1])
+	cipherSuitesLen := int(body[pos])<<8 | int(body[pos+1])
 	pos += 2 + cipherSuitesLen
-	if pos+1 > len(buf) {
+	fmt.Fprintf(os.Stderr, "[randbind][server][parse] cipherSuitesLen=%d, pos after=%d\n", cipherSuitesLen, pos)
+	if pos+1 > len(body) {
+		fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: body too short for compression_methods length (pos=%d len=%d)\n", pos, len(body))
 		return nil, false
 	}
-	compressionMethodsLen := int(buf[pos])
+	compressionMethodsLen := int(body[pos])
 	pos += 1 + compressionMethodsLen
-	if pos+2 > len(buf) {
+	fmt.Fprintf(os.Stderr, "[randbind][server][parse] compressionMethodsLen=%d, pos after=%d\n", compressionMethodsLen, pos)
+	if pos+2 > len(body) {
+		fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: body too short for extensions length (pos=%d len=%d)\n", pos, len(body))
 		return nil, false
 	}
-	extensionsLen := int(buf[pos])<<8 | int(buf[pos+1])
+	extensionsLen := int(body[pos])<<8 | int(body[pos+1])
 	pos += 2
 	end := pos + extensionsLen
-	if end > len(buf) {
+	fmt.Fprintf(os.Stderr, "[randbind][server][parse] extensionsLen=%d, pos=%d end=%d bodyLen=%d\n", extensionsLen, pos, end, len(body))
+	if end > len(body) {
+		fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: extensions block extends past body end\n")
 		return nil, false
 	}
 	for pos+4 <= end {
-		extType := int(buf[pos])<<8 | int(buf[pos+1])
-		extLen := int(buf[pos+2])<<8 | int(buf[pos+3])
+		extType := int(body[pos])<<8 | int(body[pos+1])
+		extLen := int(body[pos+2])<<8 | int(body[pos+3])
 		pos += 4
+		fmt.Fprintf(os.Stderr, "[randbind][server][parse] extension type=0x%04x len=%d pos_after_header=%d\n", extType, extLen, pos)
 		if pos+extLen > end {
+			fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: extension body extends past extensions end\n")
 			return nil, false
 		}
 		if extType == 0x0033 { // key_share
-			data := buf[pos : pos+extLen]
+			data := body[pos : pos+extLen]
 			if len(data) < 2 {
+				fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: key_share extension shorter than 2 bytes\n")
 				return nil, false
 			}
 			sharesLen := int(data[0])<<8 | int(data[1])
 			if 2+sharesLen > len(data) {
+				fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: key_share client_shares length overruns extension body\n")
 				return nil, false
 			}
+			fmt.Fprintf(os.Stderr, "[randbind][server][parse] OK: found key_share, sharesLen=%d\n", sharesLen)
 			return data[2 : 2+sharesLen], true
 		}
 		pos += extLen
 	}
+	fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: extensions loop ended without finding key_share (0x0033)\n")
 	return nil, false
 }
 

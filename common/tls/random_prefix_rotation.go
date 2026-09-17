@@ -42,12 +42,15 @@ func CurrentRandomPrefixWindow(nowUnix int64, windowSeconds int) int64 {
 //
 // ВНИМАНИЕ: значение одинаково для ВСЕХ клиентов в течение одного окна и
 // само по себе реплеится в самодельный ClientHello (см. подробности в
-// DeriveRotatingRandomPrefixBound). Для TCP/H2-пути (common/tls/utls_client.go,
-// transport/trusttunnel/prefix_listener.go) эта функция больше не
-// используется — используйте DeriveRotatingRandomPrefixBound. Здесь
-// оставлена только для QUIC-пути (protocol/trusttunnel/inbound.go), пока
-// у форка sagernet/quic-go (внешний репозиторий, не в этом дереве) не
-// прокинут key_share в ServerClientRandomVerify — см. TODO в inbound.go.
+// DeriveRotatingRandomPrefixBound). Годится только для СТОРОНЫ, которая
+// это значение ПОРОЖДАЕТ для собственного исходящего ClientHello (клиент
+// сам не может реплеить самого себя) — так его использует
+// common/tls/utls_client.go (quicConfigWithRandom) для QUIC-клиента.
+// Для ПРОВЕРКИ чужого входящего ClientHello.Random (TCP/H2-путь —
+// transport/trusttunnel/prefix_listener.go, и QUIC-путь —
+// protocol/trusttunnel/inbound.go) обе стороны используют
+// DeriveRotatingRandomPrefixBound — небиндящая проверка была бы уязвима
+// к реплею с чужим key_share, см. её doc-комментарий.
 func DeriveRotatingRandomPrefix(secret []byte, length int, window int64) []byte {
 	if length <= 0 {
 		return nil

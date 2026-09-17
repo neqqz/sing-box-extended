@@ -374,27 +374,48 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			// Ротация: свежая проверка на каждое входящее соединение,
 			// с допуском ±1 окно на рассинхрон часов.
 			//
-			// TODO(security): в отличие от h2-пути (см.
-			// transport/trusttunnel/prefix_listener.go), здесь всё ещё
-			// НЕбиндящая DeriveRotatingRandomPrefix — значение одинаково
-			// для всех клиентов в течение окна и реплеится в самодельный
-			// ClientHello с чужим key_share (подробности — в doc-комментарии
-			// DeriveRotatingRandomPrefixBound в common/tls/random_prefix_rotation.go).
-			// Закрыть аналогично h2 здесь нельзя без изменений в форке
-			// sagernet/quic-go: ServerClientRandomVerify ниже получает от
-			// него только random [32]byte, без key_share. Нужно завести в
-			// том форке проброс key_share в этот коллбэк и только тогда
-			// переключить это место на DeriveRotatingRandomPrefixBound.
+			// Биндим к key_share так же, как h2-путь (см.
+			// transport/trusttunnel/prefix_listener.go) — раньше здесь
+			// была небиндящая DeriveRotatingRandomPrefix (см. её
+			// doc-комментарий в common/tls/random_prefix_rotation.go для
+			// разбора самой уязвимости), потому что форк sagernet/quic-go
+			// отдавал в ServerClientRandomVerify только random [32]byte,
+			// без key_share. Теперь наш form github.com/neqqz/quic-go
+			// прокидывает туда же и сырые байты ClientHello (см.
+			// ServerClientRandomVerify в interface.go того форка), так что
+			// можно вытащить key_share тем же кодом, что и h2-путь
+			// (trusttunnel.ExtractKeyShareFromHandshakeMessage — тот же
+			// парсинг, что и extractKeyShareData, только без 5-байтного
+			// TLS record-заголовка: у QUIC его просто нет, ClientHello
+			// приходит как есть в CRYPTO-фрейме).
 			secret := h.randomSecret
 			length := tls.RandomPrefixLenOrDefault(h.randomPrefixLen)
 			window := h.randomPrefixWindow
-			quicConfig.ServerClientRandomVerify = func(random [32]byte) bool {
+			quicConfig.ServerClientRandomVerify = func(random [32]byte, clientHello []byte) bool {
+				bind, ok := trusttunnel.ExtractKeyShareFromHandshakeMessage(clientHello)
+				// TEMP DIAGNOSTIC LOGGING — remove once confirmed working
+				// end to end against the client-side log in
+				// [randbind][client] (internal/handshake/tls_conn_utls.go
+				// in the quic-go fork). The "extracted keyShare=" line here
+				// must be byte-for-byte identical to the client's
+				// "serialized keyShare=" line for the SAME connection
+				// attempt, or DeriveRotatingRandomPrefixBound won't agree.
+				h.logger.Debug("[randbind][server] extract ok=", ok, " keyShare=", hex.EncodeToString(bind), " random=", hex.EncodeToString(random[:]))
+				if !ok {
+					// Нет key_share — не откатываемся на голый random,
+					// это и есть закрываемая дыра.
+					return false
+				}
 				now := tls.CurrentRandomPrefixWindow(time.Now().Unix(), window)
 				for _, w := range [3]int64{now - 1, now, now + 1} {
-					if bytes.Equal(random[:length], tls.DeriveRotatingRandomPrefix(secret, length, w)) {
+					expected := tls.DeriveRotatingRandomPrefixBound(secret, length, w, bind)
+					h.logger.Debug("[randbind][server] window=", w, " expected=", hex.EncodeToString(expected), " got=", hex.EncodeToString(random[:length]))
+					if bytes.Equal(random[:length], expected) {
+						h.logger.Debug("[randbind][server] MATCH at window=", w)
 						return true
 					}
 				}
+				h.logger.Debug("[randbind][server] NO MATCH in any of the 3 windows")
 				return false
 			}
 		} else {

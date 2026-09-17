@@ -381,13 +381,16 @@ func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
 }
 
 // quicConfigWithRandom возвращает копию quic.Config с ClientRandomPrefix/Mask
+// (или, для ChromeParrot при ротации, с ClientRandomPrefixBind — см. ниже)
 // и, если выбранный uTLS-фингерпринт — chrome, включает нативный
 // sagernet'овский ChromeParrot (transport parameters/idle timeout/packet size
 // под Chrome — заменяет наше старое cloned.ClientHelloID, которого в
 // quic.Config больше нет; ChromeParrot по сути делает то же самое точнее,
 // на уровне самого QUIC, а не только TLS).
 func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
+	chromeParrot := c.id == utls.HelloChrome_Auto
 	prefix, mask := c.clientRandomPrefix, c.clientRandomMask
+	var bind func(keyShare []byte) []byte
 	if len(c.clientRandomPrefixSecret) > 0 {
 		// Ротация: пересчитываем заново на каждый вызов (= каждый реальный
 		// dial). Именно поэтому важно, ГДЕ этот метод вызывается — см.
@@ -396,17 +399,38 @@ func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
 		// посчитанное один раз при первом вызове.
 		length := RandomPrefixLenOrDefault(c.clientRandomPrefixLen)
 		window := CurrentRandomPrefixWindow(time.Now().Unix(), c.clientRandomPrefixWindow)
-		prefix = DeriveRotatingRandomPrefix(c.clientRandomPrefixSecret, length, window)
-		mask = nil
+		if chromeParrot {
+			// ChromeParrot идёт через uTLS (см. newUTLSQUICClient в форке
+			// github.com/neqqz/quic-go), который даёт доступ к
+			// hello.KeyShares ДО отправки ClientHello — тем же способом,
+			// что и TCP-путь выше (utlsALPNWrapper.HandshakeContext),
+			// можно привязать префикс к key_share этого конкретного
+			// handshake вместо одного значения на все клиенты в течение
+			// окна. Обычный (не-ChromeParrot) QUIC-клиент идёт через
+			// голый crypto/tls, у которого такого хука нет (см.
+			// ClientRandomPrefixBind в quic-go/interface.go и
+			// DeriveRotatingRandomPrefix в random_prefix_rotation.go) —
+			// для него остаётся небиндящий вариант в блоке else ниже.
+			secret := c.clientRandomPrefixSecret
+			bind = func(keyShare []byte) []byte {
+				return DeriveRotatingRandomPrefixBound(secret, length, window, keyShare)
+			}
+			prefix, mask = nil, nil
+		} else {
+			prefix = DeriveRotatingRandomPrefix(c.clientRandomPrefixSecret, length, window)
+			mask = nil
+		}
 	}
-	chromeParrot := c.id == utls.HelloChrome_Auto
-	if len(prefix) == 0 && !chromeParrot {
+	if len(prefix) == 0 && bind == nil && !chromeParrot {
 		return cfg
 	}
 	cloned := cfg.Clone()
 	if len(prefix) > 0 {
 		cloned.ClientRandomPrefix = prefix
 		cloned.ClientRandomMask = mask
+	}
+	if bind != nil {
+		cloned.ClientRandomPrefixBind = bind
 	}
 	cloned.ChromeParrot = chromeParrot
 	return cloned
