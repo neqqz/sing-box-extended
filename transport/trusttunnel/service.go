@@ -25,14 +25,14 @@ type Handler interface {
 }
 
 type ServiceOptions struct {
-	Ctx           context.Context
-	Logger        logger.ContextLogger
-	Handler       Handler
-	UDPPaddingMin int
-	UDPPaddingMax int
-	AuthRateLimit     time.Duration
-	AuthMaxFailures   int
-	ConnCleanupSec    int
+	Ctx             context.Context
+	Logger          logger.ContextLogger
+	Handler         Handler
+	UDPPaddingMin   int
+	UDPPaddingMax   int
+	AuthRateLimit   time.Duration
+	AuthMaxFailures int
+	ConnCleanupSec  int
 }
 
 type Service struct {
@@ -44,30 +44,30 @@ type Service struct {
 	udpPaddingMin int
 	udpPaddingMax int
 
-	mu             sync.RWMutex
-	authAttempts   map[string]int // username -> failed attempts count
-	authWindow     time.Time      // window start for failed attempts
-	authRateLimit  time.Duration  // rate limit window
-	authMaxFailures int           // max allowed failures per window
+	mu              sync.RWMutex
+	authAttempts    map[string]int // username -> failed attempts count
+	authWindow      time.Time      // window start for failed attempts
+	authRateLimit   time.Duration  // rate limit window
+	authMaxFailures int            // max allowed failures per window
 
 	muConn         sync.RWMutex
-	connCleanup    time.Time      // next connection cleanup
-	connCleanupSec int            // cleanup interval
+	connCleanup    time.Time // next connection cleanup
+	connCleanupSec int       // cleanup interval
 }
 
 func NewService(options ServiceOptions) *Service {
 	s := &Service{
-		ctx:           options.Ctx,
-		logger:        options.Logger,
-		handler:       options.Handler,
-		conns:         make(map[string][]io.Closer),
-		udpPaddingMin: options.UDPPaddingMin,
-		udpPaddingMax: options.UDPPaddingMax,
-		authAttempts:  make(map[string]int),
-		authRateLimit: 5 * time.Minute,
+		ctx:             options.Ctx,
+		logger:          options.Logger,
+		handler:         options.Handler,
+		conns:           make(map[string][]io.Closer),
+		udpPaddingMin:   options.UDPPaddingMin,
+		udpPaddingMax:   options.UDPPaddingMax,
+		authAttempts:    make(map[string]int),
+		authRateLimit:   5 * time.Minute,
 		authMaxFailures: 50,
-		connCleanup:   time.Now(),
-		connCleanupSec: 60,
+		connCleanup:     time.Now(),
+		connCleanupSec:  60,
 	}
 
 	go s.cleanupConnections()

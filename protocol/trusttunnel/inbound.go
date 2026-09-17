@@ -220,18 +220,18 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		randomSecret:       secret,
 		randomPrefixLen:    options.ClientRandomPrefixLen,
 		randomPrefixWindow: options.ClientRandomPrefixWindow,
-		handshakeSem: make(chan struct{}, DefaultMaxConcurrentHandshakes),
+		handshakeSem:       make(chan struct{}, DefaultMaxConcurrentHandshakes),
 	}
 	udpPaddingMin, udpPaddingMax := paddingRange(options.UDPPadding)
 	service := trusttunnel.NewService(trusttunnel.ServiceOptions{
-		Ctx:           ctx,
-		Logger:        logger,
-		Handler:       (*inboundHandler)(h),
-		UDPPaddingMin: udpPaddingMin,
-		UDPPaddingMax: udpPaddingMax,
-		AuthRateLimit:     time.Duration(h.options.RateLimitAuthWindow) * time.Second,
-		AuthMaxFailures:   h.options.RateLimitAuthAttempts,
-		ConnCleanupSec:    60,
+		Ctx:             ctx,
+		Logger:          logger,
+		Handler:         (*inboundHandler)(h),
+		UDPPaddingMin:   udpPaddingMin,
+		UDPPaddingMax:   udpPaddingMax,
+		AuthRateLimit:   time.Duration(h.options.RateLimitAuthWindow) * time.Second,
+		AuthMaxFailures: h.options.RateLimitAuthAttempts,
+		ConnCleanupSec:  60,
 	})
 	userMap := make(map[string]string, len(options.Users))
 	for _, u := range options.Users {
@@ -393,14 +393,6 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			window := h.randomPrefixWindow
 			quicConfig.ServerClientRandomVerify = func(random [32]byte, clientHello []byte) bool {
 				bind, ok := trusttunnel.ExtractKeyShareFromHandshakeMessage(clientHello)
-				// TEMP DIAGNOSTIC LOGGING — remove once confirmed working
-				// end to end against the client-side log in
-				// [randbind][client] (internal/handshake/tls_conn_utls.go
-				// in the quic-go fork). The "extracted keyShare=" line here
-				// must be byte-for-byte identical to the client's
-				// "serialized keyShare=" line for the SAME connection
-				// attempt, or DeriveRotatingRandomPrefixBound won't agree.
-				h.logger.Debug("[randbind][server] extract ok=", ok, " keyShare=", hex.EncodeToString(bind), " random=", hex.EncodeToString(random[:]))
 				if !ok {
 					// Нет key_share — не откатываемся на голый random,
 					// это и есть закрываемая дыра.
@@ -408,14 +400,10 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 				}
 				now := tls.CurrentRandomPrefixWindow(time.Now().Unix(), window)
 				for _, w := range [3]int64{now - 1, now, now + 1} {
-					expected := tls.DeriveRotatingRandomPrefixBound(secret, length, w, bind)
-					h.logger.Debug("[randbind][server] window=", w, " expected=", hex.EncodeToString(expected), " got=", hex.EncodeToString(random[:length]))
-					if bytes.Equal(random[:length], expected) {
-						h.logger.Debug("[randbind][server] MATCH at window=", w)
+					if bytes.Equal(random[:length], tls.DeriveRotatingRandomPrefixBound(secret, length, w, bind)) {
 						return true
 					}
 				}
-				h.logger.Debug("[randbind][server] NO MATCH in any of the 3 windows")
 				return false
 			}
 		} else {

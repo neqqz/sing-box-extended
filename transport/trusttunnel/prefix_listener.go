@@ -6,10 +6,8 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -47,8 +45,8 @@ const (
 // providing reality-style HTTP fingerprinting without explicit IP bans.
 type PrefixListener struct {
 	net.Listener
-	prefix       []byte
-	mask         []byte
+	prefix []byte
+	mask   []byte
 	// secret/prefixLen/windowSeconds: rotating-prefix mode (see
 	// common/tls/random_prefix_rotation.go). When secret is non-empty, it
 	// replaces prefix/mask above entirely — checkRandom derives the expected
@@ -57,10 +55,10 @@ type PrefixListener struct {
 	secret        []byte
 	prefixLen     int
 	windowSeconds int
-	fallback     string // static "host:port" fallback, used when SNI can't be extracted
-	fallbackPort string // port to pair with the extracted SNI when dialing
-	ownPort      string // our own listening port, used to detect self-loops
-	logger       logger.ContextLogger
+	fallback      string // static "host:port" fallback, used when SNI can't be extracted
+	fallbackPort  string // port to pair with the extracted SNI when dialing
+	ownPort       string // our own listening port, used to detect self-loops
+	logger        logger.ContextLogger
 }
 
 // NewPrefixListener parses the "hex" or "hex/mask_hex" format (same as
@@ -134,10 +132,10 @@ func NewPrefixListener(inner net.Listener, raw string, secretHex string, prefixL
 type peekResult int
 
 const (
-	peekMatched       peekResult = iota // our client, valid marker
-	peekNotClientHello                  // garbage / port scan, not even TLS
-	peekMismatch                        // valid TLS ClientHello, wrong/missing marker
-	peekReadFailed                      // couldn't read enough bytes in time
+	peekMatched        peekResult = iota // our client, valid marker
+	peekNotClientHello                   // garbage / port scan, not even TLS
+	peekMismatch                         // valid TLS ClientHello, wrong/missing marker
+	peekReadFailed                       // couldn't read enough bytes in time
 )
 
 // Accept loops until it gets a connection that passes the prefix check,
@@ -248,9 +246,12 @@ func (l *PrefixListener) checkRandom(conn net.Conn) ([]byte, peekResult) {
 //
 // wire  — exact bytes consumed from the connection (for peekedConn replay).
 // logical — synthetic single-record buffer (5-byte header + full handshake
-//           message) suitable for extractKeyShareData / Random slicing.
+//
+//	message) suitable for extractKeyShareData / Random slicing.
+//
 // ok    — false on read error, non-handshake content, oversized payload, or
-//           incomplete message within maxClientHelloCapture.
+//
+//	incomplete message within maxClientHelloCapture.
 func readFullClientHello(conn net.Conn) (wire, logical []byte, ok bool) {
 	var wireBuf bytes.Buffer
 	var hsBuf bytes.Buffer // concatenated handshake-record payloads
@@ -358,69 +359,52 @@ func ExtractKeyShareFromHandshakeMessage(buf []byte) ([]byte, bool) {
 // finally extensions — identical ClientHello body layout regardless of
 // whether it arrived wrapped in a TLS record (TCP) or bare (QUIC CRYPTO).
 func extractKeyShareFromClientHelloBody(body []byte) ([]byte, bool) {
-	// TEMP DIAGNOSTIC LOGGING — remove once extraction is confirmed working.
-	fmt.Fprintf(os.Stderr, "[randbind][server][parse] body len=%d hex(first 96)=%s\n", len(body), hex.EncodeToString(body[:min(96, len(body))]))
 	pos := 34 // 2 (client_version) + 32 (random)
 	if pos+1 > len(body) {
-		fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: body too short for session_id length byte (pos=%d len=%d)\n", pos, len(body))
 		return nil, false
 	}
 	sessionIDLen := int(body[pos])
 	pos++
 	pos += sessionIDLen
-	fmt.Fprintf(os.Stderr, "[randbind][server][parse] sessionIDLen=%d, pos after=%d\n", sessionIDLen, pos)
 	if pos+2 > len(body) {
-		fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: body too short for cipher_suites length (pos=%d len=%d)\n", pos, len(body))
 		return nil, false
 	}
 	cipherSuitesLen := int(body[pos])<<8 | int(body[pos+1])
 	pos += 2 + cipherSuitesLen
-	fmt.Fprintf(os.Stderr, "[randbind][server][parse] cipherSuitesLen=%d, pos after=%d\n", cipherSuitesLen, pos)
 	if pos+1 > len(body) {
-		fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: body too short for compression_methods length (pos=%d len=%d)\n", pos, len(body))
 		return nil, false
 	}
 	compressionMethodsLen := int(body[pos])
 	pos += 1 + compressionMethodsLen
-	fmt.Fprintf(os.Stderr, "[randbind][server][parse] compressionMethodsLen=%d, pos after=%d\n", compressionMethodsLen, pos)
 	if pos+2 > len(body) {
-		fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: body too short for extensions length (pos=%d len=%d)\n", pos, len(body))
 		return nil, false
 	}
 	extensionsLen := int(body[pos])<<8 | int(body[pos+1])
 	pos += 2
 	end := pos + extensionsLen
-	fmt.Fprintf(os.Stderr, "[randbind][server][parse] extensionsLen=%d, pos=%d end=%d bodyLen=%d\n", extensionsLen, pos, end, len(body))
 	if end > len(body) {
-		fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: extensions block extends past body end\n")
 		return nil, false
 	}
 	for pos+4 <= end {
 		extType := int(body[pos])<<8 | int(body[pos+1])
 		extLen := int(body[pos+2])<<8 | int(body[pos+3])
 		pos += 4
-		fmt.Fprintf(os.Stderr, "[randbind][server][parse] extension type=0x%04x len=%d pos_after_header=%d\n", extType, extLen, pos)
 		if pos+extLen > end {
-			fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: extension body extends past extensions end\n")
 			return nil, false
 		}
 		if extType == 0x0033 { // key_share
 			data := body[pos : pos+extLen]
 			if len(data) < 2 {
-				fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: key_share extension shorter than 2 bytes\n")
 				return nil, false
 			}
 			sharesLen := int(data[0])<<8 | int(data[1])
 			if 2+sharesLen > len(data) {
-				fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: key_share client_shares length overruns extension body\n")
 				return nil, false
 			}
-			fmt.Fprintf(os.Stderr, "[randbind][server][parse] OK: found key_share, sharesLen=%d\n", sharesLen)
 			return data[2 : 2+sharesLen], true
 		}
 		pos += extLen
 	}
-	fmt.Fprintf(os.Stderr, "[randbind][server][parse] FAIL: extensions loop ended without finding key_share (0x0033)\n")
 	return nil, false
 }
 
