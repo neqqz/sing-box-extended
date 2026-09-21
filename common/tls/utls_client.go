@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
-	"encoding/hex"
 	"math/rand"
 	"net"
 	"net/http"
@@ -48,18 +47,18 @@ type UTLSClientConfig struct {
 	// certDomain: если задан, cert верифицируется по этому домену вместо server_name.
 	// SNI в ClientHello остаётся = config.ServerName.
 	certDomain string
-	// clientRandomPrefix/clientRandomMask: байты для патча TLS ClientHello.Random.
-	// Статичные — используются, только если clientRandomPrefixSecret не задан.
-	clientRandomPrefix []byte
-	clientRandomMask   []byte
+	// clientRandomPrefixes: статичные префиксы для патча TLS ClientHello.Random;
+	// на каждом соединении выбирается случайный из списка. Используются, только
+	// если clientRandomPrefixSecret не задан.
+	clientRandomPrefixes []RandomPrefix
 	// clientRandomPrefixSecret: если задан, prefix для ClientHello.Random
 	// вычисляется заново в Client() на каждое соединение (см. DeriveRotatingRandomPrefix)
-	// вместо использования статичных clientRandomPrefix/clientRandomMask выше.
-	clientRandomPrefixSecret []byte
-	clientRandomPrefixLen    int
-	clientRandomPrefixWindow int
-	spoof                    string
-	spoofMethod              tlsspoof.Method
+	// вместо использования статичных clientRandomPrefixes выше.
+	clientRandomPrefixSecrets [][]byte
+	clientRandomPrefixLen     int
+	clientRandomPrefixWindow  int
+	spoof                     string
+	spoofMethod               tlsspoof.Method
 }
 
 func (c *UTLSClientConfig) ServerName() string {
@@ -149,13 +148,12 @@ func (c *UTLSClientConfig) Client(conn net.Conn) (Conn, error) {
 		return nil, err
 	}
 	return &utlsALPNWrapper{
-		utlsConnWrapper:          utlsConnWrapper{uconn},
-		nextProtocols:            cfg.NextProtos,
-		clientRandomPrefix:       c.clientRandomPrefix,
-		clientRandomMask:         c.clientRandomMask,
-		clientRandomPrefixSecret: c.clientRandomPrefixSecret,
-		clientRandomPrefixLen:    c.clientRandomPrefixLen,
-		clientRandomPrefixWindow: c.clientRandomPrefixWindow,
+		utlsConnWrapper:           utlsConnWrapper{uconn},
+		nextProtocols:             cfg.NextProtos,
+		clientRandomPrefixes:      c.clientRandomPrefixes,
+		clientRandomPrefixSecrets: c.clientRandomPrefixSecrets,
+		clientRandomPrefixLen:     c.clientRandomPrefixLen,
+		clientRandomPrefixWindow:  c.clientRandomPrefixWindow,
 	}, nil
 }
 
@@ -298,24 +296,23 @@ func (c *UTLSClientConfig) SetSessionIDGenerator(generator func(clientHello []by
 
 func (c *UTLSClientConfig) Clone() Config {
 	cloned := &UTLSClientConfig{
-		ctx:                      c.ctx,
-		config:                   c.config.Clone(),
-		serverName:               c.serverName,
-		disableSNI:               c.disableSNI,
-		verifyServerName:         c.verifyServerName,
-		handshakeTimeout:         c.handshakeTimeout,
-		id:                       c.id,
-		fragment:                 c.fragment,
-		fragmentFallbackDelay:    c.fragmentFallbackDelay,
-		recordFragment:           c.recordFragment,
-		certDomain:               c.certDomain,
-		clientRandomPrefix:       c.clientRandomPrefix,
-		clientRandomMask:         c.clientRandomMask,
-		clientRandomPrefixSecret: c.clientRandomPrefixSecret,
-		clientRandomPrefixLen:    c.clientRandomPrefixLen,
-		clientRandomPrefixWindow: c.clientRandomPrefixWindow,
-		spoof:                    c.spoof,
-		spoofMethod:              c.spoofMethod,
+		ctx:                       c.ctx,
+		config:                    c.config.Clone(),
+		serverName:                c.serverName,
+		disableSNI:                c.disableSNI,
+		verifyServerName:          c.verifyServerName,
+		handshakeTimeout:          c.handshakeTimeout,
+		id:                        c.id,
+		fragment:                  c.fragment,
+		fragmentFallbackDelay:     c.fragmentFallbackDelay,
+		recordFragment:            c.recordFragment,
+		certDomain:                c.certDomain,
+		clientRandomPrefixes:      c.clientRandomPrefixes,
+		clientRandomPrefixSecrets: c.clientRandomPrefixSecrets,
+		clientRandomPrefixLen:     c.clientRandomPrefixLen,
+		clientRandomPrefixWindow:  c.clientRandomPrefixWindow,
+		spoof:                     c.spoof,
+		spoofMethod:               c.spoofMethod,
 	}
 	cloned.SetServerName(cloned.serverName)
 	return cloned
@@ -389,9 +386,16 @@ func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
 // на уровне самого QUIC, а не только TLS).
 func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
 	chromeParrot := c.id == utls.HelloChrome_Auto
-	prefix, mask := c.clientRandomPrefix, c.clientRandomMask
+	var prefix, mask []byte
+	if len(c.clientRandomPrefixes) > 0 {
+		// Новый случайный выбор на КАЖДЫЙ dial (метод зовётся заново на каждое подключение).
+		picked := PickRandomPrefix(c.clientRandomPrefixes)
+		prefix, mask = picked.Prefix, picked.Mask
+	}
 	var bind func(keyShare []byte) []byte
-	if len(c.clientRandomPrefixSecret) > 0 {
+	if len(c.clientRandomPrefixSecrets) > 0 {
+		// Секрет выбирается (если их несколько) на КАЖДЫЙ dial.
+		secret := PickRandomPrefixSecret(c.clientRandomPrefixSecrets)
 		// Ротация: пересчитываем заново на каждый вызов (= каждый реальный
 		// dial). Именно поэтому важно, ГДЕ этот метод вызывается — см.
 		// CreateTransport ниже, замыкание Dial должно звать этот метод
@@ -411,13 +415,12 @@ func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
 			// ClientRandomPrefixBind в quic-go/interface.go и
 			// DeriveRotatingRandomPrefix в random_prefix_rotation.go) —
 			// для него остаётся небиндящий вариант в блоке else ниже.
-			secret := c.clientRandomPrefixSecret
 			bind = func(keyShare []byte) []byte {
 				return DeriveRotatingRandomPrefixBound(secret, length, window, keyShare)
 			}
 			prefix, mask = nil, nil
 		} else {
-			prefix = DeriveRotatingRandomPrefix(c.clientRandomPrefixSecret, length, window)
+			prefix = DeriveRotatingRandomPrefix(secret, length, window)
 			mask = nil
 		}
 	}
@@ -499,22 +502,21 @@ func (c *utlsConnWrapper) WriterReplaceable() bool {
 
 type utlsALPNWrapper struct {
 	utlsConnWrapper
-	nextProtocols      []string
-	clientRandomPrefix []byte
-	clientRandomMask   []byte
+	nextProtocols        []string
+	clientRandomPrefixes []RandomPrefix
 	// Ротация (см. common/tls/random_prefix_rotation.go). Когда
-	// clientRandomPrefixSecret задан, clientRandomPrefix/Mask выше
+	// clientRandomPrefixSecret задан, clientRandomPrefixes выше
 	// игнорируются, а реальные байты префикса считаются ниже, в
 	// HandshakeContext, уже после BuildHandshakeState() — привязанными к
 	// hello.KeyShares этого конкретного соединения, а не к одному и тому же
 	// значению для всех клиентов в течение окна (как было раньше).
-	clientRandomPrefixSecret []byte
-	clientRandomPrefixLen    int
-	clientRandomPrefixWindow int
+	clientRandomPrefixSecrets [][]byte
+	clientRandomPrefixLen     int
+	clientRandomPrefixWindow  int
 }
 
 func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
-	needsBuild := len(c.nextProtocols) > 0 || len(c.clientRandomPrefix) > 0 || len(c.clientRandomPrefixSecret) > 0
+	needsBuild := len(c.nextProtocols) > 0 || len(c.clientRandomPrefixes) > 0 || len(c.clientRandomPrefixSecrets) > 0
 	if needsBuild {
 		err := c.BuildHandshakeState()
 		if err != nil {
@@ -534,8 +536,13 @@ func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
 			}
 		}
 
-		randomPrefix, randomMask := c.clientRandomPrefix, c.clientRandomMask
-		if len(c.clientRandomPrefixSecret) > 0 {
+		var randomPrefix, randomMask []byte
+		if len(c.clientRandomPrefixes) > 0 {
+			// Новый случайный выбор на КАЖДОЕ соединение.
+			picked := PickRandomPrefix(c.clientRandomPrefixes)
+			randomPrefix, randomMask = picked.Prefix, picked.Mask
+		}
+		if len(c.clientRandomPrefixSecrets) > 0 {
 			// hello.KeyShares уже сгенерирован BuildHandshakeState() выше —
 			// вот почему это нельзя было посчитать заранее в Client().
 			var bind []byte
@@ -544,7 +551,7 @@ func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
 			}
 			length := RandomPrefixLenOrDefault(c.clientRandomPrefixLen)
 			window := CurrentRandomPrefixWindow(time.Now().Unix(), c.clientRandomPrefixWindow)
-			randomPrefix = DeriveRotatingRandomPrefixBound(c.clientRandomPrefixSecret, length, window, bind)
+			randomPrefix = DeriveRotatingRandomPrefixBound(PickRandomPrefixSecret(c.clientRandomPrefixSecrets), length, window, bind)
 			randomMask = nil
 		}
 
@@ -705,59 +712,37 @@ func newUTLSClient(ctx context.Context, logger logger.ContextLogger, serverAddre
 	if err != nil {
 		return nil, err
 	}
-	// Парсим client_random_prefix: формат "hex" или "hex/mask_hex"
-	var clientRandomPrefix, clientRandomMask []byte
-	if options.ClientRandomPrefix != "" {
-		parts := strings.SplitN(options.ClientRandomPrefix, "/", 2)
-		clientRandomPrefix, err = hex.DecodeString(parts[0])
-		if err != nil {
-			return nil, E.Cause(err, "parse client_random_prefix: invalid hex")
-		}
-		if len(clientRandomPrefix) > 32 {
-			return nil, E.New("client_random_prefix: too long (max 32 bytes)")
-		}
-		if len(parts) == 2 {
-			clientRandomMask, err = hex.DecodeString(parts[1])
-			if err != nil {
-				return nil, E.Cause(err, "parse client_random_prefix mask: invalid hex")
-			}
-			if len(clientRandomMask) != len(clientRandomPrefix) {
-				return nil, E.New("client_random_prefix: mask length must equal prefix length")
-			}
-		}
+	// Парсим client_random_prefix: строка или массив строк, формат каждой
+	// записи "hex" или "hex/mask_hex".
+	clientRandomPrefixes, err := ParseRandomPrefixes(options.ClientRandomPrefix)
+	if err != nil {
+		return nil, err
 	}
-	var clientRandomPrefixSecret []byte
-	if options.ClientRandomPrefixSecret != "" {
-		clientRandomPrefixSecret, err = hex.DecodeString(options.ClientRandomPrefixSecret)
-		if err != nil {
-			return nil, E.Cause(err, "parse client_random_prefix_secret: invalid hex")
-		}
-		if len(clientRandomPrefixSecret) == 0 {
-			return nil, E.New("client_random_prefix_secret: must not be empty")
-		}
-		if options.ClientRandomPrefix != "" {
-			return nil, E.New("client_random_prefix and client_random_prefix_secret are mutually exclusive; secret-based rotation replaces the static prefix entirely")
-		}
+	clientRandomPrefixSecrets, err := ParseRandomPrefixSecrets(options.ClientRandomPrefixSecret)
+	if err != nil {
+		return nil, err
+	}
+	if len(clientRandomPrefixSecrets) > 0 && len(clientRandomPrefixes) > 0 {
+		return nil, E.New("client_random_prefix and client_random_prefix_secret are mutually exclusive; secret-based rotation replaces the static prefix entirely")
 	}
 	var config Config = &UTLSClientConfig{
-		ctx:                      ctx,
-		config:                   &tlsConfig,
-		serverName:               serverName,
-		disableSNI:               options.DisableSNI,
-		verifyServerName:         options.DisableSNI && !options.Insecure,
-		handshakeTimeout:         handshakeTimeout,
-		id:                       id,
-		fragment:                 options.Fragment,
-		fragmentFallbackDelay:    time.Duration(options.FragmentFallbackDelay),
-		recordFragment:           options.RecordFragment,
-		certDomain:               options.CertDomain,
-		clientRandomPrefix:       clientRandomPrefix,
-		clientRandomMask:         clientRandomMask,
-		clientRandomPrefixSecret: clientRandomPrefixSecret,
-		clientRandomPrefixLen:    options.ClientRandomPrefixLen,
-		clientRandomPrefixWindow: options.ClientRandomPrefixWindow,
-		spoof:                    spoof,
-		spoofMethod:              spoofMethod,
+		ctx:                       ctx,
+		config:                    &tlsConfig,
+		serverName:                serverName,
+		disableSNI:                options.DisableSNI,
+		verifyServerName:          options.DisableSNI && !options.Insecure,
+		handshakeTimeout:          handshakeTimeout,
+		id:                        id,
+		fragment:                  options.Fragment,
+		fragmentFallbackDelay:     time.Duration(options.FragmentFallbackDelay),
+		recordFragment:            options.RecordFragment,
+		certDomain:                options.CertDomain,
+		clientRandomPrefixes:      clientRandomPrefixes,
+		clientRandomPrefixSecrets: clientRandomPrefixSecrets,
+		clientRandomPrefixLen:     options.ClientRandomPrefixLen,
+		clientRandomPrefixWindow:  options.ClientRandomPrefixWindow,
+		spoof:                     spoof,
+		spoofMethod:               spoofMethod,
 	}
 	config.SetServerName(serverName)
 	if options.ECH != nil && options.ECH.Enabled {

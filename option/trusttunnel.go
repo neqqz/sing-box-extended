@@ -1,5 +1,7 @@
 package option
 
+import "github.com/sagernet/sing/common/json/badoption"
+
 // TrustTunnelPaddingOptions задаёт диапазон [Min, Max] байт случайного
 // паддинга. Используется для data_padding (h2 DATA-фреймы), packet_padding
 // (QUIC-пакеты) и udp_padding (полезная нагрузка UDP-relay протокола) — см.
@@ -36,16 +38,30 @@ type TrustTunnelInboundOptions struct {
 	// Config.ExtraPacketPaddingMin/Max в форке quic-go). Не путать с
 	// UDPPadding ниже — тот про полезную нагрузку UDP-relay протокола
 	// поверх туннеля, этот — про размер самих QUIC-пакетов на проводе.
-	PacketPadding      *TrustTunnelPaddingOptions `json:"packet_padding,omitempty"`
-	ClientRandomPrefix string                     `json:"client_random_prefix,omitempty"`
+	PacketPadding *TrustTunnelPaddingOptions `json:"packet_padding,omitempty"`
+	// ClientRandomPrefix — строка или массив строк ("hex" или "hex/mask_hex").
+	// Сервер принимает соединение, если ClientHello.Random начинается с ЛЮБОГО
+	// из перечисленных префиксов.
+	ClientRandomPrefix badoption.Listable[string] `json:"client_random_prefix,omitempty"`
 	// ClientRandomPrefixSecret/Len/Window — server side of the rotating-prefix
 	// scheme; must match the client's OutboundTLSOptions values of the same
-	// name. See option/tls.go for the full explanation. When
-	// ClientRandomPrefixSecret is set, it takes priority over the static
-	// ClientRandomPrefix for verification.
-	ClientRandomPrefixSecret string `json:"client_random_prefix_secret,omitempty"`
-	ClientRandomPrefixLen    int    `json:"client_random_prefix_len,omitempty"`
-	ClientRandomPrefixWindow int    `json:"client_random_prefix_window,omitempty"`
+	// name. See option/tls.go for the full explanation.
+	// ClientRandomPrefixSecret is a string or an array: the server accepts a
+	// client whose secret matches ANY entry (e.g. one secret per user). When
+	// set, it takes priority over the static ClientRandomPrefix for verification.
+	ClientRandomPrefixSecret badoption.Listable[string] `json:"client_random_prefix_secret,omitempty"`
+	ClientRandomPrefixLen    int                        `json:"client_random_prefix_len,omitempty"`
+	ClientRandomPrefixWindow int                        `json:"client_random_prefix_window,omitempty"`
+	// ClientRandomPrefixFile / ClientRandomPrefixSecretFile — файлы со списками
+	// префиксов ("hex" или "hex/mask_hex") и секретов (hex), по одной записи на
+	// строку; пустые строки игнорируются, всё после '#' — комментарий (удобно
+	// подписывать, чей секрет). Записи из файла объединяются с client_random_prefix /
+	// client_random_prefix_secret. Файлы перечитываются на лету (раз в ~5 с):
+	// новые соединения проверяются по обновлённому списку без перезапуска.
+	// Невалидное или пустое содержимое отклоняется — остаётся прежний список.
+	// Len и Window на лету не меняются.
+	ClientRandomPrefixFile       string `json:"client_random_prefix_file,omitempty"`
+	ClientRandomPrefixSecretFile string `json:"client_random_prefix_secret_file,omitempty"`
 	// FallbackServer — если задан, при неверном/отсутствующем client_random_prefix
 	// (сканер, активный зонд) сырые байты проксируются на него, а не рвутся,
 	// когда SNI из ClientHello извлечь не удалось (см. transport/trusttunnel/prefix_listener.go —

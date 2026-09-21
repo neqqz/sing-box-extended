@@ -132,20 +132,23 @@ type OutboundTLSOptions struct {
 	// CertDomain: домен для верификации сертификата (отдельно от SNI).
 	// Если задан, SNI в ClientHello = server_name, а cert проверяется по cert_domain.
 	CertDomain string `json:"cert_domain,omitempty"`
-	// ClientRandomPrefix: hex-строка (до 32 байт) для фиксации начала TLS ClientHello.Random.
+	// ClientRandomPrefix: hex-строка (до 32 байт) или массив таких строк для фиксации начала TLS ClientHello.Random.
 	// Формат: "aabbcc..." или "aabbcc.../ffff00..." (data/mask, как в TrustTunnel config).
-	// Статична на весь срок жизни конфига — те же байты на КАЖДОМ соединении.
+	// Может быть строкой или массивом строк: если записей несколько, клиент
+	// выбирает случайную на КАЖДОМ соединении (сервер должен принимать все
+	// перечисленные). С одной записью — те же байты на каждом соединении.
 	// Если задан ClientRandomPrefixSecret, эта static-схема игнорируется в пользу
 	// ротации ниже.
-	ClientRandomPrefix string `json:"client_random_prefix,omitempty"`
-	// ClientRandomPrefixSecret: hex общий секрет. Если задан — префикс
+	ClientRandomPrefix badoption.Listable[string] `json:"client_random_prefix,omitempty"`
+	// ClientRandomPrefixSecret: hex общий секрет (строка или массив строк; на
+	// клиенте обычно один, на сервере — по одному на пользователя). Если задан — префикс
 	// ClientHello.Random вычисляется заново на КАЖДОМ соединении как
 	// HMAC-SHA256(secret, "trusttunnel-random-prefix-v1:" || time_window),
 	// а не берётся статично из ClientRandomPrefix. За счёт этого одинаковых
 	// байт в этом месте ClientHello не бывает дважды — full-reassembly DPI,
 	// собирающая статистику по многим соединениям, не увидит фиксированной
 	// сигнатуры, в отличие от статичного ClientRandomPrefix.
-	ClientRandomPrefixSecret string `json:"client_random_prefix_secret,omitempty"`
+	ClientRandomPrefixSecret badoption.Listable[string] `json:"client_random_prefix_secret,omitempty"`
 	// ClientRandomPrefixLen: длина деривируемого префикса в байтах (1-32, по умолчанию 8).
 	ClientRandomPrefixLen int `json:"client_random_prefix_len,omitempty"`
 	// ClientRandomPrefixWindow: длина окна ротации в секундах (по умолчанию 60).

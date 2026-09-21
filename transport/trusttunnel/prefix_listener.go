@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/hex"
-	"errors"
 	"io"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -45,14 +42,12 @@ const (
 // providing reality-style HTTP fingerprinting without explicit IP bans.
 type PrefixListener struct {
 	net.Listener
-	prefix []byte
-	mask   []byte
-	// secret/prefixLen/windowSeconds: rotating-prefix mode (see
-	// common/tls/random_prefix_rotation.go). When secret is non-empty, it
-	// replaces prefix/mask above entirely — checkRandom derives the expected
-	// bytes fresh for the current window (and its neighbors, for clock skew)
-	// instead of comparing against a static value.
-	secret        []byte
+	// provider: current set of checks (static prefixes or rotating secrets,
+	// hot-reloadable — see common/tls/random_prefix_reload.go). A connection is
+	// accepted if it matches ANY entry. In secrets mode checkRandom derives the
+	// expected bytes fresh for the current window (and its neighbors, for clock
+	// skew) instead of comparing against a static value.
+	provider      sboxtls.RandomPrefixProvider
 	prefixLen     int
 	windowSeconds int
 	fallback      string // static "host:port" fallback, used when SNI can't be extracted
@@ -61,46 +56,11 @@ type PrefixListener struct {
 	logger        logger.ContextLogger
 }
 
-// NewPrefixListener parses the "hex" or "hex/mask_hex" format (same as
-// outbound client_random_prefix) and returns a wrapping listener.
-func NewPrefixListener(inner net.Listener, raw string, secretHex string, prefixLen int, windowSeconds int, fallback string, log logger.ContextLogger) (net.Listener, error) {
-	if raw == "" && secretHex == "" {
+// NewPrefixListener wraps inner with the pre-TLS ClientHello.Random check.
+// A nil provider disables the check (inner is returned as is).
+func NewPrefixListener(inner net.Listener, provider sboxtls.RandomPrefixProvider, prefixLen int, windowSeconds int, fallback string, log logger.ContextLogger) (net.Listener, error) {
+	if provider == nil {
 		return inner, nil
-	}
-	if raw != "" && secretHex != "" {
-		return nil, errors.New("client_random_prefix and client_random_prefix_secret are mutually exclusive; secret-based rotation replaces the static prefix entirely")
-	}
-	var prefix, mask, secret []byte
-	if secretHex != "" {
-		var err error
-		secret, err = hex.DecodeString(secretHex)
-		if err != nil {
-			return nil, errors.New("client_random_prefix_secret: invalid hex: " + err.Error())
-		}
-		if len(secret) == 0 {
-			return nil, errors.New("client_random_prefix_secret: must not be empty")
-		}
-	} else {
-		parts := strings.SplitN(raw, "/", 2)
-		var err error
-		prefix, err = hex.DecodeString(parts[0])
-		if err != nil {
-			return nil, errors.New("client_random_prefix: invalid hex: " + err.Error())
-		}
-		if len(prefix) == 0 || len(prefix) > 32 {
-			return nil, errors.New("client_random_prefix: must be 1-32 bytes")
-		}
-		if len(parts) == 2 {
-			mask, err = hex.DecodeString(parts[1])
-			if err != nil {
-				return nil, errors.New("client_random_prefix: invalid mask hex: " + err.Error())
-			}
-			if len(mask) != len(prefix) {
-				return nil, errors.New("client_random_prefix: mask length must equal prefix length")
-			}
-		} else {
-			mask = bytes.Repeat([]byte{0xff}, len(prefix))
-		}
 	}
 	fallbackPort := "443"
 	if fallback != "" {
@@ -116,9 +76,7 @@ func NewPrefixListener(inner net.Listener, raw string, secretHex string, prefixL
 	}
 	return &PrefixListener{
 		Listener:      inner,
-		prefix:        prefix,
-		mask:          mask,
-		secret:        secret,
+		provider:      provider,
 		prefixLen:     prefixLen,
 		windowSeconds: windowSeconds,
 		fallback:      fallback,
@@ -209,7 +167,8 @@ func (l *PrefixListener) checkRandom(conn net.Conn) ([]byte, peekResult) {
 
 	random := logical[tlsClientRandomOffset:tlsClientRandomEnd]
 
-	if len(l.secret) > 0 {
+	set := l.provider.Current()
+	if len(set.Secrets) > 0 {
 		length := sboxtls.RandomPrefixLenOrDefault(l.prefixLen)
 		bind, ok := extractKeyShareData(logical)
 		if !ok {
@@ -222,23 +181,17 @@ func (l *PrefixListener) checkRandom(conn net.Conn) ([]byte, peekResult) {
 		}
 		// Accept the current window and its immediate neighbors (network
 		// delay / clock skew between client and server can put a connection
-		// one window off in either direction).
-		now := sboxtls.CurrentRandomPrefixWindow(time.Now().Unix(), l.windowSeconds)
-		for _, window := range [3]int64{now - 1, now, now + 1} {
-			expected := sboxtls.DeriveRotatingRandomPrefixBound(l.secret, length, window, bind)
-			if bytes.Equal(random[:length], expected) {
-				return wire, peekMatched
-			}
+		// one window off in either direction), for ANY configured secret.
+		if sboxtls.MatchRotatingRandomPrefixBound(set.Secrets, length, l.windowSeconds, random, bind, time.Now().Unix()) {
+			return wire, peekMatched
 		}
 		return wire, peekMismatch
 	}
 
-	for i, b := range l.prefix {
-		if random[i]&l.mask[i] != b&l.mask[i] {
-			return wire, peekMismatch
-		}
+	if sboxtls.MatchAnyRandomPrefix(set.Prefixes, random) {
+		return wire, peekMatched
 	}
-	return wire, peekMatched
+	return wire, peekMismatch
 }
 
 // readFullClientHello reads one or more consecutive TLS Handshake records

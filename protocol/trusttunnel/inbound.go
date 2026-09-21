@@ -1,15 +1,12 @@
 package trusttunnel
 
 import (
-	"bytes"
 	"context"
-	"encoding/hex"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,34 +35,6 @@ import (
 
 func RegisterInbound(registry *inbound.Registry) {
 	inbound.Register[option.TrustTunnelInboundOptions](registry, C.TypeTrustTunnel, NewInbound)
-}
-
-// parseRandomPrefix парсит "hex" или "hex/mask_hex" → (prefix, mask, err).
-// Возвращает nil, nil, nil если строка пустая.
-func parseRandomPrefix(raw string) (prefix, mask []byte, err error) {
-	if raw == "" {
-		return nil, nil, nil
-	}
-	parts := strings.SplitN(raw, "/", 2)
-	prefix, err = hex.DecodeString(parts[0])
-	if err != nil {
-		return nil, nil, errors.New("client_random_prefix: invalid hex: " + err.Error())
-	}
-	if len(prefix) == 0 || len(prefix) > 32 {
-		return nil, nil, errors.New("client_random_prefix: must be 1–32 bytes")
-	}
-	if len(parts) == 2 {
-		mask, err = hex.DecodeString(parts[1])
-		if err != nil {
-			return nil, nil, errors.New("client_random_prefix: invalid mask hex: " + err.Error())
-		}
-		if len(mask) != len(prefix) {
-			return nil, nil, errors.New("client_random_prefix: mask length must equal prefix length")
-		}
-	} else {
-		mask = bytes.Repeat([]byte{0xff}, len(prefix))
-	}
-	return prefix, mask, nil
 }
 
 // checkSNI возвращает true, если sni разрешён (или проверка выключена).
@@ -119,14 +88,16 @@ type Inbound struct {
 	httpTLSConfig  tls.ServerConfig
 	http3TLSConfig tls.ServerConfig
 	network        []string
-	randomPrefix   []byte
-	randomMask     []byte
 	ipWhitelist    []string
-	// randomSecret: если задан (client_random_prefix_secret), QUIC-путь
-	// использует ServerClientRandomVerify (ротация по времени) вместо
-	// статичных randomPrefix/randomMask выше — см. NewInbound и quic.Config
-	// ниже. Тот же секрет, что и у TCP/h2-пути (transport/trusttunnel/prefix_listener.go).
-	randomSecret       []byte
+	// randomReloader: текущий набор проверок ClientHello.Random — статичные
+	// client_random_prefix ИЛИ секреты ротации client_random_prefix_secret
+	// (соединение принимается, если подходит под ЛЮБУЮ запись). Набор
+	// подменяется на лету при изменении файлов (см. Start/Close и
+	// common/tls/random_prefix_reload.go); nil, если проверка выключена.
+	// Один и тот же набор читают TCP/h2-путь (PrefixListener) и QUIC-путь
+	// (ServerClientRandomVerify).
+	randomReloader     *tls.RandomPrefixReloader
+	randomCancel       context.CancelFunc
 	randomPrefixLen    int
 	randomPrefixWindow int
 	// handshakeSem ограничивает число ОДНОВРЕМЕННО выполняемых TLS
@@ -179,22 +150,16 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if options.TLS == nil || !options.TLS.Enabled {
 		return nil, C.ErrTLSRequired
 	}
-	var prefix, mask, secret []byte
-	if options.ClientRandomPrefixSecret != "" {
-		if options.ClientRandomPrefix != "" {
-			return nil, errors.New("client_random_prefix and client_random_prefix_secret are mutually exclusive; secret-based rotation replaces the static prefix entirely")
-		}
+	randomSource := tls.RandomPrefixSource{
+		Prefixes:   options.ClientRandomPrefix,
+		Secrets:    options.ClientRandomPrefixSecret,
+		PrefixFile: options.ClientRandomPrefixFile,
+		SecretFile: options.ClientRandomPrefixSecretFile,
+	}
+	var randomReloader *tls.RandomPrefixReloader
+	if randomSource.Enabled() {
 		var err error
-		secret, err = hex.DecodeString(options.ClientRandomPrefixSecret)
-		if err != nil {
-			return nil, errors.New("client_random_prefix_secret: invalid hex: " + err.Error())
-		}
-		if len(secret) == 0 {
-			return nil, errors.New("client_random_prefix_secret: must not be empty")
-		}
-	} else {
-		var err error
-		prefix, mask, err = parseRandomPrefix(options.ClientRandomPrefix)
+		randomReloader, err = tls.NewRandomPrefixReloader(randomSource)
 		if err != nil {
 			return nil, err
 		}
@@ -215,9 +180,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 			Logger:  logger,
 			Listen:  options.ListenOptions,
 		}),
-		randomPrefix:       prefix,
-		randomMask:         mask,
-		randomSecret:       secret,
+		randomReloader:     randomReloader,
 		randomPrefixLen:    options.ClientRandomPrefixLen,
 		randomPrefixWindow: options.ClientRandomPrefixWindow,
 		handshakeSem:       make(chan struct{}, DefaultMaxConcurrentHandshakes),
@@ -247,6 +210,13 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		return nil
 	}
 
+	// Горячая замена client_random_prefix / client_random_prefix_secret из файлов.
+	if h.randomReloader != nil {
+		reloadCtx, cancel := context.WithCancel(h.ctx)
+		h.randomCancel = cancel
+		go h.randomReloader.Run(reloadCtx, 0, h.logger)
+	}
+
 	// Для TCP SNI проверяется вручную в serveConn (см. ниже) — там надёжный
 	// источник данных (tlsConn.ConnectionState()), в отличие от r.TLS в
 	// net/http. sniMiddleware держим только для QUIC/H3: там r.TLS заполняет
@@ -271,7 +241,11 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			return err
 		}
 		// TCP: pre-TLS peek, проверяем bytes[11:43] ClientHello.Random до хендшейка.
-		checkedListener, err := trusttunnel.NewPrefixListener(rawListener, h.options.ClientRandomPrefix, h.options.ClientRandomPrefixSecret, h.options.ClientRandomPrefixLen, h.options.ClientRandomPrefixWindow, h.options.FallbackServer, h.logger)
+		var randomProvider tls.RandomPrefixProvider
+		if h.randomReloader != nil {
+			randomProvider = h.randomReloader
+		}
+		checkedListener, err := trusttunnel.NewPrefixListener(rawListener, randomProvider, h.options.ClientRandomPrefixLen, h.options.ClientRandomPrefixWindow, h.options.FallbackServer, h.logger)
 		if err != nil {
 			return err
 		}
@@ -370,9 +344,14 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			ExtraPacketPaddingMin: packetPaddingMin,
 			ExtraPacketPaddingMax: packetPaddingMax,
 		}
-		if len(h.randomSecret) > 0 {
-			// Ротация: свежая проверка на каждое входящее соединение,
-			// с допуском ±1 окно на рассинхрон часов.
+		if h.randomReloader != nil {
+			// Проверка ClientHello.Random на QUIC-пути через
+			// ServerClientRandomVerify (он приоритетнее Prefix/Mask, и его можно
+			// делать зависящим от текущего набора — значит, работает горячая
+			// замена). Набор берётся заново на каждый handshake.
+			//
+			// Режим секретов (ротация): свежая проверка на каждое входящее
+			// соединение, с допуском ±1 окно на рассинхрон часов.
 			//
 			// Биндим к key_share так же, как h2-путь (см.
 			// transport/trusttunnel/prefix_listener.go) — раньше здесь
@@ -388,29 +367,25 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			// парсинг, что и extractKeyShareData, только без 5-байтного
 			// TLS record-заголовка: у QUIC его просто нет, ClientHello
 			// приходит как есть в CRYPTO-фрейме).
-			secret := h.randomSecret
+			reloader := h.randomReloader
 			length := tls.RandomPrefixLenOrDefault(h.randomPrefixLen)
 			window := h.randomPrefixWindow
 			quicConfig.ServerClientRandomVerify = func(random [32]byte, clientHello []byte) bool {
-				bind, ok := trusttunnel.ExtractKeyShareFromHandshakeMessage(clientHello)
-				if !ok {
-					// Нет key_share — не откатываемся на голый random,
-					// это и есть закрываемая дыра.
-					return false
-				}
-				now := tls.CurrentRandomPrefixWindow(time.Now().Unix(), window)
-				for _, w := range [3]int64{now - 1, now, now + 1} {
-					if bytes.Equal(random[:length], tls.DeriveRotatingRandomPrefixBound(secret, length, w, bind)) {
-						return true
+				set := reloader.Current()
+				if len(set.Secrets) > 0 {
+					bind, ok := trusttunnel.ExtractKeyShareFromHandshakeMessage(clientHello)
+					if !ok {
+						// Нет key_share — не откатываемся на голый random,
+						// это и есть закрываемая дыра.
+						return false
 					}
+					// Принимаем совпадение с ЛЮБЫМ секретом из списка
+					// (например, по одному секрету на пользователя).
+					return tls.MatchRotatingRandomPrefixBound(set.Secrets, length, window, random[:], bind, time.Now().Unix())
 				}
-				return false
+				// Статичные префиксы: совпадение с ЛЮБЫМ из списка.
+				return tls.MatchAnyRandomPrefix(set.Prefixes, random[:])
 			}
-		} else {
-			// QUIC: client_random_prefix проверяется в sagernet/quic-go
-			// на уровне cryptoSetup.handleMessage (NewCryptoSetupServer).
-			quicConfig.ServerClientRandomPrefix = h.randomPrefix
-			quicConfig.ServerClientRandomMask = h.randomMask
 		}
 		quicListener, err := qtls.ListenEarly(jitteredUDPConn, h.http3TLSConfig, quicConfig)
 		if err != nil {
@@ -423,6 +398,9 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 }
 
 func (h *Inbound) Close() error {
+	if h.randomCancel != nil {
+		h.randomCancel()
+	}
 	return common.Close(
 		h.listener,
 		common.PtrOrNil(h.httpServer),

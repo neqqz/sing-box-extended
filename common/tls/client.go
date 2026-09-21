@@ -100,7 +100,7 @@ func NewClientWithOptions(options ClientOptions) (Config, error) {
 	default:
 		return nil, E.New("unknown tls engine: ", options.Options.Engine)
 	}
-	if (options.Options.UTLS == nil || !options.Options.UTLS.Enabled) && (options.Options.ClientRandomPrefix != "" || options.Options.ClientRandomPrefixSecret != "") {
+	if (options.Options.UTLS == nil || !options.Options.UTLS.Enabled) && (HasNonEmpty(options.Options.ClientRandomPrefix) || HasNonEmpty(options.Options.ClientRandomPrefixSecret)) {
 		options.Options.UTLS = &option.OutboundUTLSOptions{Enabled: true, Fingerprint: "chrome"}
 	}
 	if options.Options.Reality != nil && options.Options.Reality.Enabled {
