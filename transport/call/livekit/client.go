@@ -2,24 +2,21 @@ package livekit
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
-	"net/http"
-	"net/netip"
-	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/gorilla/websocket"
-	"github.com/pion/webrtc/v4"
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/transport/call/common"
+	"github.com/sagernet/sing-box/transport/call/headlessapi"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
+
+	headless "github.com/kulikov0/headless-client"
+	"github.com/kulikov0/headless-client/webrtc"
+	"github.com/kulikov0/headless-client/websocket"
 )
 
 const (
@@ -38,19 +35,22 @@ const (
 	TrackSourceScreenShare = trackSourceScreenShare
 )
 
-type ICEServer = iceServer
-type JoinResponse = joinResponse
+type (
+	ICEServer    = iceServer
+	JoinResponse = joinResponse
+)
 
 type Config struct {
-	ServerURL      string
-	Token          string
-	Origin         string
-	UserAgent      string
-	Logger         logger.ContextLogger
-	SettingEngine  *webrtc.SettingEngine
-	NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
-	DNSRouter      adapter.DNSRouter
-	Dialer         N.Dialer
+	ServerURL              string
+	Token                  string
+	Origin                 string
+	UserAgent              string
+	Codec                  Codec
+	Logger                 logger.ContextLogger
+	ConfigureSettingEngine func(*webrtc.SettingEngine)
+	NetDialContext         func(ctx context.Context, network, addr string) (net.Conn, error)
+	DNSRouter              adapter.DNSRouter
+	Dialer                 N.Dialer
 }
 
 type Client struct {
@@ -60,11 +60,12 @@ type Client struct {
 	token  string
 	origin string
 	ua     string
+	codec  Codec
 
-	settingEngine  *webrtc.SettingEngine
-	netDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
-	dnsRouter      adapter.DNSRouter
-	dialer         N.Dialer
+	configureSettingEngine func(*webrtc.SettingEngine)
+	netDialContext         func(ctx context.Context, network, addr string) (net.Conn, error)
+	dnsRouter              adapter.DNSRouter
+	dialer                 N.Dialer
 
 	ws   *websocket.Conn
 	wsMu sync.Mutex
@@ -77,97 +78,106 @@ type Client struct {
 	subMu        sync.Mutex
 	pubRemoteSet bool
 	subRemoteSet bool
+	pubPending   []webrtc.ICECandidateInit
+	subPending   []webrtc.ICECandidateInit
 
-	closed atomic.Bool
+	joined     chan struct{}
+	joinedOnce sync.Once
+	closed     atomic.Bool
 
 	OnReady             func()
 	OnTrack             func(*webrtc.TrackRemote, *webrtc.RTPReceiver)
 	OnDataChannel       func(*webrtc.DataChannel)
 	OnPubConnected      func()
+	OnSubConnected      func()
 	OnParticipantUpdate func([]ParticipantInfo)
 	OnRemoteCandidate   func(target int, candidate webrtc.ICECandidateInit)
 	OnRemoteSDP         func(target int, sdpType, sdp string)
 }
 
-func NewClient(cfg Config) *Client {
-	return &Client{
-		logger:         cfg.Logger,
-		wsURL:          cfg.ServerURL,
-		token:          cfg.Token,
-		origin:         cfg.Origin,
-		ua:             cfg.UserAgent,
-		settingEngine:  cfg.SettingEngine,
-		netDialContext: cfg.NetDialContext,
-		dnsRouter:      cfg.DNSRouter,
-		dialer:         cfg.Dialer,
+func NewClient(cfg Config) (*Client, error) {
+	if cfg.Codec == nil {
+		return nil, fmt.Errorf("livekit: no codec")
 	}
+	return &Client{
+		logger:                 cfg.Logger,
+		wsURL:                  cfg.ServerURL,
+		token:                  cfg.Token,
+		origin:                 cfg.Origin,
+		ua:                     cfg.UserAgent,
+		codec:                  cfg.Codec,
+		configureSettingEngine: cfg.ConfigureSettingEngine,
+		netDialContext:         cfg.NetDialContext,
+		dnsRouter:              cfg.DNSRouter,
+		dialer:                 cfg.Dialer,
+		joined:                 make(chan struct{}),
+	}, nil
 }
 
 func (c *Client) Join() JoinResponse            { return c.join }
 func (c *Client) PubPC() *webrtc.PeerConnection { return c.pubPC }
 func (c *Client) SubPC() *webrtc.PeerConnection { return c.subPC }
+func (c *Client) Joined() <-chan struct{}       { return c.joined }
 
 func (c *Client) Connect() error {
-	u, err := url.Parse(c.wsURL)
+	target, err := c.codec.DialURL(c.wsURL, c.token)
 	if err != nil {
-		return fmt.Errorf("parse url: %w", err)
+		return err
 	}
-	u.Path = "/rtc"
-	q := u.Query()
-	q.Set("access_token", c.token)
-	q.Set("protocol", ProtocolVersion)
-	q.Set("sdk", SDKName)
-	q.Set("version", SDKVersion)
-	q.Set("auto_subscribe", "1")
-	q.Set("adaptive_stream", "true")
-	u.RawQuery = q.Encode()
-	headers := http.Header{}
+
+	headers := headless.ChromeWindows.Headers(headless.DestWebSocket)
 	if c.ua != "" {
 		headers.Set("User-Agent", c.ua)
 	}
 	if c.origin != "" {
 		headers.Set("Origin", c.origin)
 	}
-	dialer := *websocket.DefaultDialer
+
+	dialer := headless.ChromeWindows.WebSocketDialer(headless.TLSOptions{DialContext: c.netDialContext})
 	if c.netDialContext != nil {
 		dialer.NetDialContext = c.netDialContext
 	}
-	conn, resp, err := dialer.Dial(u.String(), headers)
+	conn, resp, err := dialer.Dial(target, headers)
 	if err != nil {
 		if resp != nil {
-			return fmt.Errorf("ws dial: %w (status %d)", err, resp.StatusCode)
+			return fmt.Errorf("ws dial: %w, status %d", err, resp.StatusCode)
 		}
 		return fmt.Errorf("ws dial: %w", err)
 	}
+	c.wsMu.Lock()
 	c.ws = conn
+	c.wsMu.Unlock()
 	c.logger.Info("[lk] signaling connected")
 	return nil
 }
 
 func (c *Client) SendOffer(sdp string) error {
-	return c.sendSignal(encSignalRequestOffer(sessionDescription{Type: "offer", SDP: sdp}))
+	return c.sendSignal(c.codec.EncodeOffer(sdp))
 }
 
 func (c *Client) SendAnswer(sdp string) error {
-	return c.sendSignal(encSignalRequestAnswer(sessionDescription{Type: "answer", SDP: sdp}))
+	return c.sendSignal(c.codec.EncodeAnswer(sdp))
 }
 
 func (c *Client) SendTrickle(candidate webrtc.ICECandidateInit, target int) error {
-	js, _ := json.Marshal(candidate)
-	return c.sendSignal(encSignalRequestTrickle(trickleMsg{
-		CandidateInit: string(js),
-		Target:        target,
-	}))
+	return c.sendSignal(c.codec.EncodeTrickle(candidate, target))
 }
 
 func (c *Client) SendAddTrack(cid, name string, trackType, source int, width, height uint32) error {
-	return c.sendSignal(encSignalRequestAddTrack(cid, name, trackType, source, width, height))
+	return c.sendSignal(c.codec.EncodeAddTrack(AddTrackParams{
+		CID:    cid,
+		Name:   name,
+		Type:   trackType,
+		Source: source,
+		Width:  width,
+		Height: height,
+	}))
 }
 
-func (c *Client) SendLeave() error { return c.sendSignal(encSignalRequestLeave()) }
+func (c *Client) SendLeave() error { return c.sendSignal(c.codec.EncodeLeave()) }
 
 func (c *Client) SendPing() error {
-	return c.sendSignal(encSignalRequestPing(time.Now().UnixMilli()))
+	return c.sendSignal(c.codec.EncodePing(time.Now().UnixMilli()))
 }
 
 func (c *Client) Close() {
@@ -176,24 +186,40 @@ func (c *Client) Close() {
 	}
 	c.wsMu.Lock()
 	ws := c.ws
+	c.ws = nil
 	c.wsMu.Unlock()
 	common.CloseWS(ws)
-	if c.pubPC != nil {
-		_ = c.pubPC.Close()
+	c.pubMu.Lock()
+	pubPC := c.pubPC
+	c.pubMu.Unlock()
+	c.subMu.Lock()
+	subPC := c.subPC
+	c.subMu.Unlock()
+	if pubPC != nil {
+		_ = pubPC.Close()
 	}
-	if c.subPC != nil {
-		_ = c.subPC.Close()
+	if subPC != nil {
+		_ = subPC.Close()
 	}
 }
 
 func (c *Client) ReadLoop() error {
 	defer c.Close()
+	c.wsMu.Lock()
+	ws := c.ws
+	c.wsMu.Unlock()
+	if ws == nil {
+		return fmt.Errorf("ws not connected")
+	}
 	for {
-		mt, data, err := c.ws.ReadMessage()
+		mt, data, err := ws.ReadMessage()
 		if err != nil {
+			if c.closed.Load() {
+				return nil
+			}
 			return err
 		}
-		if mt != websocket.BinaryMessage {
+		if !c.codec.Accepts(mt) {
 			continue
 		}
 		c.handleSignal(data)
@@ -201,6 +227,11 @@ func (c *Client) ReadLoop() error {
 }
 
 func (c *Client) PingLoop() {
+	select {
+	case <-c.joined:
+	case <-time.After(30 * time.Second):
+		return
+	}
 	period := PingPeriod
 	if c.join.PingIntervalSec > 0 {
 		period = time.Duration(c.join.PingIntervalSec) * time.Second
@@ -224,43 +255,21 @@ func (c *Client) PingLoop() {
 }
 
 func (c *Client) sendSignal(payload []byte) error {
+	if payload == nil {
+		return nil
+	}
 	c.wsMu.Lock()
 	defer c.wsMu.Unlock()
 	if c.ws == nil {
 		return fmt.Errorf("ws not connected")
 	}
-	return c.ws.WriteMessage(websocket.BinaryMessage, payload)
+	return c.ws.WriteMessage(c.codec.MessageType(), payload)
 }
 
 func (c *Client) iceServersAsWebRTC() []webrtc.ICEServer {
 	out := make([]webrtc.ICEServer, 0, len(c.join.ICEServers))
-	resolved := make(map[string]string)
 	for _, s := range c.join.ICEServers {
-		urls := make([]string, len(s.URLs))
-		copy(urls, s.URLs)
-		for k, u := range urls {
-			host := common.ExtractICEHost(u)
-			if host == "" || net.ParseIP(host) != nil {
-				continue
-			}
-			ip, ok := resolved[host]
-			if !ok {
-				rd, hasRD := c.dialer.(dialer.ResolveDialer)
-				if c.dnsRouter == nil || !hasRD {
-					continue
-				}
-				var addrs []netip.Addr
-				var err error
-				addrs, err = c.dnsRouter.Lookup(context.Background(), host, rd.QueryOptions())
-				if err != nil {
-					c.logger.Warn(fmt.Sprintf("[lk] resolve ICE host %s failed: %v", host, err))
-					continue
-				}
-				resolved[host] = addrs[0].String()
-				c.logger.Debug(fmt.Sprintf("[lk] resolved ICE host %s -> %s", host, addrs[0]))
-			}
-			urls[k] = strings.Replace(u, host, ip, 1)
-		}
+		urls := common.ResolveICEHosts(s.URLs, c.dnsRouter, c.dialer, c.logger, "[lk]")
 		ice := webrtc.ICEServer{URLs: urls}
 		if s.Username != "" {
 			ice.Username = s.Username
@@ -273,12 +282,20 @@ func (c *Client) iceServersAsWebRTC() []webrtc.ICEServer {
 
 func (c *Client) buildPeerConnections() error {
 	cfg := webrtc.Configuration{ICEServers: c.iceServersAsWebRTC()}
-	se := webrtc.SettingEngine{}
-	if c.settingEngine != nil {
-		se = *c.settingEngine
+
+	api, err := headlessapi.WebRTCAPI(headlessapi.Options{
+		Profile: headless.ChromeWindows,
+		Configure: func(settingEngine *webrtc.SettingEngine) {
+			if c.configureSettingEngine != nil {
+				c.configureSettingEngine(settingEngine)
+			}
+			settingEngine.DetachDataChannels()
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("build webrtc api: %w", err)
 	}
-	se.DetachDataChannels()
-	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
+
 	pubPC, err := api.NewPeerConnection(cfg)
 	if err != nil {
 		return fmt.Errorf("create pub pc: %w", err)
@@ -288,8 +305,12 @@ func (c *Client) buildPeerConnections() error {
 		_ = pubPC.Close()
 		return fmt.Errorf("create sub pc: %w", err)
 	}
+	c.pubMu.Lock()
 	c.pubPC = pubPC
+	c.pubMu.Unlock()
+	c.subMu.Lock()
 	c.subPC = subPC
+	c.subMu.Unlock()
 	pubPC.OnICECandidate(func(cand *webrtc.ICECandidate) {
 		if cand == nil {
 			c.logger.Debug("[lk] pub ICE gathering complete")
@@ -314,6 +335,9 @@ func (c *Client) buildPeerConnections() error {
 	})
 	subPC.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		c.logger.Debug(fmt.Sprintf("[lk] sub PC state: %s", state.String()))
+		if state == webrtc.PeerConnectionStateConnected && c.OnSubConnected != nil {
+			c.OnSubConnected()
+		}
 	})
 	pubPC.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		c.logger.Debug(fmt.Sprintf("[lk] pub ICE state: %s", state.String()))
@@ -333,7 +357,7 @@ func (c *Client) buildPeerConnections() error {
 			c.OnDataChannel(dc)
 		}
 	})
-	c.logger.Debug(fmt.Sprintf("[lk] PCs created (%d ICE servers)", len(c.join.ICEServers)))
+	c.logger.Debug(fmt.Sprintf("[lk] PCs created, %d ICE servers", len(c.join.ICEServers)))
 	for i, s := range c.join.ICEServers {
 		c.logger.Debug(fmt.Sprintf("[lk] iceServer[%d]: urls=%v hasCred=%v", i, s.URLs, s.Username != ""))
 	}
@@ -341,59 +365,50 @@ func (c *Client) buildPeerConnections() error {
 }
 
 func (c *Client) handleSignal(data []byte) {
-	sr, err := decSignalResponse(data)
+	ev, err := c.codec.Decode(data)
 	if err != nil {
 		c.logger.Warn(fmt.Sprintf("[lk] decode signal: %v", err))
 		return
 	}
-	switch sr.Kind {
-	case signalRespJoin:
-		if sr.Join != nil {
-			c.join = *sr.Join
-			c.logger.Info(fmt.Sprintf("[lk] join: room=%s participant=%s subscriberPrimary=%v iceServers=%d pingTimeout=%ds pingInterval=%ds",
-				c.join.RoomName, c.join.ParticipantID, c.join.SubscriberPrimary, len(c.join.ICEServers),
-				c.join.PingTimeoutSec, c.join.PingIntervalSec))
-			if err := c.buildPeerConnections(); err != nil {
-				c.logger.Error(fmt.Sprintf("[lk] %v", err))
-				return
-			}
-			if c.OnReady != nil {
-				c.OnReady()
-			}
+	switch ev.Kind {
+	case EventJoin:
+		c.join = *ev.Join
+		c.logger.Info(fmt.Sprintf("[lk] join: room=%s participant=%s subscriberPrimary=%v iceServers=%d pingTimeout=%ds pingInterval=%ds",
+			c.join.RoomName, c.join.ParticipantID, c.join.SubscriberPrimary, len(c.join.ICEServers),
+			c.join.PingTimeoutSec, c.join.PingIntervalSec))
+		if err := c.buildPeerConnections(); err != nil {
+			c.logger.Error(fmt.Sprintf("[lk] %v", err))
+			return
 		}
-	case signalRespAnswer:
-		c.logger.Debug(fmt.Sprintf("[lk] <- pub answer (%d bytes)", len(sr.SDP.SDP)))
-		if sr.SDP != nil {
-			c.applyPubAnswer(sr.SDP.SDP)
+		c.joinedOnce.Do(func() { close(c.joined) })
+		if c.OnReady != nil {
+			c.OnReady()
 		}
-	case signalRespOffer:
-		c.logger.Debug(fmt.Sprintf("[lk] <- sub offer (%d bytes)", len(sr.SDP.SDP)))
-		if sr.SDP != nil {
-			c.applySubOfferAndAnswer(sr.SDP.SDP)
-		}
-	case signalRespTrickle:
-		if sr.Trickle != nil {
-			c.logger.Debug(fmt.Sprintf("[lk] <- trickle target=%d", sr.Trickle.Target))
-			c.applyRemoteTrickle(*sr.Trickle)
-		}
-	case signalRespRefreshToken:
-		if sr.Token != "" {
-			c.token = sr.Token
-			c.logger.Debug("[lk] token refreshed")
-		}
-	case signalRespLeave:
-		if sr.Leave != nil {
+	case EventAnswer:
+		c.logger.Debug(fmt.Sprintf("[lk] pub answer received, %d bytes", len(ev.SDP)))
+		c.applyPubAnswer(ev.SDP)
+	case EventOffer:
+		c.logger.Debug(fmt.Sprintf("[lk] sub offer received, %d bytes", len(ev.SDP)))
+		c.applySubOfferAndAnswer(ev.SDP)
+	case EventTrickle:
+		c.logger.Debug(fmt.Sprintf("[lk] trickle target=%d", ev.Trickle.Target))
+		c.applyRemoteTrickle(*ev.Trickle)
+	case EventToken:
+		c.token = ev.Token
+		c.logger.Debug("[lk] token refreshed")
+	case EventLeave:
+		if ev.Leave != nil {
 			c.logger.Debug(fmt.Sprintf("[lk] ignored leave reason=%s action=%s",
-				DisconnectReasonName(sr.Leave.Reason), LeaveActionName(sr.Leave.Action)))
+				DisconnectReasonName(ev.Leave.Reason), LeaveActionName(ev.Leave.Action)))
 		} else {
 			c.logger.Debug("[lk] ignored leave")
 		}
-	case signalRespUpdate:
-		if c.OnParticipantUpdate != nil && len(sr.Participants) > 0 {
-			c.OnParticipantUpdate(sr.Participants)
+	case EventUpdate:
+		if c.OnParticipantUpdate != nil {
+			c.OnParticipantUpdate(ev.Participants)
 		}
 	default:
-		c.logger.Debug(fmt.Sprintf("[lk] <- signal kind=%d (%d bytes)", sr.Kind, len(data)))
+		c.logger.Debug(fmt.Sprintf("[lk] unhandled signal, %d bytes", len(data)))
 	}
 }
 
@@ -411,6 +426,7 @@ func (c *Client) applyPubAnswer(sdp string) {
 		return
 	}
 	c.pubRemoteSet = true
+	c.drainPendingLocked(c.pubPC, &c.pubPending)
 }
 
 func (c *Client) applySubOfferAndAnswer(sdp string) {
@@ -418,21 +434,26 @@ func (c *Client) applySubOfferAndAnswer(sdp string) {
 		c.OnRemoteSDP(TargetSubscriber, "offer", sdp)
 	}
 	c.subMu.Lock()
-	defer c.subMu.Unlock()
 	if c.subPC == nil {
+		c.subMu.Unlock()
 		return
 	}
-	if err := c.subPC.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdp}); err != nil {
+	subPC := c.subPC
+	if err := subPC.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdp}); err != nil {
+		c.subMu.Unlock()
 		c.logger.Warn(fmt.Sprintf("[lk] set sub remote offer: %v", err))
 		return
 	}
 	c.subRemoteSet = true
-	answer, err := c.subPC.CreateAnswer(nil)
+	c.drainPendingLocked(subPC, &c.subPending)
+	c.subMu.Unlock()
+
+	answer, err := subPC.CreateAnswer(nil)
 	if err != nil {
 		c.logger.Warn(fmt.Sprintf("[lk] create sub answer: %v", err))
 		return
 	}
-	if err := c.subPC.SetLocalDescription(answer); err != nil {
+	if err := subPC.SetLocalDescription(answer); err != nil {
 		c.logger.Warn(fmt.Sprintf("[lk] set sub local answer: %v", err))
 		return
 	}
@@ -441,32 +462,36 @@ func (c *Client) applySubOfferAndAnswer(sdp string) {
 	}
 }
 
-func (c *Client) applyRemoteTrickle(m trickleMsg) {
-	if m.CandidateInit == "" {
-		return
+func (c *Client) drainPendingLocked(pc *webrtc.PeerConnection, pending *[]webrtc.ICECandidateInit) {
+	for _, ic := range *pending {
+		if err := pc.AddICECandidate(ic); err != nil {
+			c.logger.Warn(fmt.Sprintf("[lk] add pending candidate: %v", err))
+		}
 	}
-	var ic webrtc.ICECandidateInit
-	if err := json.Unmarshal([]byte(m.CandidateInit), &ic); err != nil {
-		c.logger.Warn(fmt.Sprintf("[lk] decode trickle candidate: %v", err))
-		return
-	}
+	*pending = nil
+}
+
+func (c *Client) applyRemoteTrickle(m TrickleEvent) {
 	if c.OnRemoteCandidate != nil {
-		c.OnRemoteCandidate(m.Target, ic)
+		c.OnRemoteCandidate(m.Target, m.Candidate)
 	}
-	switch m.Target {
-	case TargetPublisher:
-		c.pubMu.Lock()
-		ready := c.pubRemoteSet
-		c.pubMu.Unlock()
-		if ready {
-			_ = c.pubPC.AddICECandidate(ic)
-		}
-	case TargetSubscriber:
-		c.subMu.Lock()
-		ready := c.subRemoteSet
-		c.subMu.Unlock()
-		if ready {
-			_ = c.subPC.AddICECandidate(ic)
-		}
+	mu := &c.subMu
+	pc := &c.subPC
+	ready := &c.subRemoteSet
+	pending := &c.subPending
+	if m.Target == TargetPublisher {
+		mu = &c.pubMu
+		pc = &c.pubPC
+		ready = &c.pubRemoteSet
+		pending = &c.pubPending
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if *pc == nil || !*ready {
+		*pending = append(*pending, m.Candidate)
+		return
+	}
+	if err := (*pc).AddICECandidate(m.Candidate); err != nil {
+		c.logger.Warn(fmt.Sprintf("[lk] add candidate: %v", err))
 	}
 }

@@ -1,17 +1,14 @@
 package dion
 
 import (
-	"context"
 	"fmt"
-	"net"
-	"net/netip"
-	"strings"
 
-	"github.com/pion/webrtc/v4"
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/common/dialer"
+	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
+
+	"github.com/kulikov0/headless-client/webrtc"
 )
 
 type TransceiverPlan struct {
@@ -62,51 +59,14 @@ type PionPeer struct {
 	DatachannelDescs []DataChannelDesc
 }
 
-func NewPionAPI(customEngine ...*webrtc.SettingEngine) *webrtc.API {
-	mediaEngine := &webrtc.MediaEngine{}
-	if err := mediaEngine.RegisterDefaultCodecs(); err != nil {
-		panic(fmt.Errorf("dion: register default codecs: %w", err))
-	}
-	engine := webrtc.SettingEngine{}
-	if len(customEngine) > 0 && customEngine[0] != nil {
-		engine = *customEngine[0]
-	}
-	return webrtc.NewAPI(
-		webrtc.WithMediaEngine(mediaEngine),
-		webrtc.WithSettingEngine(engine),
-	)
-}
-
 func ResolveICEServerHosts(entries []ICEServerEntry, dnsRouter adapter.DNSRouter, d N.Dialer, logger logger.ContextLogger) []ICEServerEntry {
-	if dnsRouter == nil {
-		return entries
-	}
-	resolved := make(map[string]string)
 	out := make([]ICEServerEntry, 0, len(entries))
 	for _, entry := range entries {
-		urls := make([]string, len(entry.URLs))
-		copy(urls, entry.URLs)
-		for k, raw := range urls {
-			host := extractICEHost(raw)
-			if host == "" {
-				continue
-			}
-			ip, ok := resolved[host]
-			if !ok {
-				var addrs []netip.Addr
-				var err error
-				addrs, err = dnsRouter.Lookup(context.Background(), host, d.(dialer.ResolveDialer).QueryOptions())
-				if err != nil {
-					logger.Warn(fmt.Sprintf("[dion] resolve ICE host %s failed: %v", host, err))
-					continue
-				}
-				ip = addrs[0].String()
-				resolved[host] = ip
-				logger.Debug(fmt.Sprintf("[dion] resolved ICE host %s -> %s", host, addrs[0]))
-			}
-			urls[k] = strings.Replace(raw, host, ip, 1)
-		}
-		out = append(out, ICEServerEntry{URLs: urls, Username: entry.Username, Credential: entry.Credential})
+		out = append(out, ICEServerEntry{
+			URLs:       common.ResolveICEHosts(entry.URLs, dnsRouter, d, logger, "[dion]"),
+			Username:   entry.Username,
+			Credential: entry.Credential,
+		})
 	}
 	return out
 }
@@ -239,24 +199,4 @@ func directionToDion(direction webrtc.RTPTransceiverDirection) string {
 		return "Inactive"
 	}
 	return "Unknown"
-}
-
-func extractICEHost(raw string) string {
-	value := raw
-	for _, prefix := range []string{"stun:", "turn:", "turns:"} {
-		value = strings.TrimPrefix(value, prefix)
-	}
-	if idx := strings.Index(value, "?"); idx >= 0 {
-		value = value[:idx]
-	}
-	if idx := strings.LastIndex(value, ":"); idx >= 0 {
-		value = value[:idx]
-	}
-	if value == "" {
-		return ""
-	}
-	if net.ParseIP(value) != nil {
-		return ""
-	}
-	return value
 }

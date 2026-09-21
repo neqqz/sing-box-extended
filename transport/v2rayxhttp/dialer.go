@@ -9,18 +9,16 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
-	"reflect"
 	"strings"
 	"sync"
-	"unsafe"
+	"sync/atomic"
 
-	"github.com/sagernet/quic-go/http3"
+	"github.com/sagernet/sing-box/common/force_close"
 	common "github.com/sagernet/sing-box/common/xray"
 	"github.com/sagernet/sing-box/common/xray/buf"
 	"github.com/sagernet/sing-box/common/xray/signal/done"
 	"github.com/sagernet/sing-box/option"
 	E "github.com/sagernet/sing/common/exceptions"
-	"golang.org/x/net/http2"
 )
 
 // interface to abstract between use of browser dialer, vs net/http
@@ -48,20 +46,6 @@ type DefaultDialerClient struct {
 	mtx sync.RWMutex
 }
 
-type clientConnPool struct {
-	t     *http2.Transport
-	mu    sync.Mutex
-	conns map[string][]*http2.ClientConn // key is host:port
-}
-
-type efaceWords struct {
-	typ  unsafe.Pointer
-	data unsafe.Pointer
-}
-
-//go:linkname transportConnPool golang.org/x/net/http2.(*Transport).connPool
-func transportConnPool(t *http2.Transport) http2.ClientConnPool
-
 func (c *DefaultDialerClient) Close() {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
@@ -69,24 +53,7 @@ func (c *DefaultDialerClient) Close() {
 		return
 	}
 	c.closed = true
-	switch transport := c.client.Transport.(type) {
-	case *http.Transport:
-		transport.CloseIdleConnections()
-	case *http2.Transport:
-		connPool := transportConnPool(transport)
-		p := (*clientConnPool)((*efaceWords)(unsafe.Pointer(&connPool)).data)
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		for _, vv := range p.conns {
-			for _, cc := range vv {
-				cc.Close()
-			}
-		}
-	case *http3.Transport:
-		transport.Close()
-	default:
-		panic(E.New("unknown transport type: ", reflect.TypeOf(transport)))
-	}
+	c.client.Transport = force_close.ResetTransport(c.client.Transport)
 }
 
 func (c *DefaultDialerClient) IsClosed() bool {
@@ -114,7 +81,7 @@ func (c *DefaultDialerClient) OpenStream(ctx context.Context, url string, sessio
 	reqCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	req, _ := http.NewRequestWithContext(reqCtx, method, url, body)
 	FillStreamRequest(req, sessionId, "", c.options)
-	wrc = &WaitReadCloser{Wait: make(chan struct{}), Cancel: cancel}
+	wrc = &WaitReadCloser{wait: done.New(), Cancel: cancel}
 	go func() {
 		var resp *http.Response
 		resp, err = c.client.Do(req)
@@ -215,42 +182,40 @@ func (c *DefaultDialerClient) PostPacket(ctx context.Context, url string, sessio
 }
 
 type WaitReadCloser struct {
-	Wait   chan struct{}
+	wait   *done.Instance
 	Cancel context.CancelFunc
-	io.ReadCloser
+	reader atomic.Pointer[io.ReadCloser]
 }
 
 func (w *WaitReadCloser) Set(rc io.ReadCloser) {
-	w.ReadCloser = rc
-	defer func() {
-		if recover() != nil {
-			rc.Close()
+	w.reader.Store(&rc)
+	if w.wait.Done() {
+		if p := w.reader.Swap(nil); p != nil {
+			(*p).Close()
 		}
-	}()
-	close(w.Wait)
+	}
+	w.wait.Close()
 }
 
 func (w *WaitReadCloser) Read(b []byte) (int, error) {
-	<-w.Wait
-	if w.ReadCloser == nil {
-		return 0, io.ErrClosedPipe
+	rc := w.reader.Load()
+	if rc == nil {
+		<-w.wait.Wait()
+		if rc = w.reader.Load(); rc == nil {
+			return 0, io.ErrClosedPipe
+		}
 	}
-	return w.ReadCloser.Read(b)
+	return (*rc).Read(b)
 }
 
 func (w *WaitReadCloser) Close() error {
 	if w.Cancel != nil {
 		w.Cancel()
 	}
-	if w.ReadCloser != nil {
-		return w.ReadCloser.Close()
+	w.wait.Close()
+	if p := w.reader.Swap(nil); p != nil {
+		return (*p).Close()
 	}
-	defer func() {
-		if recover() != nil && w.ReadCloser != nil {
-			w.ReadCloser.Close()
-		}
-	}()
-	close(w.Wait)
 	return nil
 }
 

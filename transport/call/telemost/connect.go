@@ -34,6 +34,7 @@ func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int
 		config:    cfg,
 		cookieStr: cookieStr,
 		peers:     make(map[string]string),
+		seenPids:  make(map[string]bool),
 		readBuf:   readBuf,
 		dialer:    dialer,
 		logger:    logger,
@@ -53,9 +54,12 @@ func ConnectCreator(ctx context.Context, cookieStr, joinLink string, readBuf int
 	return bridge.activeBridge, connInfo.ConferenceURI, nil
 }
 
-func ConnectJoiner(ctx context.Context, joinLink, displayName string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (tunnel.DataTunnel, error) {
+func ConnectJoiner(ctx context.Context, joinLink, displayName string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (*tunnel.RelayBridge, error) {
 	if displayName == "" {
 		displayName = "Joiner"
+	}
+	if readBuf <= 0 {
+		readBuf = 32768
 	}
 	joiner := NewTelemostJoiner(
 		logger,
@@ -76,7 +80,10 @@ func ConnectJoiner(ctx context.Context, joinLink, displayName string, readBuf in
 	go joiner.RunWithParams(params)
 	select {
 	case tun := <-tunCh:
-		return tun, nil
+		rb := tunnel.NewRelayBridge(tun, "joiner", readBuf, dialer, logger)
+		rb.SetOnConfigAck(joiner.MarkConfigAcked)
+		rb.MarkReady()
+		return rb, nil
 	case <-ctx.Done():
 		joiner.Close()
 		return nil, ctx.Err()

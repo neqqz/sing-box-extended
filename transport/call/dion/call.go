@@ -6,14 +6,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/pion/rtp/codecs"
-	"github.com/pion/webrtc/v4"
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/transport/call/headlessapi"
+	"github.com/sagernet/sing-box/transport/call/tunnel"
+	"github.com/sagernet/sing-box/transport/call/tunnel/rtc"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
 
-	"github.com/sagernet/sing-box/transport/call/tunnel"
+	"github.com/google/uuid"
+	headless "github.com/kulikov0/headless-client"
+	"github.com/kulikov0/headless-client/webrtc"
+	"github.com/pion/rtp/codecs"
 )
 
 const (
@@ -45,9 +48,9 @@ type CallConfig struct {
 	RecvMid     string
 	Role        Role
 
-	SettingEngine *webrtc.SettingEngine
-	Dialer        N.Dialer
-	DNSRouter     adapter.DNSRouter
+	ConfigureSettingEngine func(*webrtc.SettingEngine)
+	Dialer                 N.Dialer
+	DNSRouter              adapter.DNSRouter
 }
 
 type PeerEntry struct {
@@ -63,7 +66,7 @@ type Call struct {
 	signaling   *SignalingClient
 	peer        *PionPeer
 	sendTrack   *webrtc.TrackLocalStaticSample
-	vp8tun      *tunnel.VP8DataTunnel
+	vp8tun      *rtc.VP8DataTunnel
 	mySessionID string
 
 	peersMu     sync.Mutex
@@ -77,6 +80,7 @@ type Call struct {
 
 	OnConnected   func(tunnel.DataTunnel)
 	OnPeerRestart func()
+	OnKicked      func()
 	OnRemoteSDP   func(sdp string)
 
 	done      chan struct{}
@@ -153,6 +157,13 @@ func (c *Call) Start() error {
 		default:
 		}
 	}
+	signaling.OnKicked = func() {
+		c.cfg.Logger.Debug("[call] server kicked us, tearing down")
+		if c.OnKicked != nil {
+			c.OnKicked()
+		}
+		c.Close()
+	}
 	signaling.OnSpeakerJoined = c.handleSpeakerJoined
 	signaling.OnSpeakerDisconnected = c.handleSpeakerDisconnected
 	signaling.OnSpeakerCamStateChanged = c.handleSpeakerCamStateChanged
@@ -177,7 +188,13 @@ func (c *Call) Start() error {
 	}
 	c.cfg.Logger.Debug(fmt.Sprintf("[call] you_joined ice_servers=%d", len(youJoined.IceServers)))
 
-	pionAPI := NewPionAPI(c.cfg.SettingEngine)
+	pionAPI, err := headlessapi.WebRTCAPI(headlessapi.Options{
+		Profile:   headless.ChromeWindows,
+		Configure: c.cfg.ConfigureSettingEngine,
+	})
+	if err != nil {
+		return fmt.Errorf("build webrtc api: %w", err)
+	}
 	iceServers := ResolveICEServerHosts(youJoined.IceServers, c.cfg.DNSRouter, c.cfg.Dialer, c.cfg.Logger)
 	peer, err := BuildPionPeer(pionAPI, iceServers)
 	if err != nil {
@@ -186,14 +203,11 @@ func (c *Call) Start() error {
 	c.peer = peer
 
 	sendMidIndex := sendVideoMidIndex
-	trackLabel := "dion-tunnel-" + sessionID
 	if c.cfg.Role == RoleCreator {
 		sendMidIndex = sendScreenShareMidIndex
-		trackLabel = "dion-tunnel-screen-" + sessionID
 	}
 	track, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000},
-		"video", trackLabel,
 	)
 	if err != nil {
 		return fmt.Errorf("NewTrackLocalStaticSample: %w", err)
@@ -209,13 +223,14 @@ func (c *Call) Start() error {
 	if err := sender.ReplaceTrack(track); err != nil {
 		return fmt.Errorf("ReplaceTrack: %w", err)
 	}
+	go rtc.DrainSenderRTCP(sender)
 	c.cfg.Logger.Debug(fmt.Sprintf("[call] role=%s attached send track to mid=%d", c.cfg.Role, sendMidIndex))
 
 	peer.PC.OnTrack(func(remoteTrack *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		c.cfg.Logger.Debug(fmt.Sprintf("[call] OnTrack id=%q kind=%s codec=%s ssrc=%d",
 			remoteTrack.ID(), remoteTrack.Kind().String(), remoteTrack.Codec().MimeType, remoteTrack.SSRC()))
 		if remoteTrack.Codec().MimeType != webrtc.MimeTypeVP8 {
-			go drainTrack(remoteTrack)
+			go rtc.DrainTrack(remoteTrack)
 			return
 		}
 		go c.readVP8Track(remoteTrack)
@@ -338,7 +353,7 @@ func (c *Call) Start() error {
 	if c.cfg.Role == RoleCreator {
 		fps, batch = creatorVP8FPS, creatorVP8Batch
 	}
-	c.vp8tun = tunnel.NewVP8DataTunnel(c.sendTrack, c.cfg.Obfuscator, c.cfg.Logger)
+	c.vp8tun = rtc.NewVP8DataTunnel(c.sendTrack, c.cfg.Obfuscator, c.cfg.Logger)
 	c.vp8tun.Start(fps, batch)
 	c.fireOnConnected(c.vp8tun)
 
@@ -720,13 +735,4 @@ func (c *Call) buildVideoInStats() []ClientStatVideoIn {
 		})
 	}
 	return out
-}
-
-func drainTrack(track *webrtc.TrackRemote) {
-	buf := make([]byte, 1500)
-	for {
-		if _, _, err := track.Read(buf); err != nil {
-			return
-		}
-	}
 }

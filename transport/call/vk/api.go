@@ -11,6 +11,8 @@ import (
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
+
+	headless "github.com/kulikov0/headless-client"
 )
 
 type TurnServer struct {
@@ -31,6 +33,7 @@ type CallInfo struct {
 	TurnServer TurnServer
 	StunServer StunServer
 	WSEndpoint string
+	WtEndpoint string
 }
 
 type vkTokenResponse struct {
@@ -60,6 +63,7 @@ type okAuthResponse struct {
 
 type joinResponse struct {
 	Endpoint   string     `json:"endpoint"`
+	WtEndpoint string     `json:"wt_endpoint"`
 	TurnServer TurnServer `json:"turn_server"`
 	StunServer StunServer `json:"stun_server"`
 }
@@ -83,6 +87,7 @@ func JoinExistingCall(dialer N.Dialer, cookieStr, vkLink string, cfg VKConfig, l
 		TurnServer: resp.TurnServer,
 		StunServer: resp.StunServer,
 		WSEndpoint: resp.Endpoint,
+		WtEndpoint: resp.WtEndpoint,
 	}, nil
 }
 
@@ -94,7 +99,7 @@ func CreateAndJoinCall(dialer N.Dialer, cookieStr, peerId string, cfg VKConfig, 
 		return map[string]string{"Authorization": "Bearer " + bearer}
 	}
 	logger.Info("[auth] Getting VK token...")
-	r, err := httpPost(dialer, "https://login.vk.com/?act=web_token",
+	r, err := httpPost(dialer, "https://login.vk.ru/?act=web_token",
 		url.Values{"version": {"1"}, "app_id": {cfg.AppID}},
 		map[string]string{"Cookie": cookieStr})
 	if err != nil {
@@ -107,7 +112,7 @@ func CreateAndJoinCall(dialer N.Dialer, cookieStr, peerId string, cfg VKConfig, 
 		return nil, fmt.Errorf("empty VK token, response: %s", string(r))
 	}
 	logger.Info(fmt.Sprintf("[auth] Creating call peer_id=%s...", peerId))
-	r, err = httpPost(dialer, "https://api.vk.com/method/calls.start",
+	r, err = httpPost(dialer, "https://api.vk.ru/method/calls.start",
 		url.Values{"v": {cfg.APIVersion}, "peer_id": {peerId}}, auth(vkToken))
 	if err != nil {
 		return nil, fmt.Errorf("calls.start: %w", err)
@@ -141,6 +146,7 @@ func CreateAndJoinCall(dialer N.Dialer, cookieStr, peerId string, cfg VKConfig, 
 		CallID: c.CallID, JoinLink: c.JoinLink, ShortLink: c.ShortCredentials.LinkWithPassword,
 		OKJoinLink: c.OKJoinLink, TurnServer: resp.TurnServer, StunServer: resp.StunServer,
 		WSEndpoint: resp.Endpoint,
+		WtEndpoint: resp.WtEndpoint,
 	}, nil
 }
 
@@ -169,7 +175,7 @@ func authAndJoin(dialer N.Dialer, cookieStr, okJoinLink string, cfg VKConfig) (*
 	auth := func(bearer string) map[string]string {
 		return map[string]string{"Authorization": "Bearer " + bearer}
 	}
-	r, err := httpPost(dialer, "https://login.vk.com/?act=web_token",
+	r, err := httpPost(dialer, "https://login.vk.ru/?act=web_token",
 		url.Values{"version": {"1"}, "app_id": {cfg.AppID}},
 		map[string]string{"Cookie": cookieStr})
 	if err != nil {
@@ -180,7 +186,7 @@ func authAndJoin(dialer N.Dialer, cookieStr, okJoinLink string, cfg VKConfig) (*
 	if tok.Data.AccessToken == "" {
 		return nil, fmt.Errorf("empty VK token, response: %s", string(r))
 	}
-	r, err = httpPost(dialer, "https://api.vk.com/method/calls.getSettings",
+	r, err = httpPost(dialer, "https://api.vk.ru/method/calls.getSettings",
 		url.Values{"v": {cfg.APIVersion}}, auth(tok.Data.AccessToken))
 	if err != nil {
 		return nil, fmt.Errorf("calls.getSettings: %w", err)
@@ -191,7 +197,7 @@ func authAndJoin(dialer N.Dialer, cookieStr, okJoinLink string, cfg VKConfig) (*
 	if appKey == "" {
 		return nil, fmt.Errorf("empty public_key, response: %s", string(r))
 	}
-	r, err = httpPost(dialer, "https://api.vk.com/method/messages.getCallToken",
+	r, err = httpPost(dialer, "https://api.vk.ru/method/messages.getCallToken",
 		url.Values{"v": {cfg.APIVersion}, "env": {"production"}}, auth(tok.Data.AccessToken))
 	if err != nil {
 		return nil, fmt.Errorf("messages.getCallToken: %w", err)
@@ -208,7 +214,7 @@ func authAndJoin(dialer N.Dialer, cookieStr, okJoinLink string, cfg VKConfig) (*
 	if !strings.HasSuffix(apiBaseURL, "/fb.do") {
 		apiBaseURL += "/fb.do"
 	}
-	sd, _ := json.Marshal(map[string]interface{}{
+	sd, _ := json.Marshal(map[string]any{
 		"device_id": "sing-box-go-1", "client_version": cfg.AppVersion,
 		"client_type": "SDK_JS", "auth_token": callToken.Response.Token, "version": 3,
 	})
@@ -269,9 +275,9 @@ func httpPost(dialer N.Dialer, endpoint string, form url.Values, extraHeaders ma
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", common.UserAgent)
-	req.Header.Set("Origin", "https://vk.com")
-	req.Header.Set("Referer", "https://vk.com/")
+	req.Header.Set("User-Agent", headless.ChromeWindows.UserAgent())
+	req.Header.Set("Origin", "https://vk.ru")
+	req.Header.Set("Referer", "https://vk.ru/")
 	for k, v := range extraHeaders {
 		req.Header.Set(k, v)
 	}

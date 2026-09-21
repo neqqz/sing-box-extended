@@ -49,7 +49,7 @@ func (s *Session) LoadCookieString(cookieStr string) error {
 		return fmt.Errorf("empty cookie string")
 	}
 	var entries []CookieEntry
-	for _, piece := range strings.Split(cookieStr, ";") {
+	for piece := range strings.SplitSeq(cookieStr, ";") {
 		piece = strings.TrimSpace(piece)
 		if piece == "" {
 			continue

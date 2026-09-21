@@ -94,7 +94,7 @@ func ConnectTunnel(ctx context.Context, dialer N.Dialer, tlsConfig aTLS.Config, 
 	conn, err := qtls.Dial(
 		ctx,
 		bufio.NewBindPacketConn(udpConn, quicEndpoint),
-		tlsConfig,
+		NewTLSConfig(tlsConfig, 20),
 		quicConfig,
 	)
 	if err != nil {

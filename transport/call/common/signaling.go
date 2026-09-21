@@ -3,27 +3,39 @@ package common
 import (
 	"fmt"
 
+	"github.com/sagernet/sing/common/logger"
+
+	"github.com/kulikov0/headless-client/webrtc"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
-	"github.com/pion/webrtc/v4"
-	"github.com/sagernet/sing/common/logger"
 )
 
 func AddTunnelTracks(pc *webrtc.PeerConnection, logger logger.ContextLogger, prefix string) *webrtc.TrackLocalStaticSample {
 	sampleTrack, _ := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8},
-		"video", "tunnel-video",
 	)
 	audioTrack, _ := webrtc.NewTrackLocalStaticRTP(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus},
-		"audio", "tunnel-audio",
 	)
 	audioSender, audioErr := pc.AddTrack(audioTrack)
 	videoSender, videoErr := pc.AddTrack(sampleTrack)
 	logger.Debug(fmt.Sprintf("%s: AddTrack audio: sender=%v err=%v", prefix, audioSender != nil, audioErr))
 	logger.Debug(fmt.Sprintf("%s: AddTrack video: sender=%v err=%v", prefix, videoSender != nil, videoErr))
 	logger.Debug(fmt.Sprintf("%s: senders count: %d", prefix, len(pc.GetSenders())))
+	go DrainSenderRTCP(videoSender)
 	return sampleTrack
+}
+
+func DrainSenderRTCP(sender *webrtc.RTPSender) {
+	if sender == nil {
+		return
+	}
+	buf := make([]byte, 1500)
+	for {
+		if _, _, err := sender.Read(buf); err != nil {
+			return
+		}
+	}
 }
 
 func ReadTrack(track *webrtc.TrackRemote, handler func([]byte), logger logger.ContextLogger, prefix string) {

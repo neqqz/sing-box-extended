@@ -7,17 +7,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
-	"github.com/pion/webrtc/v4"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing-box/transport/call/livekit"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
+	"github.com/sagernet/sing-box/transport/call/tunnel/rtc"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+
+	headless "github.com/kulikov0/headless-client"
+	"github.com/kulikov0/headless-client/webrtc"
+	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 )
 
 type peerEntry struct {
@@ -34,23 +36,23 @@ const (
 )
 
 type SessionConfig struct {
-	RoomToken     string
-	ServerURL     string
-	DisplayName   string
-	TunnelMode    string
-	Obfuscator    *tunnel.TunnelObfuscator
-	Logger        logger.ContextLogger
-	SettingEngine *webrtc.SettingEngine
-	Dialer        N.Dialer
-	DNSRouter     adapter.DNSRouter
-	VP8FPS        int
-	VP8Batch      int
-	RoomID        string
-	AccessToken   string
-	ReadBuf       int
-	ScreenShare   bool
-	IsJoiner      bool
-	Reliable      bool
+	RoomToken              string
+	ServerURL              string
+	DisplayName            string
+	TunnelMode             string
+	Obfuscator             *tunnel.TunnelObfuscator
+	Logger                 logger.ContextLogger
+	ConfigureSettingEngine func(*webrtc.SettingEngine)
+	Dialer                 N.Dialer
+	DNSRouter              adapter.DNSRouter
+	VP8FPS                 int
+	VP8Batch               int
+	RoomID                 string
+	AccessToken            string
+	ReadBuf                int
+	ScreenShare            bool
+	IsJoiner               bool
+	Reliable               bool
 }
 
 type Session struct {
@@ -64,12 +66,13 @@ type Session struct {
 	pubReliableDCReady bool
 	subReliableDC      *webrtc.DataChannel
 
-	vp8tun   *tunnel.MultiTrackTunnel
-	kcptun   *tunnel.MultiTrackKCPTunnel
-	dctun    *tunnel.DCTunnel
-	mu       sync.Mutex
-	tunFired bool
-	done     chan struct{}
+	vp8tun    *rtc.MultiTrackTunnel
+	kcptun    *rtc.MultiTrackKCPTunnel
+	dctun     *rtc.DCTunnel
+	dcStarted bool
+	mu        sync.Mutex
+	tunFired  bool
+	done      chan struct{}
 
 	peersBySID map[string]peerEntry
 	kickedSIDs map[string]bool
@@ -100,18 +103,23 @@ func (s *Session) MarkConfigAcked() {
 func (s *Session) Done() <-chan struct{} { return s.done }
 
 func (s *Session) Start() error {
-	s.lk = livekit.NewClient(livekit.Config{
-		ServerURL:     s.cfg.ServerURL,
-		Token:         s.cfg.RoomToken,
-		Origin:        Origin,
-		UserAgent:     common.UserAgent,
-		Logger:        s.cfg.Logger,
-		SettingEngine: s.cfg.SettingEngine,
+	lk, err := livekit.NewClient(livekit.Config{
+		ServerURL:              s.cfg.ServerURL,
+		Token:                  s.cfg.RoomToken,
+		Origin:                 Origin,
+		UserAgent:              headless.ChromeWindows.UserAgent(),
+		Codec:                  livekit.ProtoCodec{},
+		Logger:                 s.cfg.Logger,
+		ConfigureSettingEngine: s.cfg.ConfigureSettingEngine,
 		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return s.cfg.Dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
 		},
 		DNSRouter: s.cfg.DNSRouter,
 	})
+	if err != nil {
+		return err
+	}
+	s.lk = lk
 	s.lk.OnReady = s.onLKReady
 	s.lk.OnTrack = s.onRemoteTrack
 	s.lk.OnDataChannel = s.onRemoteDataChannel
@@ -213,10 +221,8 @@ func (s *Session) onLKReady() {
 	if pubPC == nil {
 		return
 	}
-	camID := "videochannel-" + uuid.New().String()
 	trackCam, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000},
-		camID, "tunnel-video-"+uuid.New().String(),
 	)
 	if err != nil {
 		s.cfg.Logger.Error(fmt.Sprintf("[lk] create local cam track: %v", err))
@@ -224,10 +230,8 @@ func (s *Session) onLKReady() {
 	}
 	tracks := []*webrtc.TrackLocalStaticSample{trackCam}
 	if s.cfg.ScreenShare {
-		screenID := "screenchannel-" + uuid.New().String()
 		trackScreen, err := webrtc.NewTrackLocalStaticSample(
 			webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000},
-			screenID, "tunnel-screen-"+uuid.New().String(),
 		)
 		if err != nil {
 			s.cfg.Logger.Error(fmt.Sprintf("[lk] create local screen track: %v", err))
@@ -244,6 +248,7 @@ func (s *Session) onLKReady() {
 			return
 		}
 		transceivers = append(transceivers, trx)
+		go rtc.DrainSenderRTCP(trx.Sender())
 	}
 	s.mu.Lock()
 	s.sampleTracks = tracks
@@ -300,11 +305,11 @@ func (s *Session) startTunnel() {
 		s.mu.Unlock()
 		return
 	}
-	subs := make([]*tunnel.VP8DataTunnel, 0, len(s.sampleTracks))
+	subs := make([]*rtc.VP8DataTunnel, 0, len(s.sampleTracks))
 	for _, t := range s.sampleTracks {
-		subs = append(subs, tunnel.NewVP8DataTunnelWithQueue(t, s.cfg.Obfuscator, s.cfg.Logger, tunnel.KCPCarrierQueueDepth))
+		subs = append(subs, rtc.NewVP8DataTunnelWithQueue(t, s.cfg.Obfuscator, s.cfg.Logger, rtc.KCPCarrierQueueDepth))
 	}
-	s.vp8tun = tunnel.NewMultiTrackTunnel(subs)
+	s.vp8tun = rtc.NewMultiTrackTunnel(subs)
 	s.vp8tun.SetOnPeerRestart(func() {
 		s.cfg.Logger.Debug("[wb] peer epoch changed, signalling peer-restart")
 		s.rearmAutoDetect()
@@ -333,29 +338,12 @@ func (s *Session) startTunnel() {
 }
 
 func (s *Session) configPingPong(tun tunnel.DataTunnel, trackCount int) {
-	frame := tunnel.EncodeVP8Config(s.cfg.VP8FPS, s.cfg.VP8Batch, trackCount)
-	tun.SendData(frame)
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.configAcked:
-			return
-		case <-s.done:
-			return
-		case <-ticker.C:
-			s.cfg.Logger.Debug("[lk] resending vp8 config (no ack yet)")
-			tun.SendData(tunnel.EncodeVP8Config(s.cfg.VP8FPS, s.cfg.VP8Batch, trackCount))
-		}
-	}
+	tunnel.SendVP8ConfigUntilAcked(s.configAcked, nil, s.done, tun,
+		s.cfg.VP8FPS, s.cfg.VP8Batch, trackCount, s.cfg.Logger, "[lk]")
 }
 
 func (s *Session) maybeStartDCTunnel() {
 	s.mu.Lock()
-	if s.dctun != nil {
-		s.mu.Unlock()
-		return
-	}
 	pubDC := s.pubReliableDC
 	subDC := s.subReliableDC
 	pubReady := s.pubReliableDCReady
@@ -366,6 +354,14 @@ func (s *Session) maybeStartDCTunnel() {
 	if subDC.ReadyState() != webrtc.DataChannelStateOpen {
 		return
 	}
+	s.mu.Lock()
+	if s.dcStarted {
+		s.mu.Unlock()
+		return
+	}
+	s.dcStarted = true
+	s.mu.Unlock()
+
 	subRaw, err := subDC.Detach()
 	if err != nil {
 		s.cfg.Logger.Error(fmt.Sprintf("[lk] detach sub DC: %v", err))
@@ -376,16 +372,13 @@ func (s *Session) maybeStartDCTunnel() {
 		s.cfg.Logger.Error(fmt.Sprintf("[lk] detach pub DC: %v", err))
 		return
 	}
-	readWrapped := newDataPacketWrapper(subRaw, livekit.DataPacketKindReliable)
-	writeWrapped := newDataPacketWrapper(pubRaw, livekit.DataPacketKindReliable)
+	readWrapped := livekit.NewDataPacketWrapper(subRaw, livekit.DataPacketKindReliable)
+	writeWrapped := livekit.NewDataPacketWrapper(pubRaw, livekit.DataPacketKindReliable)
 	readBuf := s.cfg.ReadBuf
 	if readBuf == 0 {
 		readBuf = common.DCBufSize
 	}
-	dctun := tunnel.NewChunkedDCTunnelFromRaw(readWrapped, writeWrapped, s.cfg.Obfuscator, readBuf, s.cfg.Logger)
-	if dctun == nil {
-		return
-	}
+	dctun := rtc.NewChunkedDCTunnelFromRaw(readWrapped, writeWrapped, s.cfg.Obfuscator, readBuf, s.cfg.Logger)
 	s.mu.Lock()
 	s.dctun = dctun
 	s.mu.Unlock()
@@ -420,9 +413,9 @@ func (s *Session) activate(tun tunnel.DataTunnel, payload []byte) {
 	}
 	s.tunFired = true
 	s.mu.Unlock()
-	var delivered tunnel.DataTunnel = tun
+	delivered := tun
 	useKCP := false
-	if _, ok := tun.(*tunnel.MultiTrackTunnel); ok && !tunnel.LooksLikeRelayFrame(payload) {
+	if _, ok := tun.(*rtc.MultiTrackTunnel); ok && !tunnel.LooksLikeRelayFrame(payload) {
 		delivered = s.maybeWrapReliable(tun)
 		useKCP = true
 	}
@@ -431,13 +424,13 @@ func (s *Session) activate(tun tunnel.DataTunnel, payload []byte) {
 		s.OnConnected(delivered)
 	}
 	switch v := tun.(type) {
-	case *tunnel.DCTunnel:
+	case *rtc.DCTunnel:
 		if fwd := v.OnData(); fwd != nil {
 			fwd(payload)
 		}
-	case *tunnel.MultiTrackTunnel:
+	case *rtc.MultiTrackTunnel:
 		if useKCP {
-			if kcptun, ok := delivered.(*tunnel.MultiTrackKCPTunnel); ok {
+			if kcptun, ok := delivered.(*rtc.MultiTrackKCPTunnel); ok {
 				kcptun.InjectSegment(payload)
 			}
 		} else {
@@ -447,11 +440,11 @@ func (s *Session) activate(tun tunnel.DataTunnel, payload []byte) {
 }
 
 func (s *Session) maybeWrapReliable(tun tunnel.DataTunnel) tunnel.DataTunnel {
-	vp8, ok := tun.(*tunnel.MultiTrackTunnel)
+	vp8, ok := tun.(*rtc.MultiTrackTunnel)
 	if !ok {
 		return tun
 	}
-	wrapped := tunnel.NewMultiTrackKCPTunnel(vp8, s.cfg.Logger)
+	wrapped := rtc.NewMultiTrackKCPTunnel(vp8, s.cfg.Logger)
 	s.mu.Lock()
 	if s.kcptun != nil {
 		s.kcptun.StopLayer()
@@ -462,7 +455,7 @@ func (s *Session) maybeWrapReliable(tun tunnel.DataTunnel) tunnel.DataTunnel {
 	return wrapped
 }
 
-func (s *Session) currentVP8Tun() *tunnel.MultiTrackTunnel {
+func (s *Session) currentVP8Tun() *rtc.MultiTrackTunnel {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.vp8tun
@@ -496,17 +489,12 @@ func (s *Session) removePublisherTrack() bool {
 }
 
 func (s *Session) addPublisherTrack(pubPC *webrtc.PeerConnection, slot int) bool {
-	labelPrefix := "screenchannel-"
-	streamPrefix := "tunnel-screen-"
 	source := livekit.TrackSourceScreenShare
 	if slot == 0 {
-		labelPrefix = "videochannel-"
-		streamPrefix = "tunnel-video-"
 		source = livekit.TrackSourceCamera
 	}
 	track, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000},
-		labelPrefix+uuid.New().String(), streamPrefix+uuid.New().String(),
 	)
 	if err != nil {
 		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: new track slot=%d: %v", slot, err))
@@ -518,6 +506,7 @@ func (s *Session) addPublisherTrack(pubPC *webrtc.PeerConnection, slot int) bool
 		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: add transceiver slot=%d: %v", slot, err))
 		return false
 	}
+	go rtc.DrainSenderRTCP(trx.Sender())
 	if err := s.lk.SendAddTrack(track.ID(), "videochannel",
 		livekit.TrackTypeVideo, source, 1280, 720); err != nil {
 		s.cfg.Logger.Error(fmt.Sprintf("[lk] adapt-track-count: send add-track slot=%d: %v", slot, err))
@@ -530,7 +519,7 @@ func (s *Session) addPublisherTrack(pubPC *webrtc.PeerConnection, slot int) bool
 	kcptun := s.kcptun
 	s.mu.Unlock()
 	if vp8 != nil {
-		newSub := tunnel.NewVP8DataTunnelWithQueue(track, s.cfg.Obfuscator, s.cfg.Logger, tunnel.KCPCarrierQueueDepth)
+		newSub := rtc.NewVP8DataTunnelWithQueue(track, s.cfg.Obfuscator, s.cfg.Logger, rtc.KCPCarrierQueueDepth)
 		vp8.AddSubTunnel(newSub)
 		if kcptun != nil {
 			kcptun.AddSession(newSub)
@@ -563,14 +552,7 @@ func (s *Session) rearmAutoDetect() {
 
 func (s *Session) onRemoteTrack(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 	if track.Codec().MimeType != webrtc.MimeTypeVP8 {
-		go func() {
-			buf := make([]byte, common.UDPBufSize)
-			for {
-				if _, _, err := track.Read(buf); err != nil {
-					return
-				}
-			}
-		}()
+		go rtc.DrainTrack(track)
 		return
 	}
 	go s.readVP8Track(track)

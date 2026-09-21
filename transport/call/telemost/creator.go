@@ -5,20 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
-	"github.com/pion/webrtc/v4"
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+
+	"github.com/google/uuid"
+	headless "github.com/kulikov0/headless-client"
+	"github.com/kulikov0/headless-client/webrtc"
+	"github.com/kulikov0/headless-client/websocket"
 )
 
 const (
@@ -58,12 +59,15 @@ type Bridge struct {
 
 	setSlotsKey    int
 	initBundleSent bool
+	shareMu        sync.Mutex
+	shareEnabled   bool
 	pendingKicks   map[string]chan struct{}
 	boundPeers     map[string]bool
 	unboundPeers   map[string]bool
+	seenPids       map[string]bool
 }
 
-func tmRequest(dialer N.Dialer, method, path string, body interface{}, cookieStr string, cfg TMConfig) ([]byte, int, error) {
+func tmRequest(dialer N.Dialer, method, path string, body any, cookieStr string, cfg TMConfig) ([]byte, int, error) {
 	c := Client{HTTP: common.HttpClient(dialer), Cookie: cookieStr, AppVersion: cfg.AppVersion, InstanceID: clientInstanceID}
 	return c.Do(method, path, body)
 }
@@ -168,7 +172,7 @@ func CreateAndJoinCall(dialer N.Dialer, cookieStr string, cfg TMConfig, logger l
 	return info, nil
 }
 
-func (b *Bridge) wsSend(msg interface{}) {
+func (b *Bridge) wsSend(msg any) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.ws == nil {
@@ -179,10 +183,10 @@ func (b *Bridge) wsSend(msg interface{}) {
 }
 
 func (b *Bridge) ack(uid string) {
-	b.wsSend(map[string]interface{}{
+	b.wsSend(map[string]any{
 		"uid": uid,
-		"ack": map[string]interface{}{
-			"status": map[string]interface{}{"code": "OK", "description": ""},
+		"ack": map[string]any{
+			"status": map[string]any{"code": "OK", "description": ""},
 		},
 	})
 }
@@ -191,16 +195,16 @@ func (b *Bridge) sendHello() {
 	b.mu.Lock()
 	b.selfName = "Headless"
 	b.mu.Unlock()
-	b.wsSend(map[string]interface{}{
+	b.wsSend(map[string]any{
 		"uid": uuid.New().String(),
-		"hello": map[string]interface{}{
-			"participantMeta":       map[string]interface{}{"name": "Headless", "role": "SPEAKER", "description": "", "sendAudio": false, "sendVideo": true},
-			"participantAttributes": map[string]interface{}{"name": "Headless", "role": "SPEAKER", "description": ""},
+		"hello": map[string]any{
+			"participantMeta":       map[string]any{"name": "Headless", "role": "SPEAKER", "description": "", "sendAudio": false, "sendVideo": true},
+			"participantAttributes": map[string]any{"name": "Headless", "role": "SPEAKER", "description": ""},
 			"sendAudio":             false, "sendVideo": true, "sendSharing": false,
 			"participantId": b.connInfo.PeerID, "roomId": b.connInfo.RoomID,
 			"serviceName": b.connInfo.ServiceName, "credentials": b.connInfo.Credentials,
 			"capabilitiesOffer":   CapabilitiesOffer,
-			"sdkInfo":             map[string]interface{}{"implementation": "browser", "version": b.config.SDKVersion, "userAgent": common.UserAgent, "hwConcurrency": 8},
+			"sdkInfo":             map[string]any{"implementation": "browser", "version": b.config.SDKVersion, "userAgent": headless.ChromeWindows.UserAgent(), "hwConcurrency": 8},
 			"sdkInitializationId": uuid.New().String(),
 			"disablePublisher":    false, "disableSubscriber": false, "disableSubscriberAudio": false,
 		},
@@ -214,19 +218,66 @@ func (b *Bridge) sendPubOffer() {
 		b.logger.Warn(fmt.Sprintf("[tm-ws] pub offer failed: %v", err))
 		return
 	}
-	audioMid, videoMid := parseMids(offer.SDP)
-	b.logger.Debug(fmt.Sprintf("[tm-ws] -> publisherSdpOffer pcSeq=%d", b.pubSeq))
-	var tracks []map[string]interface{}
-	if audioMid != "" {
-		tracks = append(tracks, map[string]interface{}{"mid": audioMid, "transceiverMid": audioMid, "kind": "AUDIO", "priority": 0, "label": "", "codecs": map[string]interface{}{}, "groupId": 1, "description": ""})
+	b.sendPublisherOffer(offer, false)
+}
+
+func (b *Bridge) sendPublisherOffer(offer webrtc.SessionDescription, includeSharing bool) {
+	audioMids, videoMids := parseMids(offer.SDP)
+	b.logger.Debug(fmt.Sprintf("[tm-ws] -> publisherSdpOffer pcSeq=%d includeSharing=%v audio=%v video=%v", b.pubSeq, includeSharing, audioMids, videoMids))
+	var tracks []map[string]any
+	if len(audioMids) > 0 {
+		tracks = append(tracks, map[string]any{"mid": audioMids[0], "transceiverMid": audioMids[0], "kind": "AUDIO", "priority": 0, "label": "", "codecs": map[string]any{}, "groupId": 1, "description": ""})
 	}
-	if videoMid != "" {
-		tracks = append(tracks, map[string]interface{}{"mid": videoMid, "transceiverMid": videoMid, "kind": "VIDEO", "priority": 0, "label": "", "codecs": map[string]interface{}{}, "groupId": 2, "description": ""})
+	if len(videoMids) > 0 {
+		tracks = append(tracks, map[string]any{"mid": videoMids[0], "transceiverMid": videoMids[0], "kind": "VIDEO", "priority": 0, "label": "", "codecs": map[string]any{}, "groupId": 1, "description": ""})
 	}
-	b.wsSend(map[string]interface{}{
+	if includeSharing {
+		tracks = append(tracks, DisplayVideoTrack("Screen"))
+	}
+	b.wsSend(map[string]any{
 		"uid":               uuid.New().String(),
-		"publisherSdpOffer": map[string]interface{}{"pcSeq": b.pubSeq, "sdp": offer.SDP, "tracks": tracks},
+		"publisherSdpOffer": map[string]any{"pcSeq": b.pubSeq, "sdp": offer.SDP, "tracks": tracks},
 	})
+}
+
+func (b *Bridge) enableScreenshare() {
+	b.shareMu.Lock()
+	defer b.shareMu.Unlock()
+	if b.shareEnabled {
+		return
+	}
+	b.shareEnabled = true
+	b.logger.Debug("[ss] enabling screenshare: describe DISPLAY_VIDEO -> updateMe -> offer")
+	if err := b.relay.AddSharingDataChannel(); err != nil {
+		b.logger.Warn(fmt.Sprintf("[ss] AddSharingDataChannel: %v", err))
+		return
+	}
+	b.wsSend(UpdatePublisherSharingTrackMessage("Screen"))
+	b.wsSend(UpdateMeMessage(b.selfName, true, true))
+	offer, err := b.relay.CreatePubRenegotiate()
+	if err != nil {
+		b.logger.Warn(fmt.Sprintf("[ss] enable renegotiate failed: %v", err))
+		return
+	}
+	b.sendPublisherOffer(offer, true)
+}
+
+func (b *Bridge) disableScreenshare() {
+	b.shareMu.Lock()
+	defer b.shareMu.Unlock()
+	if !b.shareEnabled {
+		return
+	}
+	b.shareEnabled = false
+	b.logger.Debug("[ss] disabling screenshare (peer requested trackCount<2)")
+	b.wsSend(UpdateMeMessage(b.selfName, true, false))
+	b.relay.RemoveSharingDataChannel()
+	offer, err := b.relay.CreatePubRenegotiate()
+	if err != nil {
+		b.logger.Warn(fmt.Sprintf("[ss] disable renegotiate failed: %v", err))
+		return
+	}
+	b.sendPublisherOffer(offer, false)
 }
 
 func (b *Bridge) sendICE(cand *webrtc.ICECandidate, target string, pcSeq int) {
@@ -239,39 +290,14 @@ func (b *Bridge) sendICE(cand *webrtc.ICECandidate, target string, pcSeq int) {
 	if c.SDPMLineIndex != nil {
 		idx = *c.SDPMLineIndex
 	}
-	b.wsSend(map[string]interface{}{
+	b.wsSend(map[string]any{
 		"uid": uuid.New().String(),
-		"webrtcIceCandidate": map[string]interface{}{
+		"webrtcIceCandidate": map[string]any{
 			"candidate": c.Candidate, "sdpMid": mid,
 			"usernameFragment": extractUfrag(c.Candidate),
 			"sdpMlineIndex":    idx, "target": target, "pcSeq": pcSeq,
 		},
 	})
-}
-
-func (b *Bridge) requestVideoSlots() {
-	b.setSlotsKey++
-	b.logger.Debug(fmt.Sprintf("[tm-ws] -> setSlots key=%d", b.setSlotsKey))
-	b.wsSend(SetSlotsMessage(b.setSlotsKey))
-}
-
-func (b *Bridge) forceReconnect(reason string) {
-	oldPeerID := b.connInfo.PeerID
-	b.logger.Info(fmt.Sprintf("[tm-ws] forcing reconnect: %s", reason))
-	if oldPeerID != "" {
-		b.logger.Debug(fmt.Sprintf("[tm-ws] kicking self pid=%s to leave call cleanly", oldPeerID))
-		if err := b.kickPeer(oldPeerID); err != nil {
-			b.logger.Warn(fmt.Sprintf("[tm-ws] self-kick failed: %v", err))
-		}
-	}
-	clientInstanceID = uuid.New().String()
-	b.logger.Debug(fmt.Sprintf("[tm-ws] new instance-id=%s", clientInstanceID))
-	b.mu.Lock()
-	ws := b.ws
-	b.mu.Unlock()
-	if ws != nil {
-		ws.Close()
-	}
 }
 
 func (b *Bridge) sendInitBundle() {
@@ -286,7 +312,7 @@ func (b *Bridge) sendInitBundle() {
 }
 
 func (b *Bridge) sendStartupSlotsRamp() {
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		b.setSlotsKey++
 		b.logger.Debug(fmt.Sprintf("[tm-ws] -> setSlots key=%d (startup %d/4)", b.setSlotsKey, i+1))
 		b.wsSend(StartupSetSlotsMessage(i, b.setSlotsKey))
@@ -294,14 +320,14 @@ func (b *Bridge) sendStartupSlotsRamp() {
 }
 
 func (b *Bridge) handleMessage(raw []byte) {
-	var msg map[string]interface{}
+	var msg map[string]any
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return
 	}
 	uid, _ := msg["uid"].(string)
 	if sh, ok := msg["serverHello"]; ok {
 		b.logger.Debug("[tm-ws] <- serverHello")
-		if shMap, ok := sh.(map[string]interface{}); ok {
+		if shMap, ok := sh.(map[string]any); ok {
 			b.parseICEServers(shMap)
 		}
 		b.ack(uid)
@@ -311,7 +337,7 @@ func (b *Bridge) handleMessage(raw []byte) {
 		return
 	}
 	if pa, ok := msg["publisherSdpAnswer"]; ok {
-		paMap, _ := pa.(map[string]interface{})
+		paMap, _ := pa.(map[string]any)
 		sdp, _ := paMap["sdp"].(string)
 		b.logger.Debug(fmt.Sprintf("[tm-ws] <- publisherSdpAnswer %d bytes", len(sdp)))
 		if err := b.relay.SetPubAnswer(sdp); err != nil {
@@ -322,7 +348,7 @@ func (b *Bridge) handleMessage(raw []byte) {
 		return
 	}
 	if so, ok := msg["subscriberSdpOffer"]; ok {
-		soMap, _ := so.(map[string]interface{})
+		soMap, _ := so.(map[string]any)
 		sdp, _ := soMap["sdp"].(string)
 		pcSeq, _ := soMap["pcSeq"].(float64)
 		b.subSeq = int(pcSeq)
@@ -334,15 +360,15 @@ func (b *Bridge) handleMessage(raw []byte) {
 			return
 		}
 		b.logger.Debug(fmt.Sprintf("[tm-ws] -> subscriberSdpAnswer pcSeq=%d", b.subSeq))
-		b.wsSend(map[string]interface{}{
+		b.wsSend(map[string]any{
 			"uid":                 uuid.New().String(),
-			"subscriberSdpAnswer": map[string]interface{}{"sdp": answer.SDP, "pcSeq": b.subSeq},
+			"subscriberSdpAnswer": map[string]any{"sdp": answer.SDP, "pcSeq": b.subSeq},
 		})
 		b.sendPubOffer()
 		return
 	}
 	if ic, ok := msg["webrtcIceCandidate"]; ok {
-		icMap, _ := ic.(map[string]interface{})
+		icMap, _ := ic.(map[string]any)
 		candidate, _ := icMap["candidate"].(string)
 		sdpMid, _ := icMap["sdpMid"].(string)
 		target, _ := icMap["target"].(string)
@@ -358,8 +384,8 @@ func (b *Bridge) handleMessage(raw []byte) {
 		return
 	}
 	if ackData, ok := msg["ack"]; ok {
-		if ackMap, ok := ackData.(map[string]interface{}); ok {
-			if status, ok := ackMap["status"].(map[string]interface{}); ok {
+		if ackMap, ok := ackData.(map[string]any); ok {
+			if status, ok := ackMap["status"].(map[string]any); ok {
 				if code, _ := status["code"].(string); code != "OK" {
 					desc, _ := status["description"].(string)
 					b.logger.Warn(fmt.Sprintf("[tm-ws] <- ack error: %s %s", code, desc))
@@ -370,17 +396,17 @@ func (b *Bridge) handleMessage(raw []byte) {
 	}
 	if ud, ok := msg["updateDescription"]; ok {
 		b.logger.Debug(fmt.Sprintf("[tm-ws] <- updateDescription %s", BriefJSON(ud)))
-		udMap, _ := ud.(map[string]interface{})
-		descs, _ := udMap["description"].([]interface{})
+		udMap, _ := ud.(map[string]any)
+		descs, _ := udMap["description"].([]any)
 		b.applyDescriptionSnapshot(descs)
 		b.ack(uid)
 		return
 	}
 	if ud, ok := msg["upsertDescription"]; ok {
-		udMap, _ := ud.(map[string]interface{})
-		descs, _ := udMap["description"].([]interface{})
+		udMap, _ := ud.(map[string]any)
+		descs, _ := udMap["description"].([]any)
 		for _, d := range descs {
-			dm, _ := d.(map[string]interface{})
+			dm, _ := d.(map[string]any)
 			b.applyDescriptionEntry(dm)
 		}
 		b.kickStaleSelves()
@@ -388,8 +414,8 @@ func (b *Bridge) handleMessage(raw []byte) {
 		return
 	}
 	if rd, ok := msg["removeDescription"]; ok {
-		rdMap, _ := rd.(map[string]interface{})
-		ids, _ := rdMap["descriptionId"].([]interface{})
+		rdMap, _ := rd.(map[string]any)
+		ids, _ := rdMap["descriptionId"].([]any)
 		for _, id := range ids {
 			pid, _ := id.(string)
 			b.mu.Lock()
@@ -479,7 +505,7 @@ func (b *Bridge) handleMessage(raw []byte) {
 		}
 		b.mu.Unlock()
 		if needRebind {
-			go b.forceReconnect("slot binding killed")
+			b.logger.Debug("[bind] slot kill/vanish observed - ignoring (tunnel data path is independent of slot binding)")
 		}
 		b.ack(uid)
 		return
@@ -496,20 +522,20 @@ func (b *Bridge) handleMessage(raw []byte) {
 	}
 }
 
-func (b *Bridge) parseICEServers(sh map[string]interface{}) {
-	rtcCfg, ok := sh["rtcConfiguration"].(map[string]interface{})
+func (b *Bridge) parseICEServers(sh map[string]any) {
+	rtcCfg, ok := sh["rtcConfiguration"].(map[string]any)
 	if !ok {
 		return
 	}
-	servers, ok := rtcCfg["iceServers"].([]interface{})
+	servers, ok := rtcCfg["iceServers"].([]any)
 	if !ok {
 		return
 	}
 	var iceServers []webrtc.ICEServer
 	for _, s := range servers {
-		sm, _ := s.(map[string]interface{})
+		sm, _ := s.(map[string]any)
 		var urls []string
-		if u, ok := sm["urls"].([]interface{}); ok {
+		if u, ok := sm["urls"].([]any); ok {
 			for _, v := range u {
 				if vs, ok := v.(string); ok {
 					urls = append(urls, vs)
@@ -532,13 +558,13 @@ func (b *Bridge) requestStates() error {
 	return c.RequestStates(b.connInfo.ConferenceURI, b.connInfo.PeerID)
 }
 
-func (b *Bridge) applyDescriptionEntry(dm map[string]interface{}) {
+func (b *Bridge) applyDescriptionEntry(dm map[string]any) {
 	pid, _ := dm["id"].(string)
 	if pid == "" {
 		return
 	}
 	name := ""
-	if meta, ok := dm["meta"].(map[string]interface{}); ok {
+	if meta, ok := dm["meta"].(map[string]any); ok {
 		name, _ = meta["name"].(string)
 	}
 	if pid == b.connInfo.PeerID {
@@ -552,10 +578,15 @@ func (b *Bridge) applyDescriptionEntry(dm map[string]interface{}) {
 	_, disconnected := dm["disconnectedAt"]
 	b.mu.Lock()
 	_, wasKnown := b.peers[pid]
+	newArrival := false
 	if disconnected {
 		delete(b.peers, pid)
 	} else {
 		b.peers[pid] = name
+		if !b.seenPids[pid] {
+			b.seenPids[pid] = true
+			newArrival = true
+		}
 	}
 	total := len(b.peers)
 	b.mu.Unlock()
@@ -565,17 +596,36 @@ func (b *Bridge) applyDescriptionEntry(dm map[string]interface{}) {
 	case disconnected:
 		b.logger.Debug(fmt.Sprintf("[tm-ws] Ghost participant: %s (%s) - kicking", name, pid))
 		go b.kickPeer(pid)
-	case !wasKnown:
+	case newArrival:
 		b.logger.Info(fmt.Sprintf("[tm-ws] Participant joined: %s (%s) total=%d", name, pid, total))
+		b.keepOnly(pid)
 	}
 }
 
-func (b *Bridge) applyDescriptionSnapshot(descs []interface{}) {
+func (b *Bridge) keepOnly(keepPid string) {
+	b.mu.Lock()
+	victims := make([]string, 0, len(b.peers))
+	for pid := range b.peers {
+		if pid != keepPid {
+			victims = append(victims, pid)
+		}
+	}
+	for _, pid := range victims {
+		delete(b.peers, pid)
+	}
+	b.mu.Unlock()
+	for _, pid := range victims {
+		b.logger.Debug(fmt.Sprintf("[tm-ws] 1:1 evict %s", pid))
+		go b.kickPeer(pid)
+	}
+}
+
+func (b *Bridge) applyDescriptionSnapshot(descs []any) {
 	b.mu.Lock()
 	b.peers = make(map[string]string)
 	b.mu.Unlock()
 	for _, d := range descs {
-		dm, _ := d.(map[string]interface{})
+		dm, _ := d.(map[string]any)
 		b.applyDescriptionEntry(dm)
 	}
 	b.kickStaleSelves()
@@ -685,11 +735,18 @@ func (b *Bridge) initRelay() {
 	relay.OnPubReady = func() {
 		b.logger.Debug("[relay] pub PC connected")
 	}
-	relay.OnConnected = func(tun *tunnel.VP8DataTunnel) {
+	relay.OnConnected = func(tun tunnel.DataTunnel) {
 		if b.activeBridge != nil {
 			b.activeBridge.Reset()
 		}
 		b.activeBridge = tunnel.NewRelayBridge(tun, "creator", common.VP8BufSize, b.dialer, b.logger)
+		b.activeBridge.SetOnPeerConfig(func(fps, batch, trackCount int) {
+			if trackCount >= 2 {
+				b.enableScreenshare()
+			} else {
+				b.disableScreenshare()
+			}
+		})
 		b.logger.Debug("[relay] tunnel connected")
 	}
 	relay.OnPeerRestart = func() {
@@ -717,14 +774,13 @@ func (b *Bridge) initRelay() {
 }
 
 func (b *Bridge) Run() {
-	wsHeader := http.Header{}
-	wsHeader.Set("User-Agent", common.UserAgent)
+	wsHeader := headless.ChromeWindows.Headers(headless.DestWebSocket)
 	wsHeader.Set("Origin", tmOrigin)
-	wsDialer := websocket.Dialer{
-		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+	wsDialer := headless.ChromeWindows.WebSocketDialer(headless.TLSOptions{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return b.dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
 		},
-	}
+	})
 	for {
 		b.logger.Debug("[tm-ws] Connecting...")
 		ws, _, err := wsDialer.Dial(b.connInfo.MediaServerURL, wsHeader)
@@ -761,7 +817,7 @@ func (b *Bridge) Run() {
 				case <-stopPing:
 					return
 				case <-ticker.C:
-					b.wsSend(map[string]interface{}{"uid": uuid.New().String(), "ping": map[string]interface{}{}})
+					b.wsSend(map[string]any{"uid": uuid.New().String(), "ping": map[string]any{}})
 				}
 			}
 		}()
@@ -809,6 +865,13 @@ func (b *Bridge) Run() {
 			time.Sleep(5 * time.Second)
 			continue
 		}
+		if oldPid := b.connInfo.PeerID; oldPid != "" && oldPid != newConn.PeerID {
+			b.mu.Lock()
+			b.seenPids[oldPid] = true
+			delete(b.peers, oldPid)
+			b.mu.Unlock()
+			go b.kickPeer(oldPid)
+		}
 		b.connInfo.PeerID = newConn.PeerID
 		b.connInfo.Credentials = newConn.Credentials
 		b.connInfo.MediaServerURL = newConn.MediaServerURL
@@ -817,20 +880,23 @@ func (b *Bridge) Run() {
 	}
 }
 
-func parseMids(sdp string) (audioMid, videoMid string) {
+func parseMids(sdp string) (audioMids, videoMids []string) {
 	var media string
-	for _, line := range strings.Split(sdp, "\r\n") {
+	for line := range strings.SplitSeq(sdp, "\r\n") {
 		if strings.HasPrefix(line, "m=audio") {
 			media = "audio"
 		} else if strings.HasPrefix(line, "m=video") {
 			media = "video"
+		} else if strings.HasPrefix(line, "m=") {
+			media = ""
 		}
-		if strings.HasPrefix(line, "a=mid:") {
-			mid := strings.TrimPrefix(line, "a=mid:")
-			if media == "audio" && audioMid == "" {
-				audioMid = mid
-			} else if media == "video" && videoMid == "" {
-				videoMid = mid
+		if after, ok := strings.CutPrefix(line, "a=mid:"); ok {
+			mid := after
+			switch media {
+			case "audio":
+				audioMids = append(audioMids, mid)
+			case "video":
+				videoMids = append(videoMids, mid)
 			}
 		}
 	}

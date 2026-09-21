@@ -6,6 +6,7 @@ import (
 	"net"
 
 	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/transport/call/bitrix"
 	"github.com/sagernet/sing-box/transport/call/dion"
 	"github.com/sagernet/sing-box/transport/call/telemost"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
@@ -62,12 +63,10 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 			log.Notice(fmt.Sprintf("call[telemost]: join_link=%s", joinLink))
 			return &Bridge{relay: relay}, nil
 		case RoleJoiner:
-			tun, err := telemost.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, cfg.DNSRouter, log)
+			relay, err := telemost.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, cfg.DNSRouter, log)
 			if err != nil {
 				return nil, err
 			}
-			relay := tunnel.NewRelayBridge(tun, "joiner", readBuf, cfg.Dialer, log)
-			relay.MarkReady()
 			return &Bridge{relay: relay}, nil
 		}
 	case "wbstream":
@@ -80,48 +79,51 @@ func Connect(ctx context.Context, cfg Config) (*Bridge, error) {
 			log.Notice(fmt.Sprintf("call[wbstream]: join_link=%s", joinLink))
 			return &Bridge{relay: relay}, nil
 		case RoleJoiner:
-			tun, err := wbstream.ConnectJoiner(ctx, cfg.JoinLink, "", cfg.Mode, readBuf, cfg.Dialer, cfg.DNSRouter, log)
+			relay, err := wbstream.ConnectJoiner(ctx, cfg.JoinLink, "", cfg.Mode, readBuf, cfg.Dialer, cfg.DNSRouter, log)
 			if err != nil {
 				return nil, err
 			}
-			relay := tunnel.NewRelayBridge(tun, "joiner", readBuf, cfg.Dialer, log)
-			relay.MarkReady()
 			return &Bridge{relay: relay}, nil
 		}
 	case "vk":
 		switch cfg.Role {
 		case RoleCreator:
-			relay, joinLink, err := vk.ConnectCreator(ctx, cookieStr, cfg.JoinLink, readBuf, cfg.Dialer, log)
+			relay, joinLink, err := vk.ConnectCreator(ctx, cookieStr, cfg.JoinLink, readBuf, cfg.Dialer, cfg.DNSRouter, log)
 			if err != nil {
 				return nil, err
 			}
 			log.Notice(fmt.Sprintf("call[vk]: join_link=%s", joinLink))
 			return &Bridge{relay: relay}, nil
 		case RoleJoiner:
-			tun, err := vk.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, cfg.DNSRouter, log)
+			relay, err := vk.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, cfg.DNSRouter, log)
 			if err != nil {
 				return nil, err
 			}
-			relay := tunnel.NewRelayBridge(tun, "joiner", readBuf, cfg.Dialer, log)
-			relay.MarkReady()
+			return &Bridge{relay: relay}, nil
+		}
+	case "bitrix":
+		switch cfg.Role {
+		case RoleJoiner:
+			relay, err := bitrix.ConnectJoiner(ctx, cfg.JoinLink, "", cfg.Mode, readBuf, cfg.Dialer, log)
+			if err != nil {
+				return nil, err
+			}
 			return &Bridge{relay: relay}, nil
 		}
 	case "dion":
 		switch cfg.Role {
 		case RoleCreator:
-			relay, joinLink, err := dion.ConnectCreator(ctx, cookieStr, cfg.JoinLink, cfg.Email, cfg.Password, readBuf, cfg.Dialer, log)
+			relay, joinLink, err := dion.ConnectCreator(ctx, cookieStr, cfg.JoinLink, cfg.Email, cfg.Password, readBuf, cfg.Dialer, cfg.DNSRouter, log)
 			if err != nil {
 				return nil, err
 			}
 			log.Notice(fmt.Sprintf("call[dion]: join_link=%s", joinLink))
 			return &Bridge{relay: relay}, nil
 		case RoleJoiner:
-			tun, err := dion.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, log)
+			relay, err := dion.ConnectJoiner(ctx, cfg.JoinLink, "", readBuf, cfg.Dialer, cfg.DNSRouter, log)
 			if err != nil {
 				return nil, err
 			}
-			relay := tunnel.NewRelayBridge(tun, "joiner", readBuf, cfg.Dialer, log)
-			relay.MarkReady()
 			return &Bridge{relay: relay}, nil
 		}
 	}

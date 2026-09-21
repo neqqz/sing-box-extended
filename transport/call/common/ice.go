@@ -1,20 +1,27 @@
 package common
 
 import (
+	"context"
+	"fmt"
 	"net"
 	"strings"
+
+	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/common/dialer"
+	"github.com/sagernet/sing/common/logger"
+	N "github.com/sagernet/sing/common/network"
 )
 
 func FixICEURL(iceURL string) string {
-	idx := strings.Index(iceURL, ":")
-	if idx < 0 {
+	before, after, ok := strings.Cut(iceURL, ":")
+	if !ok {
 		return iceURL
 	}
-	scheme := iceURL[:idx]
+	scheme := before
 	if scheme != "turn" && scheme != "stun" && scheme != "turns" && scheme != "stuns" {
 		return iceURL
 	}
-	rest := iceURL[idx+1:]
+	rest := after
 	if strings.HasPrefix(rest, "[") {
 		return iceURL
 	}
@@ -41,11 +48,11 @@ func FixICEURL(iceURL string) string {
 }
 
 func ExtractICEHost(iceURL string) string {
-	idx := strings.Index(iceURL, ":")
-	if idx < 0 {
+	_, after, ok := strings.Cut(iceURL, ":")
+	if !ok {
 		return ""
 	}
-	rest := iceURL[idx+1:]
+	rest := after
 	params := strings.Index(rest, "?")
 	if params >= 0 {
 		rest = rest[:params]
@@ -55,4 +62,35 @@ func ExtractICEHost(iceURL string) string {
 		return rest
 	}
 	return host
+}
+
+func ResolveICEHosts(urls []string, dnsRouter adapter.DNSRouter, d N.Dialer, logger logger.ContextLogger, logPrefix string) []string {
+	out := make([]string, len(urls))
+	copy(out, urls)
+	if dnsRouter == nil {
+		return out
+	}
+	resolved := make(map[string]string)
+	for i, iceURL := range out {
+		fixed := FixICEURL(iceURL)
+		host := ExtractICEHost(fixed)
+		if host == "" || net.ParseIP(host) != nil {
+			out[i] = fixed
+			continue
+		}
+		ip, ok := resolved[host]
+		if !ok {
+			addrs, err := dnsRouter.Lookup(context.Background(), host, d.(dialer.ResolveDialer).QueryOptions())
+			if err != nil {
+				logger.Warn(fmt.Sprintf("%s: resolve ICE host %s failed: %s", logPrefix, MaskAddr(host), MaskError(err)))
+				out[i] = fixed
+				continue
+			}
+			ip = addrs[0].String()
+			resolved[host] = ip
+			logger.Debug(fmt.Sprintf("%s: resolved ICE host %s -> %s", logPrefix, host, ip))
+		}
+		out[i] = strings.Replace(fixed, host, ip, 1)
+	}
+	return out
 }

@@ -4,8 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/gorilla/websocket"
-	"github.com/pion/webrtc/v4"
+	"github.com/kulikov0/headless-client/webrtc"
 )
 
 type P2PHandler struct {
@@ -72,7 +71,7 @@ func (p *P2PHandler) OnRegisteredPeer(participantId int64) {
 	p.sendOfferToPeer(participantId)
 }
 
-func (p *P2PHandler) OnTransmittedData(data map[string]interface{}) {
+func (p *P2PHandler) OnTransmittedData(data map[string]any) {
 	if cand, ok := data["candidate"]; ok {
 		p.bridge.logger.Debug("[p2p] Remote ICE candidate")
 		candJSON, _ := json.Marshal(cand)
@@ -80,19 +79,20 @@ func (p *P2PHandler) OnTransmittedData(data map[string]interface{}) {
 		json.Unmarshal(candJSON, &candInit)
 		p.bridge.relay.AddICECandidate(candInit)
 	}
-	if sdp, ok := data["sdp"].(map[string]interface{}); ok {
+	if sdp, ok := data["sdp"].(map[string]any); ok {
 		sdpType, _ := sdp["type"].(string)
 		sdpStr, _ := sdp["sdp"].(string)
 		p.bridge.logger.Debug(fmt.Sprintf("[p2p] Remote SDP: %s", sdpType))
-		if sdpType == "answer" {
+		switch sdpType {
+		case "answer":
 			p.bridge.relay.SetRemoteDescription(webrtc.SDPTypeAnswer, sdpStr)
-		} else if sdpType == "offer" {
+		case "offer":
 			p.bridge.relay.SetRemoteDescription(webrtc.SDPTypeOffer, sdpStr)
 			answer, err := p.bridge.relay.CreateAnswer()
 			if err == nil && p.remotePeerId != nil {
-				p.bridge.vkSend("transmit-data", map[string]interface{}{
+				p.bridge.vkSend("transmit-data", map[string]any{
 					"participantId": *p.remotePeerId,
-					"data": map[string]interface{}{"sdp": map[string]interface{}{
+					"data": map[string]any{"sdp": map[string]any{
 						"type": answer.Type.String(), "sdp": answer.SDP,
 					}},
 				})
@@ -103,11 +103,11 @@ func (p *P2PHandler) OnTransmittedData(data map[string]interface{}) {
 
 func (p *P2PHandler) OnPionICECandidate(data json.RawMessage) {
 	if p.remotePeerId != nil {
-		var cand interface{}
+		var cand any
 		json.Unmarshal(data, &cand)
-		p.bridge.vkSend("transmit-data", map[string]interface{}{
+		p.bridge.vkSend("transmit-data", map[string]any{
 			"participantId": *p.remotePeerId,
-			"data":          map[string]interface{}{"candidate": cand},
+			"data":          map[string]any{"candidate": cand},
 		})
 	} else {
 		var candInit webrtc.ICECandidateInit
@@ -153,7 +153,7 @@ func (p *P2PHandler) setupCallbacks() {
 
 func (p *P2PHandler) kickRemotePeer() {
 	if p.remotePeerId != nil {
-		p.bridge.vkSend("remove-participant", map[string]interface{}{
+		p.bridge.vkSend("remove-participant", map[string]any{
 			"participantId": *p.remotePeerId,
 			"ban":           false,
 		})
@@ -173,19 +173,19 @@ func (p *P2PHandler) sendOfferToPeer(participantId int64) {
 		seq := p.bridge.vkSeq
 		raw := fmt.Sprintf(`{"command":"transmit-data","sequence":%d,"participantId":%d,"data":{"sdp":{"type":%q,"sdp":%s}}}`,
 			seq, participantId, offer.Type.String(), sdpStr)
-		if p.bridge.vkWs != nil {
-			p.bridge.vkWs.WriteMessage(websocket.TextMessage, []byte(raw))
+		if p.bridge.sfu != nil {
+			p.bridge.sfu.Send([]byte(raw))
 		}
 		p.bridge.mu.Unlock()
 		p.bridge.logger.Debug("[vk-ws] -> transmit-data (offer)")
 	}
 	for _, cand := range candidates {
 		candJSON, _ := json.Marshal(cand)
-		var c interface{}
+		var c any
 		json.Unmarshal(candJSON, &c)
-		p.bridge.vkSend("transmit-data", map[string]interface{}{
+		p.bridge.vkSend("transmit-data", map[string]any{
 			"participantId": participantId,
-			"data":          map[string]interface{}{"candidate": c},
+			"data":          map[string]any{"candidate": c},
 		})
 	}
 	if len(candidates) > 0 {

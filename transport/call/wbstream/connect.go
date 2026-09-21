@@ -9,6 +9,7 @@ import (
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
+	"github.com/sagernet/sing-box/transport/call/tunnel/rtc"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
 )
@@ -20,10 +21,11 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, mode string, readBuf
 	}
 	cookieHeader := common.FilterCookies(cookieStr, WBStreamCookieAllowlist)
 	httpClient := common.HttpClient(dialer)
-	bearer, err := RefreshAccessToken(httpClient, cookieHeader, deviceID)
+	bearer, rotated, err := RefreshAccessToken(httpClient, cookieHeader, deviceID)
 	if err != nil {
 		return nil, "", fmt.Errorf("wbstream: slide-v3 refresh: %w", err)
 	}
+	cookieHeader = mergeCookies(cookieHeader, rotated)
 	requestedRoom := ParseRoomID(roomID)
 	resolvedRoomID, roomToken, accessToken, serverURL, err := AuthAsLoggedIn(httpClient, cookieHeader, bearer, requestedRoom, "Creator")
 	if err != nil {
@@ -40,6 +42,7 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, mode string, readBuf
 		return nil, "", fmt.Errorf("wbstream: obfuscator init: %w", err)
 	}
 
+	var relay *tunnel.RelayBridge
 	joinSession := func(token, access, server string) (*Session, <-chan tunnel.DataTunnel) {
 		tunCh := make(chan tunnel.DataTunnel, 1)
 		sess := NewSession(SessionConfig{
@@ -60,6 +63,11 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, mode string, readBuf
 			default:
 			}
 		}
+		sess.OnPeerRestart = func() {
+			if relay != nil {
+				relay.Reset()
+			}
+		}
 		return sess, tunCh
 	}
 
@@ -78,18 +86,21 @@ func ConnectCreator(ctx context.Context, cookieStr, roomID, mode string, readBuf
 		return nil, "", fmt.Errorf("wbstream: creator tunnel timed out")
 	}
 
-	relay := tunnel.NewRelayBridge(firstTun, "creator", bridgeReadBufFor(firstTun, readBuf), dialer, logger)
-	go creatorReconnectLoop(ctx, relay, sess, joinSession, httpClient, cookieHeader, deviceID, resolvedRoomID, readBuf, logger)
+	relay = tunnel.NewRelayBridge(firstTun, "creator", bridgeReadBufFor(firstTun, readBuf), dialer, logger)
+	go creatorReconnectLoop(ctx, relay, sess, joinSession, httpClient, cookieHeader, bearer, deviceID, resolvedRoomID, readBuf, logger)
 	return relay, APIBase + "/room/" + resolvedRoomID, nil
 }
 
-func ConnectJoiner(ctx context.Context, roomID, displayName, mode string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (tunnel.DataTunnel, error) {
+func ConnectJoiner(ctx context.Context, roomID, displayName, mode string, readBuf int, dialer N.Dialer, dnsRouter adapter.DNSRouter, logger logger.ContextLogger) (*tunnel.RelayBridge, error) {
 	roomID = ParseRoomID(roomID)
 	if displayName == "" {
 		displayName = "Joiner"
 	}
 	if mode == "" {
 		mode = TunnelModeDC
+	}
+	if readBuf <= 0 {
+		readBuf = 32768
 	}
 	joiner := NewWBStreamJoiner(logger, dialer, dnsRouter, nil)
 	tunCh := make(chan tunnel.DataTunnel, 1)
@@ -103,7 +114,10 @@ func ConnectJoiner(ctx context.Context, roomID, displayName, mode string, readBu
 	go joiner.RunWithParams(params)
 	select {
 	case tun := <-tunCh:
-		return tun, nil
+		rb := tunnel.NewRelayBridge(tun, "joiner", bridgeReadBufFor(tun, readBuf), dialer, logger)
+		rb.SetOnConfigAck(joiner.MarkConfigAcked)
+		rb.MarkReady()
+		return rb, nil
 	case <-ctx.Done():
 		joiner.Close()
 		return nil, ctx.Err()
@@ -116,7 +130,7 @@ func creatorReconnectLoop(
 	sess *Session,
 	joinSession func(token, access, server string) (*Session, <-chan tunnel.DataTunnel),
 	httpClient *http.Client,
-	cookieHeader, deviceID, roomID string,
+	cookieHeader, bearer, deviceID, roomID string,
 	readBuf int,
 	logger logger.ContextLogger,
 ) {
@@ -143,15 +157,21 @@ func creatorReconnectLoop(
 			if relay.IsClosed() {
 				return
 			}
-			bearer, err := RefreshAccessToken(httpClient, cookieHeader, deviceID)
-			if err != nil {
-				logger.Warn(fmt.Sprintf("wbstream: rejoin token refresh failed: %v, retrying", err))
-				continue
-			}
 			_, roomToken, accessToken, serverURL, err := AuthAsLoggedIn(httpClient, cookieHeader, bearer, roomID, "Creator")
 			if err != nil {
-				logger.Warn(fmt.Sprintf("wbstream: rejoin auth failed: %v, retrying", err))
-				continue
+				logger.Warn(fmt.Sprintf("wbstream: rejoin auth failed: %v, refreshing bearer", err))
+				var rotated map[string]string
+				bearer, rotated, err = RefreshAccessToken(httpClient, cookieHeader, deviceID)
+				if err != nil {
+					logger.Warn(fmt.Sprintf("wbstream: rejoin token refresh failed: %v, retrying", err))
+					continue
+				}
+				cookieHeader = mergeCookies(cookieHeader, rotated)
+				_, roomToken, accessToken, serverURL, err = AuthAsLoggedIn(httpClient, cookieHeader, bearer, roomID, "Creator")
+				if err != nil {
+					logger.Warn(fmt.Sprintf("wbstream: rejoin auth failed: %v, retrying", err))
+					continue
+				}
 			}
 			newSess, tunCh := joinSession(roomToken, accessToken, serverURL)
 			if err := newSess.Start(); err != nil {
@@ -178,7 +198,7 @@ func creatorReconnectLoop(
 
 func bridgeReadBufFor(tun tunnel.DataTunnel, readBuf int) int {
 	switch tun.(type) {
-	case *tunnel.DCTunnel, *tunnel.MultiTrackKCPTunnel:
+	case *rtc.DCTunnel, *rtc.MultiTrackKCPTunnel:
 		return readBuf
 	}
 	return common.VP8BufSize

@@ -2,28 +2,28 @@ package telemost
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
-	"github.com/pion/webrtc/v4"
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
+	"github.com/sagernet/sing-box/transport/call/tunnel/rtc"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+
+	"github.com/google/uuid"
+	headless "github.com/kulikov0/headless-client"
+	"github.com/kulikov0/headless-client/webrtc"
+	"github.com/kulikov0/headless-client/websocket"
 )
 
 const (
@@ -62,10 +62,12 @@ type TelemostJoiner struct {
 	pubPending   []webrtc.ICECandidateInit
 
 	sampleTrack *webrtc.TrackLocalStaticSample
-	vp8tunnel   *tunnel.VP8DataTunnel
+	vp8tunnel   *rtc.VP8DataTunnel
 	obf         *tunnel.TunnelObfuscator
 	vp8FPS      int
 	vp8Batch    int
+	reliable    bool
+	dualTrack   bool
 
 	httpClient *http.Client
 	instanceID string
@@ -86,15 +88,17 @@ type TelemostJoiner struct {
 	configAck        tunnel.ConfigAckTracker
 	reconnectAttempt atomic.Int32
 
-	setSlotsKey    int
-	initBundleSent bool
-	boundPeers     map[string]bool
-	unboundPeers   map[string]bool
-	boundMu        sync.Mutex
+	setSlotsKey      int
+	slotsMu          sync.Mutex
+	screenshareAsked bool
+	initBundleSent   bool
+	boundPeers       map[string]bool
+	unboundPeers     map[string]bool
+	boundMu          sync.Mutex
 }
 
 func NewTelemostJoiner(logger logger.ContextLogger, dialer N.Dialer, dnsRouter adapter.DNSRouter, pcConfig common.PeerConnectionConfigurer, addTracks common.AddTunnelTracksFunc, readTrackFn common.ReadTrackFunc) *TelemostJoiner {
-	return &TelemostJoiner{
+	j := &TelemostJoiner{
 		logger:      logger,
 		dialer:      dialer,
 		dnsRouter:   dnsRouter,
@@ -103,14 +107,18 @@ func NewTelemostJoiner(logger logger.ContextLogger, dialer N.Dialer, dnsRouter a
 		ReadTrackFn: readTrackFn,
 		instanceID:  uuid.New().String(),
 		stopCh:      make(chan struct{}),
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
-				},
-			},
+	}
+	j.httpClient = &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: headless.ChromeWindows.Transport(j.tlsOptions()),
+	}
+	return j
+}
+
+func (j *TelemostJoiner) tlsOptions() headless.TLSOptions {
+	return headless.TLSOptions{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return j.dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
 		},
 	}
 }
@@ -121,6 +129,8 @@ func (j *TelemostJoiner) RunWithParams(jsonParams string) {
 		DisplayName string `json:"displayName"`
 		VP8FPS      int    `json:"vp8Fps"`
 		VP8Batch    int    `json:"vp8Batch"`
+		Reliable    bool   `json:"reliable"`
+		DualTrack   bool   `json:"dualTrack"`
 	}
 	if err := json.Unmarshal([]byte(jsonParams), &params); err != nil {
 		j.logger.Error(fmt.Sprintf("telemost-joiner: failed to parse params: %v", err))
@@ -139,8 +149,10 @@ func (j *TelemostJoiner) RunWithParams(jsonParams string) {
 	j.obf = obf
 	j.vp8FPS = params.VP8FPS
 	j.vp8Batch = params.VP8Batch
-	j.logger.Info(fmt.Sprintf("telemost-joiner: link=%s name=%s vp8Fps=%d vp8Batch=%d localEpoch=0x%08x",
-		j.joinLink, j.displayName, params.VP8FPS, params.VP8Batch, obf.LocalEpoch()))
+	j.reliable = params.Reliable
+	j.dualTrack = params.DualTrack
+	j.logger.Info(fmt.Sprintf("telemost-joiner: link=%s name=%s vp8Fps=%d vp8Batch=%d dualTrack=%v localEpoch=0x%08x",
+		j.joinLink, j.displayName, params.VP8FPS, params.VP8Batch, j.dualTrack, obf.LocalEpoch()))
 	j.logger.Info("telemost-joiner: connecting")
 	if err := j.runOnce(); err != nil {
 		j.logger.Error(fmt.Sprintf("telemost-joiner: %v", err))
@@ -189,14 +201,14 @@ func (j *TelemostJoiner) Close() {
 
 func TmParseMids(sdp string) (audioMid, videoMid string) {
 	var media string
-	for _, line := range strings.Split(sdp, "\r\n") {
+	for line := range strings.SplitSeq(sdp, "\r\n") {
 		if strings.HasPrefix(line, "m=audio") {
 			media = "audio"
 		} else if strings.HasPrefix(line, "m=video") {
 			media = "video"
 		}
-		if strings.HasPrefix(line, "a=mid:") {
-			mid := strings.TrimPrefix(line, "a=mid:")
+		if after, ok := strings.CutPrefix(line, "a=mid:"); ok {
+			mid := after
 			if media == "audio" && audioMid == "" {
 				audioMid = mid
 			} else if media == "video" && videoMid == "" {
@@ -355,7 +367,7 @@ func (j *TelemostJoiner) getConnection() error {
 	return nil
 }
 
-func (j *TelemostJoiner) wsSend(msg interface{}) {
+func (j *TelemostJoiner) wsSend(msg any) {
 	j.wsMu.Lock()
 	defer j.wsMu.Unlock()
 	if j.ws != nil {
@@ -369,27 +381,27 @@ func (j *TelemostJoiner) ack(uid string) {
 	if uid == "" {
 		return
 	}
-	j.wsSend(map[string]interface{}{
+	j.wsSend(map[string]any{
 		"uid": uid,
-		"ack": map[string]interface{}{
-			"status": map[string]interface{}{"code": "OK", "description": ""},
+		"ack": map[string]any{
+			"status": map[string]any{"code": "OK", "description": ""},
 		},
 	})
 }
 
 func (j *TelemostJoiner) sendHello() {
-	j.wsSend(map[string]interface{}{
+	j.wsSend(map[string]any{
 		"uid": uuid.New().String(),
-		"hello": map[string]interface{}{
-			"participantMeta":       map[string]interface{}{"name": j.displayName, "role": "SPEAKER", "description": "", "sendAudio": false, "sendVideo": true},
-			"participantAttributes": map[string]interface{}{"name": j.displayName, "role": "SPEAKER", "description": ""},
+		"hello": map[string]any{
+			"participantMeta":       map[string]any{"name": j.displayName, "role": "SPEAKER", "description": "", "sendAudio": false, "sendVideo": true},
+			"participantAttributes": map[string]any{"name": j.displayName, "role": "SPEAKER", "description": ""},
 			"sendAudio":             false, "sendVideo": true, "sendSharing": false,
 			"participantId":       j.peerID,
 			"roomId":              j.roomID,
 			"serviceName":         j.serviceName,
 			"credentials":         j.credentials,
 			"capabilitiesOffer":   CapabilitiesOffer,
-			"sdkInfo":             map[string]interface{}{"implementation": "browser", "version": "6.0.0", "userAgent": common.UserAgent, "hwConcurrency": 8},
+			"sdkInfo":             map[string]any{"implementation": "browser", "version": "6.0.0", "userAgent": headless.ChromeWindows.UserAgent(), "hwConcurrency": 8},
 			"sdkInitializationId": uuid.New().String(),
 			"disablePublisher":    false, "disableSubscriber": false, "disableSubscriberAudio": false,
 		},
@@ -399,9 +411,9 @@ func (j *TelemostJoiner) sendHello() {
 
 func (j *TelemostJoiner) sendICE(cand *webrtc.ICECandidate, target string, pcSeq int) {
 	candidate := cand.ToJSON()
-	j.wsSend(map[string]interface{}{
+	j.wsSend(map[string]any{
 		"uid": uuid.New().String(),
-		"webrtcIceCandidate": map[string]interface{}{
+		"webrtcIceCandidate": map[string]any{
 			"candidate": candidate.Candidate, "sdpMid": *candidate.SDPMid,
 			"sdpMlineIndex": *candidate.SDPMLineIndex, "target": target, "pcSeq": pcSeq,
 		},
@@ -410,17 +422,23 @@ func (j *TelemostJoiner) sendICE(cand *webrtc.ICECandidate, target string, pcSeq
 
 func (j *TelemostJoiner) initPC() {
 	config := webrtc.Configuration{ICEServers: j.iceServers}
-	settingEngine := webrtc.SettingEngine{}
-	settingEngine.DetachDataChannels()
-	if j.PCConfig != nil {
-		j.PCConfig.ConfigureSettingEngine(&settingEngine)
+
+	newAPI := func() (*webrtc.API, error) {
+		return NewAPI(func(settingEngine *webrtc.SettingEngine) {
+			settingEngine.DetachDataChannels()
+			if j.PCConfig != nil {
+				j.PCConfig.ConfigureSettingEngine(settingEngine)
+			}
+		})
 	}
-	api, err := NewAPI(&settingEngine)
+
+	subAPI, err := newAPI()
 	if err != nil {
-		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create webrtc API: %v", err))
+		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create subscriber webrtc API: %v", err))
 		return
 	}
-	subPC, err := api.NewPeerConnection(config)
+
+	subPC, err := subAPI.NewPeerConnection(config)
 	if err != nil {
 		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create sub PC: %v", err))
 		return
@@ -433,8 +451,9 @@ func (j *TelemostJoiner) initPC() {
 	})
 	subPC.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		j.logger.Debug(fmt.Sprintf("telemost-joiner: sub PC state: %s", state.String()))
-		if state == webrtc.PeerConnectionStateFailed {
+		if state == webrtc.PeerConnectionStateFailed && !j.isClosed() {
 			j.logger.Error("telemost-joiner: ERROR: subscriber connection failed")
+			go j.forceReconnect("subscriber connection failed")
 		}
 	})
 	subPC.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
@@ -445,7 +464,13 @@ func (j *TelemostJoiner) initPC() {
 			}
 		}, j.logger, "telemost-joiner")
 	})
-	pubPC, err := api.NewPeerConnection(config)
+	pubAPI, err := newAPI()
+	if err != nil {
+		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create publisher webrtc API: %v", err))
+		return
+	}
+
+	pubPC, err := pubAPI.NewPeerConnection(config)
 	if err != nil {
 		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: create pub PC: %v", err))
 		return
@@ -460,20 +485,34 @@ func (j *TelemostJoiner) initPC() {
 	})
 	pubPC.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		j.logger.Debug(fmt.Sprintf("telemost-joiner: pub PC state: %s", state.String()))
+		if state == webrtc.PeerConnectionStateFailed && !j.isClosed() {
+			j.logger.Error("telemost-joiner: ERROR: publisher connection failed")
+			go j.forceReconnect("publisher connection failed")
+		}
 		if state == webrtc.PeerConnectionStateConnected && j.vp8tunnel == nil {
 			j.reconnectAttempt.Store(0)
 			j.logger.Info("telemost-joiner: === VP8 TUNNEL CONNECTED ===")
-			j.vp8tunnel = tunnel.NewVP8DataTunnel(j.sampleTrack, j.obf, j.logger)
+			j.vp8tunnel = rtc.NewVP8DataTunnel(j.sampleTrack, j.obf, j.logger)
 			vp8tun := j.vp8tunnel
 			vp8tun.Start(j.vp8FPS, j.vp8Batch)
+			var active tunnel.DataTunnel = vp8tun
+			if j.reliable {
+				mt := rtc.NewMultiTrackTunnel([]*rtc.VP8DataTunnel{vp8tun})
+				active = rtc.NewMultiTrackKCPTunnel(mt, j.logger)
+				j.logger.Debug("telemost-joiner: per-track kcp reliability active over video tunnel")
+			}
 			if !j.configAck.Acknowledged() {
+				trackCount := 1
+				if j.dualTrack {
+					trackCount = 2
+				}
 				acked, cancel := j.configAck.Arm()
-				go tunnel.SendVP8ConfigUntilAcked(acked, cancel, j.stopCh, vp8tun,
-					vp8tun.FPS(), vp8tun.Batch(), 1, j.logger, "telemost-joiner")
+				go tunnel.SendVP8ConfigUntilAcked(acked, cancel, j.stopCh, active,
+					vp8tun.FPS(), vp8tun.Batch(), trackCount, j.logger, "telemost-joiner")
 				j.logger.Debug(fmt.Sprintf("telemost-joiner: pushed vp8 config to creator fps=%d batch=%d", vp8tun.FPS(), vp8tun.Batch()))
 			}
 			if j.OnConnected != nil {
-				j.OnConnected(j.vp8tunnel)
+				j.OnConnected(active)
 			}
 		}
 	})
@@ -496,16 +535,16 @@ func (j *TelemostJoiner) sendPubOffer() {
 	offer.SDP = MungeSDPAddVideoContent(offer.SDP)
 	audioMid, videoMid := TmParseMids(offer.SDP)
 	j.logger.Debug(fmt.Sprintf("telemost-joiner: -> publisherSdpOffer pcSeq=%d audioMid=%s videoMid=%s", j.pubSeq, audioMid, videoMid))
-	var tracks []map[string]interface{}
+	var tracks []map[string]any
 	if audioMid != "" {
-		tracks = append(tracks, map[string]interface{}{"mid": audioMid, "transceiverMid": audioMid, "kind": "AUDIO", "priority": 0, "label": "", "codecs": map[string]interface{}{}, "groupId": 1, "description": ""})
+		tracks = append(tracks, map[string]any{"mid": audioMid, "transceiverMid": audioMid, "kind": "AUDIO", "priority": 0, "label": "", "codecs": map[string]any{}, "groupId": 1, "description": ""})
 	}
 	if videoMid != "" {
-		tracks = append(tracks, map[string]interface{}{"mid": videoMid, "transceiverMid": videoMid, "kind": "VIDEO", "priority": 0, "label": "", "codecs": map[string]interface{}{}, "groupId": 2, "description": ""})
+		tracks = append(tracks, map[string]any{"mid": videoMid, "transceiverMid": videoMid, "kind": "VIDEO", "priority": 0, "label": "", "codecs": map[string]any{}, "groupId": 2, "description": ""})
 	}
-	j.wsSend(map[string]interface{}{
+	j.wsSend(map[string]any{
 		"uid":               uuid.New().String(),
-		"publisherSdpOffer": map[string]interface{}{"pcSeq": j.pubSeq, "sdp": offer.SDP, "tracks": tracks},
+		"publisherSdpOffer": map[string]any{"pcSeq": j.pubSeq, "sdp": offer.SDP, "tracks": tracks},
 	})
 }
 
@@ -543,10 +582,29 @@ func (j *TelemostJoiner) sendInitBundle() {
 	j.sendStartupSlotsRamp()
 }
 
-func (j *TelemostJoiner) requestVideoSlots() {
+func (j *TelemostJoiner) nextSlotsKey() int {
+	j.slotsMu.Lock()
+	defer j.slotsMu.Unlock()
 	j.setSlotsKey++
-	j.logger.Debug(fmt.Sprintf("telemost-joiner: -> setSlots key=%d", j.setSlotsKey))
-	j.wsSend(SetSlotsMessage(j.setSlotsKey))
+	return j.setSlotsKey
+}
+
+func (j *TelemostJoiner) requestVideoSlots() {
+	key := j.nextSlotsKey()
+	j.logger.Debug(fmt.Sprintf("telemost-joiner: -> setSlots key=%d", key))
+	j.wsSend(SetSlotsMessage(key))
+}
+
+func (j *TelemostJoiner) pollScreenshareSlots() {
+	for i := range 8 {
+		select {
+		case <-j.stopCh:
+			return
+		case <-time.After(3 * time.Second):
+		}
+		j.logger.Debug(fmt.Sprintf("telemost-joiner: -> setSlots re-request %d to bind screenshare", i+1))
+		j.requestVideoSlots()
+	}
 }
 
 func (j *TelemostJoiner) forceReconnect(reason string) {
@@ -570,10 +628,13 @@ func (j *TelemostJoiner) forceReconnect(reason string) {
 }
 
 func (j *TelemostJoiner) sendStartupSlotsRamp() {
-	for i := 0; i < 4; i++ {
-		j.setSlotsKey++
-		j.logger.Debug(fmt.Sprintf("telemost-joiner: -> setSlots key=%d (startup %d/4)", j.setSlotsKey, i+1))
-		j.wsSend(StartupSetSlotsMessage(i, j.setSlotsKey))
+	for i := range 4 {
+		key := j.nextSlotsKey()
+		j.logger.Debug(fmt.Sprintf("telemost-joiner: -> setSlots key=%d (startup %d/4)", key, i+1))
+		j.wsSend(StartupSetSlotsMessage(i, key))
+	}
+	if j.dualTrack {
+		go j.pollScreenshareSlots()
 	}
 }
 
@@ -606,22 +667,22 @@ func (j *TelemostJoiner) handleSubOffer(sdp string, pcSeq int) {
 	}
 	j.subPC.SetLocalDescription(answer)
 	j.logger.Debug(fmt.Sprintf("telemost-joiner: -> subscriberSdpAnswer pcSeq=%d", pcSeq))
-	j.wsSend(map[string]interface{}{
+	j.wsSend(map[string]any{
 		"uid":                 uuid.New().String(),
-		"subscriberSdpAnswer": map[string]interface{}{"sdp": answer.SDP, "pcSeq": pcSeq},
+		"subscriberSdpAnswer": map[string]any{"sdp": answer.SDP, "pcSeq": pcSeq},
 	})
 	j.sendPubOffer()
 }
 
 func (j *TelemostJoiner) handleMessage(raw []byte) {
-	var msg map[string]interface{}
+	var msg map[string]any
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return
 	}
 	uid, _ := msg["uid"].(string)
 	if _, ok := msg["serverHello"]; ok {
 		j.logger.Debug("telemost-joiner: <- serverHello")
-		if sh, ok := msg["serverHello"].(map[string]interface{}); ok {
+		if sh, ok := msg["serverHello"].(map[string]any); ok {
 			j.parseICEServersFromHello(sh)
 		}
 		j.ack(uid)
@@ -629,7 +690,7 @@ func (j *TelemostJoiner) handleMessage(raw []byte) {
 		return
 	}
 	if so, ok := msg["subscriberSdpOffer"]; ok {
-		soMap, _ := so.(map[string]interface{})
+		soMap, _ := so.(map[string]any)
 		sdp, _ := soMap["sdp"].(string)
 		pcSeq, _ := soMap["pcSeq"].(float64)
 		j.logger.Debug(fmt.Sprintf("telemost-joiner: <- subscriberSdpOffer pcSeq=%d len=%d", int(pcSeq), len(sdp)))
@@ -638,14 +699,14 @@ func (j *TelemostJoiner) handleMessage(raw []byte) {
 		return
 	}
 	if pa, ok := msg["publisherSdpAnswer"]; ok {
-		paMap, _ := pa.(map[string]interface{})
+		paMap, _ := pa.(map[string]any)
 		sdp, _ := paMap["sdp"].(string)
 		j.logger.Debug(fmt.Sprintf("telemost-joiner: <- publisherSdpAnswer %d bytes", len(sdp)))
 		j.handlePubAnswer(sdp)
 		return
 	}
 	if ic, ok := msg["webrtcIceCandidate"]; ok {
-		icMap, _ := ic.(map[string]interface{})
+		icMap, _ := ic.(map[string]any)
 		candidate, _ := icMap["candidate"].(string)
 		sdpMid, _ := icMap["sdpMid"].(string)
 		target, _ := icMap["target"].(string)
@@ -659,13 +720,14 @@ func (j *TelemostJoiner) handleMessage(raw []byte) {
 			}
 			j.OnRemoteCandidate(tgt, candidate)
 		}
-		if target == "SUBSCRIBER" {
+		switch target {
+		case "SUBSCRIBER":
 			if j.subRemoteSet {
 				j.subPC.AddICECandidate(cand)
 			} else {
 				j.subPending = append(j.subPending, cand)
 			}
-		} else if target == "PUBLISHER" {
+		case "PUBLISHER":
 			if j.pubRemoteSet {
 				j.pubPC.AddICECandidate(cand)
 			} else {
@@ -676,8 +738,8 @@ func (j *TelemostJoiner) handleMessage(raw []byte) {
 		return
 	}
 	if ackData, ok := msg["ack"]; ok {
-		if ackMap, ok := ackData.(map[string]interface{}); ok {
-			if status, ok := ackMap["status"].(map[string]interface{}); ok {
+		if ackMap, ok := ackData.(map[string]any); ok {
+			if status, ok := ackMap["status"].(map[string]any); ok {
 				if code, _ := status["code"].(string); code != "OK" {
 					desc, _ := status["description"].(string)
 					j.logger.Warn(fmt.Sprintf("telemost-joiner: ack error: %s %s", code, desc))
@@ -687,14 +749,14 @@ func (j *TelemostJoiner) handleMessage(raw []byte) {
 		return
 	}
 	if ud, ok := msg["upsertDescription"]; ok {
-		udMap, _ := ud.(map[string]interface{})
-		if descs, ok := udMap["description"].([]interface{}); ok {
+		udMap, _ := ud.(map[string]any)
+		if descs, ok := udMap["description"].([]any); ok {
 			for _, d := range descs {
-				dm, _ := d.(map[string]interface{})
+				dm, _ := d.(map[string]any)
 				pid, _ := dm["id"].(string)
 				if pid != "" && pid != j.peerID {
 					participantName := ""
-					if meta, ok := dm["meta"].(map[string]interface{}); ok {
+					if meta, ok := dm["meta"].(map[string]any); ok {
 						participantName, _ = meta["name"].(string)
 					}
 					j.logger.Debug(fmt.Sprintf("telemost-joiner: participant: %s (%s)", participantName, pid))
@@ -716,6 +778,24 @@ func (j *TelemostJoiner) handleMessage(raw []byte) {
 	}
 	if sc, ok := msg["slotsConfig"]; ok {
 		j.logger.Debug(fmt.Sprintf("telemost-joiner: <- slotsConfig %s", BriefJSON(sc)))
+		if j.dualTrack {
+			unboundScreenshare := false
+			for _, ev := range ScreenShareBindings(sc) {
+				pid := ev.ParticipantID
+				if len(pid) > 8 {
+					pid = pid[:8]
+				}
+				j.logger.Debug(fmt.Sprintf("telemost-joiner: [screenshare] slot=%d pid=%s mid=%q reason=%q", ev.Slot, pid, ev.Mid, ev.Reason))
+				if ev.Mid == "" {
+					unboundScreenshare = true
+				}
+			}
+			if unboundScreenshare && !j.screenshareAsked {
+				j.screenshareAsked = true
+				j.logger.Debug("telemost-joiner: [screenshare] advertised with empty mid, re-requesting sized slots once")
+				j.requestVideoSlots()
+			}
+		}
 		needRebind := false
 		presentPids := make(map[string]bool)
 		for _, ev := range SlotsConfigBindings(sc) {
@@ -769,7 +849,7 @@ func (j *TelemostJoiner) handleMessage(raw []byte) {
 		}
 		j.boundMu.Unlock()
 		if needRebind {
-			go j.forceReconnect("slot binding killed")
+			j.logger.Debug("telemost-joiner: slot kill/vanish observed - ignoring (tunnel data path is independent of slot binding)")
 		}
 		j.ack(uid)
 		return
@@ -786,58 +866,32 @@ func (j *TelemostJoiner) handleMessage(raw []byte) {
 	}
 }
 
-func (j *TelemostJoiner) parseICEServersFromHello(sh map[string]interface{}) {
-	rtcCfg, ok := sh["rtcConfiguration"].(map[string]interface{})
+func (j *TelemostJoiner) parseICEServersFromHello(sh map[string]any) {
+	rtcCfg, ok := sh["rtcConfiguration"].(map[string]any)
 	if !ok {
 		return
 	}
-	servers, ok := rtcCfg["iceServers"].([]interface{})
+	servers, ok := rtcCfg["iceServers"].([]any)
 	if !ok {
 		return
 	}
 	var iceServers []webrtc.ICEServer
 	for _, s := range servers {
-		sm, _ := s.(map[string]interface{})
+		sm, _ := s.(map[string]any)
 		var urls []string
-		if u, ok := sm["urls"].([]interface{}); ok {
+		if u, ok := sm["urls"].([]any); ok {
 			for _, v := range u {
 				if vs, ok := v.(string); ok {
-					urls = append(urls, common.FixICEURL(vs))
+					urls = append(urls, vs)
 				}
 			}
 		}
-		ice := webrtc.ICEServer{URLs: urls}
+		ice := webrtc.ICEServer{URLs: common.ResolveICEHosts(urls, j.dnsRouter, j.dialer, j.logger, "telemost-joiner")}
 		if u, ok := sm["username"].(string); ok && u != "" {
 			ice.Username = u
 			ice.Credential, _ = sm["credential"].(string)
 		}
 		iceServers = append(iceServers, ice)
-	}
-	resolved := make(map[string]string)
-	for i, s := range iceServers {
-		for k, u := range s.URLs {
-			host := common.ExtractICEHost(u)
-			if host == "" || net.ParseIP(host) != nil {
-				continue
-			}
-			_, ok := resolved[host]
-			if !ok {
-				rd, hasRD := j.dialer.(dialer.ResolveDialer)
-				if j.dnsRouter == nil || !hasRD {
-					continue
-				}
-				var err error
-				var addrs []netip.Addr
-				addrs, err = j.dnsRouter.Lookup(context.Background(), host, rd.QueryOptions())
-				if err != nil {
-					j.logger.Warn(fmt.Sprintf("telemost-joiner: resolve ICE host %s failed: %s", common.MaskAddr(host), common.MaskError(err)))
-					continue
-				}
-				resolved[host] = addrs[0].String()
-				j.logger.Debug(fmt.Sprintf("telemost-joiner: resolved ICE host %s -> %s", host, addrs[0]))
-			}
-			iceServers[i].URLs[k] = strings.Replace(u, host, resolved[host], 1)
-		}
 	}
 	j.iceServers = iceServers
 	for i, s := range iceServers {
@@ -853,18 +907,18 @@ func (j *TelemostJoiner) connectAndRun() {
 		return
 	}
 	hostname := parsed.Hostname()
-	wsHeader := http.Header{}
-	wsHeader.Set("User-Agent", common.UserAgent)
+	wsHeader := headless.ChromeWindows.Headers(headless.DestWebSocket)
 	wsHeader.Set("Origin", TmOrigin)
 	j.logger.Debug(fmt.Sprintf("telemost-joiner: connecting to %s", j.mediaURL))
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		WriteBufferSize:  65536,
-		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true, ServerName: hostname},
-		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := headless.ChromeWindows.WebSocketDialer(headless.TLSOptions{
+		ServerName:         hostname,
+		InsecureSkipVerify: true,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return j.dialer.DialContext(ctx, network, M.ParseSocksaddr(addr))
 		},
-	}
+	})
+	dialer.HandshakeTimeout = 10 * time.Second
+	dialer.WriteBufferSize = 65536
 	ws, _, err := dialer.Dial(j.mediaURL, wsHeader)
 	if err != nil {
 		j.logger.Error(fmt.Sprintf("telemost-joiner: ERROR: ws connect: %s", common.MaskError(err)))
@@ -884,7 +938,7 @@ func (j *TelemostJoiner) connectAndRun() {
 			case <-stopPing:
 				return
 			case <-ticker.C:
-				j.wsSend(map[string]interface{}{"uid": uuid.New().String(), "ping": map[string]interface{}{}})
+				j.wsSend(map[string]any{"uid": uuid.New().String(), "ping": map[string]any{}})
 			}
 		}
 	}()

@@ -2,7 +2,6 @@ package vk
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,15 +14,19 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pion/webrtc/v4"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/common/dialer"
 	"github.com/sagernet/sing-box/transport/call/common"
+	"github.com/sagernet/sing-box/transport/call/headlessapi"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
+	"github.com/sagernet/sing-box/transport/call/tunnel/rtc"
 	"github.com/sagernet/sing-box/transport/call/wtsignal"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+
+	headless "github.com/kulikov0/headless-client"
+	"github.com/kulikov0/headless-client/webrtc"
 )
 
 const (
@@ -31,6 +34,8 @@ const (
 	vkReconnectMaxDelay     = 16 * time.Second
 	vkMaxReconnectAttempts  = 10
 )
+
+const vkOrigin = "https://vk.ru"
 
 const vkTopologyDirect = "DIRECT"
 
@@ -94,8 +99,8 @@ type VKJoiner struct {
 	pc             *webrtc.PeerConnection
 	sampleTrack    *webrtc.TrackLocalStaticSample
 	dc             *webrtc.DataChannel
-	vp8tunnel      *tunnel.VP8DataTunnel
-	sym            *tunnel.SymmetricScreenTunnel
+	vp8tunnel      *rtc.VP8DataTunnel
+	sym            *rtc.SymmetricScreenTunnel
 	producerScreen screenUplink
 	obf            *tunnel.TunnelObfuscator
 	vp8FPS         int
@@ -165,8 +170,7 @@ func (h *VKJoiner) RunWithParams(jsonParams string) {
 		}
 		h.logger.Info(fmt.Sprintf("vk-joiner: reconnect attempt #%d", attempt))
 		if err := h.runOnce(); err != nil {
-			var authRotten *vkAuthRottenError
-			if errors.As(err, &authRotten) {
+			if _, ok := errors.AsType[*vkAuthRottenError](err); ok {
 				h.logger.Error(fmt.Sprintf("vk-joiner: %v, surrendering", err))
 				return
 			}
@@ -313,17 +317,17 @@ func (h *VKJoiner) joinCall() error {
 	}
 	client := &http.Client{
 		Timeout: 15 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{ServerName: parsed.Hostname()},
-			DialContext:     h.dialContext,
-		},
+		Transport: headless.ChromeWindows.Transport(headless.TLSOptions{
+			ServerName:  parsed.Hostname(),
+			DialContext: h.dialContext,
+		}),
 	}
 	req, err := http.NewRequest("POST", apiURL, strings.NewReader(body.Encode()))
 	if err != nil {
 		return fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", common.UserAgent)
+	req.Header.Set("User-Agent", headless.ChromeWindows.UserAgent())
 	h.logger.Debug("vk-joiner: calling joinConversationByLink...")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -336,13 +340,13 @@ func (h *VKJoiner) joinCall() error {
 	}
 	var joinResp VKJoinResponse
 	if jsonErr := json.Unmarshal(raw, &joinResp); jsonErr != nil {
-		return fmt.Errorf("decode join response: %w (body: %s)", jsonErr, truncateBody(raw))
+		return fmt.Errorf("decode join response: %w (body: %s)", jsonErr, common.BodySnippet(raw))
 	}
 	if joinResp.Endpoint == "" {
 		if rotten := detectVKAuthRotten(raw); rotten != nil {
 			return rotten
 		}
-		return fmt.Errorf("empty endpoint in join response: %s", truncateBody(raw))
+		return fmt.Errorf("empty endpoint in join response: %s", common.BodySnippet(raw))
 	}
 	h.joinResp = &joinResp
 	h.logger.Debug(fmt.Sprintf("vk-joiner: joined, turn=%v", joinResp.TurnServer.URLs))
@@ -373,7 +377,7 @@ func (h *VKJoiner) connectSFU() {
 		"&appVersion=" + h.authParams.AppVersion +
 		"&version=" + h.authParams.ProtocolVersion +
 		"&device=browser&capabilities=" + capabilities + "&clientType=VK&tgt=join&compression=deflate-raw"
-	sfu, err := wtsignal.Dial(wtURL, hostname, resolvedIP)
+	sfu, err := wtsignal.Dial(wtURL, hostname, resolvedIP, vkOrigin)
 	if err != nil {
 		h.logger.Error(fmt.Sprintf("vk-joiner: WebTransport connect failed: %s", common.MaskError(err)))
 		return
@@ -383,11 +387,11 @@ func (h *VKJoiner) connectSFU() {
 	h.vkSeq = 0
 	h.vkMu.Unlock()
 	h.logger.Debug("vk-joiner: WebTransport connected")
-	h.vkSend("update-media-modifiers", map[string]interface{}{
-		"mediaModifiers": map[string]interface{}{"denoise": true, "denoiseAnn": true},
+	h.vkSend("update-media-modifiers", map[string]any{
+		"mediaModifiers": map[string]any{"denoise": true, "denoiseAnn": true},
 	})
-	h.vkSend("change-media-settings", map[string]interface{}{
-		"mediaSettings": map[string]interface{}{
+	h.vkSend("change-media-settings", map[string]any{
+		"mediaSettings": map[string]any{
 			"isAudioEnabled": false, "isVideoEnabled": true,
 			"isScreenSharingEnabled": h.dualTrack, "isFastScreenSharingEnabled": false,
 			"isAudioSharingEnabled": false, "isAnimojiEnabled": false,
@@ -396,7 +400,7 @@ func (h *VKJoiner) connectSFU() {
 	h.readLoop()
 }
 
-func (h *VKJoiner) vkSend(command string, extra map[string]interface{}) {
+func (h *VKJoiner) vkSend(command string, extra map[string]any) {
 	h.vkMu.Lock()
 	defer h.vkMu.Unlock()
 	if h.sfu == nil {
@@ -410,7 +414,7 @@ func (h *VKJoiner) vkSend(command string, extra map[string]interface{}) {
 	h.logger.Debug(fmt.Sprintf("vk-joiner: -> %s", command))
 }
 
-func (h *VKJoiner) vkSendTransmitData(participantId int64, payload map[string]interface{}) {
+func (h *VKJoiner) vkSendTransmitData(participantId int64, payload map[string]any) {
 	h.vkMu.Lock()
 	defer h.vkMu.Unlock()
 	if h.sfu == nil {
@@ -445,7 +449,7 @@ func (h *VKJoiner) readLoop() {
 }
 
 func (h *VKJoiner) handleVKMessage(raw []byte) {
-	var msg map[string]interface{}
+	var msg map[string]any
 	if err := json.Unmarshal(raw, &msg); err != nil {
 		return
 	}
@@ -457,7 +461,7 @@ func (h *VKJoiner) handleVKMessage(raw []byte) {
 		case "connection":
 			h.handleConnection(msg)
 		case "transmitted-data":
-			data, _ := msg["data"].(map[string]interface{})
+			data, _ := msg["data"].(map[string]any)
 			if data != nil {
 				if pid, ok := msg["participantId"].(float64); ok && h.remotePeerID == nil {
 					h.onRegisteredPeer(int64(pid))
@@ -493,20 +497,20 @@ func (h *VKJoiner) handleVKMessage(raw []byte) {
 	}
 }
 
-func (h *VKJoiner) handleConnection(msg map[string]interface{}) {
-	if conv, ok := msg["conversation"].(map[string]interface{}); ok {
+func (h *VKJoiner) handleConnection(msg map[string]any) {
+	if conv, ok := msg["conversation"].(map[string]any); ok {
 		topo, _ := conv["topology"].(string)
 		h.logger.Debug(fmt.Sprintf("vk-joiner: connection topology=%q", topo))
 	}
-	convParams, ok := msg["conversationParams"].(map[string]interface{})
+	convParams, ok := msg["conversationParams"].(map[string]any)
 	if !ok {
 		return
 	}
-	turn, ok := convParams["turn"].(map[string]interface{})
+	turn, ok := convParams["turn"].(map[string]any)
 	if !ok {
 		return
 	}
-	urlsRaw, _ := turn["urls"].([]interface{})
+	urlsRaw, _ := turn["urls"].([]any)
 	var urls []string
 	for _, u := range urlsRaw {
 		if s, ok := u.(string); ok {
@@ -527,23 +531,34 @@ func (h *VKJoiner) handleConnection(msg map[string]interface{}) {
 func (h *VKJoiner) initPC() {
 	var iceServers []webrtc.ICEServer
 	if len(h.joinResp.StunServer.URLs) > 0 {
-		iceServers = append(iceServers, webrtc.ICEServer{URLs: h.joinResp.StunServer.URLs})
+		iceServers = append(iceServers, webrtc.ICEServer{
+			URLs: common.ResolveICEHosts(h.joinResp.StunServer.URLs, h.DNSRouter, h.Dialer, h.logger, "vk-joiner"),
+		})
 	}
 	if len(h.joinResp.TurnServer.URLs) > 0 {
 		iceServers = append(iceServers, webrtc.ICEServer{
-			URLs:       h.joinResp.TurnServer.URLs,
+			URLs:       common.ResolveICEHosts(h.joinResp.TurnServer.URLs, h.DNSRouter, h.Dialer, h.logger, "vk-joiner"),
 			Username:   h.joinResp.TurnServer.Username,
 			Credential: h.joinResp.TurnServer.Credential,
 		})
 	}
 	mode := h.authParams.TunnelMode
-	settingEngine := webrtc.SettingEngine{}
-	settingEngine.DisableCloseByDTLS(true)
-	settingEngine.DetachDataChannels()
-	if h.PCConfig != nil {
-		h.PCConfig.ConfigureSettingEngine(&settingEngine)
+	api, err := headlessapi.WebRTCAPI(headlessapi.Options{
+		Profile: headless.ChromeWindows.WithDTLS13Mimicry(),
+		Configure: func(settingEngine *webrtc.SettingEngine) {
+			settingEngine.DisableCloseByDTLS(true)
+			settingEngine.DetachDataChannels()
+			if h.PCConfig != nil {
+				h.PCConfig.ConfigureSettingEngine(settingEngine)
+			}
+		},
+	})
+	if err != nil {
+		h.logger.Error(fmt.Sprintf("vk-joiner: failed to build webrtc api: %v", err))
+		return
 	}
-	pc, err := webrtc.NewAPI(webrtc.WithSettingEngine(settingEngine)).NewPeerConnection(webrtc.Configuration{
+
+	pc, err := api.NewPeerConnection(webrtc.Configuration{
 		ICEServers: iceServers,
 	})
 	if err != nil {
@@ -571,7 +586,7 @@ func (h *VKJoiner) initPC() {
 				h.reconnectAttempt.Store(0)
 				h.logger.Info("vk-joiner: === DC TUNNEL CONNECTED ===")
 				if h.OnConnected != nil {
-					h.OnConnected(tunnel.NewDCTunnel(dc, h.obf, common.RTPBufSize, h.logger))
+					h.OnConnected(rtc.NewDCTunnel(dc, h.obf, common.RTPBufSize, h.logger))
 				}
 			}
 		})
@@ -594,15 +609,15 @@ func (h *VKJoiner) initPC() {
 		if mode == "video" && state == webrtc.PeerConnectionStateConnected && h.vp8tunnel == nil {
 			h.reconnectAttempt.Store(0)
 			h.logger.Info("vk-joiner: === TUNNEL CONNECTED ===")
-			h.vp8tunnel = tunnel.NewVP8DataTunnel(h.sampleTrack, h.obf, h.logger)
+			h.vp8tunnel = rtc.NewVP8DataTunnel(h.sampleTrack, h.obf, h.logger)
 			h.vp8tunnel.Start(h.vp8FPS, h.vp8Batch)
 			var downlink tunnel.DataTunnel = h.vp8tunnel
 			trackCount := 1
 			if h.dualTrack {
-				writer := tunnel.NewScreenWriter(h.obf, "screen-up", h.logger)
+				writer := rtc.NewScreenWriter(h.obf, "screen-up", h.logger)
 				writer.Reconfigure(h.vp8tunnel.FPS(), h.vp8tunnel.Batch())
 				writer.SetSend(h.producerScreen.send)
-				h.sym = tunnel.NewSymmetricScreenTunnel(h.vp8tunnel, writer, h.obf, h.producerScreen.ready, h.logger)
+				h.sym = rtc.NewSymmetricScreenTunnel(h.vp8tunnel, writer, h.obf, h.producerScreen.ready, h.logger)
 				h.sym.SetTrackCount(2)
 				downlink = h.sym
 				trackCount = 2
@@ -660,12 +675,12 @@ func (h *VKJoiner) onLocalICECandidate(candidate *webrtc.ICECandidate) {
 	}
 	candidateJSON := candidate.ToJSON()
 	raw, _ := json.Marshal(candidateJSON)
-	var parsed interface{}
+	var parsed any
 	json.Unmarshal(raw, &parsed)
-	h.vkSendTransmitData(*h.remotePeerID, map[string]interface{}{"candidate": parsed})
+	h.vkSendTransmitData(*h.remotePeerID, map[string]any{"candidate": parsed})
 }
 
-func (h *VKJoiner) onTransmittedData(data map[string]interface{}) {
+func (h *VKJoiner) onTransmittedData(data map[string]any) {
 	if h.pc == nil {
 		return
 	}
@@ -682,21 +697,22 @@ func (h *VKJoiner) onTransmittedData(data map[string]interface{}) {
 			h.pendingICE = append(h.pendingICE, candidateInit)
 		}
 	}
-	if sdp, ok := data["sdp"].(map[string]interface{}); ok {
+	if sdp, ok := data["sdp"].(map[string]any); ok {
 		sdpType, _ := sdp["type"].(string)
 		sdpStr, _ := sdp["sdp"].(string)
 		if h.OnRemoteCandidate != nil {
 			h.OnRemoteCandidate(-1, sdpStr)
 		}
 		h.logger.Debug(fmt.Sprintf("vk-joiner: remote SDP: %s", sdpType))
-		if sdpType == "answer" {
+		switch sdpType {
+		case "answer":
 			h.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: sdpStr})
 			h.remoteSet = true
 			for _, candidate := range h.pendingICE {
 				h.pc.AddICECandidate(candidate)
 			}
 			h.pendingICE = nil
-		} else if sdpType == "offer" {
+		case "offer":
 			h.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdpStr})
 			h.remoteSet = true
 			for _, candidate := range h.pendingICE {
@@ -724,7 +740,7 @@ func (h *VKJoiner) onTransmittedData(data map[string]interface{}) {
 }
 
 func detectVKAuthRotten(raw []byte) *vkAuthRottenError {
-	var generic map[string]interface{}
+	var generic map[string]any
 	if err := json.Unmarshal(raw, &generic); err != nil {
 		return nil
 	}
@@ -746,12 +762,4 @@ func detectVKAuthRotten(raw []byte) *vkAuthRottenError {
 		return &vkAuthRottenError{Code: errCode, Msg: errMsg}
 	}
 	return nil
-}
-
-func truncateBody(raw []byte) string {
-	const maxLen = 200
-	if len(raw) > maxLen {
-		return string(raw[:maxLen]) + "..."
-	}
-	return string(raw)
 }

@@ -1,4 +1,4 @@
-package tunnel
+package rtc
 
 import (
 	"encoding/binary"
@@ -8,9 +8,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/pion/datachannel"
-	"github.com/pion/webrtc/v4"
+	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing/common/logger"
+
+	"github.com/kulikov0/headless-client/webrtc"
+	"github.com/pion/datachannel"
 )
 
 const chunkSize = 994
@@ -28,15 +30,15 @@ type DCTunnel struct {
 	logger   logger.ContextLogger
 	onData   func([]byte)
 	onClose  func()
-	obf      *TunnelObfuscator
+	obf      *tunnel.TunnelObfuscator
 	chunked  bool
 	readBuf  int
 
 	recvBufs  sync.Map
-	sendMsgID uint32
+	sendMsgID atomic.Uint32
 }
 
-func NewDCTunnel(dc *webrtc.DataChannel, obf *TunnelObfuscator, readBuf int, logger logger.ContextLogger) *DCTunnel {
+func NewDCTunnel(dc *webrtc.DataChannel, obf *tunnel.TunnelObfuscator, readBuf int, logger logger.ContextLogger) *DCTunnel {
 	t := &DCTunnel{dc: dc, obf: obf, readBuf: readBuf, logger: logger}
 	raw, err := dc.Detach()
 	if err != nil {
@@ -56,13 +58,13 @@ func NewDCTunnel(dc *webrtc.DataChannel, obf *TunnelObfuscator, readBuf int, log
 	return t
 }
 
-func NewDCTunnelFromRaw(dc *webrtc.DataChannel, raw datachannel.ReadWriteCloser, obf *TunnelObfuscator, readBuf int, logger logger.ContextLogger) *DCTunnel {
+func NewDCTunnelFromRaw(dc *webrtc.DataChannel, raw datachannel.ReadWriteCloser, obf *tunnel.TunnelObfuscator, readBuf int, logger logger.ContextLogger) *DCTunnel {
 	t := &DCTunnel{dc: dc, raw: raw, obf: obf, readBuf: readBuf, logger: logger}
 	go t.readLoop()
 	return t
 }
 
-func NewChunkedDCTunnel(readRaw datachannel.ReadWriteCloser, writeDC *webrtc.DataChannel, obf *TunnelObfuscator, readBuf int, logger logger.ContextLogger) *DCTunnel {
+func NewChunkedDCTunnel(readRaw datachannel.ReadWriteCloser, writeDC *webrtc.DataChannel, obf *tunnel.TunnelObfuscator, readBuf int, logger logger.ContextLogger) *DCTunnel {
 	writeRaw, err := writeDC.Detach()
 	if err != nil {
 		logger.Error(fmt.Sprintf("dctunnel: write DC detach failed: %v", err))
@@ -73,7 +75,7 @@ func NewChunkedDCTunnel(readRaw datachannel.ReadWriteCloser, writeDC *webrtc.Dat
 	return t
 }
 
-func NewChunkedDCTunnelFromRaw(readRaw, writeRaw datachannel.ReadWriteCloser, obf *TunnelObfuscator, readBuf int, logger logger.ContextLogger) *DCTunnel {
+func NewChunkedDCTunnelFromRaw(readRaw, writeRaw datachannel.ReadWriteCloser, obf *tunnel.TunnelObfuscator, readBuf int, logger logger.ContextLogger) *DCTunnel {
 	t := &DCTunnel{raw: readRaw, writeRaw: writeRaw, obf: obf, readBuf: readBuf, logger: logger, chunked: true}
 	go t.readLoop()
 	return t
@@ -194,13 +196,10 @@ func (t *DCTunnel) sendChunked(data []byte) {
 	if total == 0 {
 		total = 1
 	}
-	id := uint16(atomic.AddUint32(&t.sendMsgID, 1)) & 0xFFFF
+	id := uint16(t.sendMsgID.Add(1)) & 0xFFFF
 	for i := 0; i < total; i++ {
 		start := i * chunkSize
-		end := start + chunkSize
-		if end > len(data) {
-			end = len(data)
-		}
+		end := min(start+chunkSize, len(data))
 		p := data[start:end]
 		f := make([]byte, 6+len(p))
 		f[0] = byte(id >> 8)

@@ -1,4 +1,4 @@
-package tunnel
+package rtc
 
 import (
 	"encoding/binary"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sagernet/sing-box/transport/call/common"
+	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing/common/logger"
 )
 
@@ -20,7 +21,7 @@ const (
 )
 
 type ScreenWriter struct {
-	obf    *TunnelObfuscator
+	obf    *tunnel.TunnelObfuscator
 	logger logger.ContextLogger
 	label  string
 
@@ -39,7 +40,7 @@ type ScreenWriter struct {
 	sent  atomic.Uint64
 }
 
-func NewScreenWriter(obf *TunnelObfuscator, label string, logger logger.ContextLogger) *ScreenWriter {
+func NewScreenWriter(obf *tunnel.TunnelObfuscator, label string, logger logger.ContextLogger) *ScreenWriter {
 	return &ScreenWriter{
 		obf:       obf,
 		logger:    logger,
@@ -121,10 +122,7 @@ func (w *ScreenWriter) interval() time.Duration {
 }
 
 func (w *ScreenWriter) nextKeepalive(sample time.Duration) (ticks, padLen int) {
-	ticks = int(common.DurationInRange(keepaliveIdleMin, keepaliveIdleMax) / sample)
-	if ticks < 1 {
-		ticks = 1
-	}
+	ticks = max(int(common.DurationInRange(keepaliveIdleMin, keepaliveIdleMax)/sample), 1)
 	return ticks, common.IntInRange(0, screenKeepalivePadMax)
 }
 
@@ -184,7 +182,7 @@ func (w *ScreenWriter) writerLoop() {
 type SymmetricScreenTunnel struct {
 	cam         *VP8DataTunnel
 	screen      *ScreenWriter
-	obf         *TunnelObfuscator
+	obf         *tunnel.TunnelObfuscator
 	logger      logger.ContextLogger
 	screenReady func() bool
 
@@ -194,7 +192,7 @@ type SymmetricScreenTunnel struct {
 	trackCount atomic.Int32
 }
 
-func NewSymmetricScreenTunnel(cam *VP8DataTunnel, screen *ScreenWriter, obf *TunnelObfuscator, screenReady func() bool, logger logger.ContextLogger) *SymmetricScreenTunnel {
+func NewSymmetricScreenTunnel(cam *VP8DataTunnel, screen *ScreenWriter, obf *tunnel.TunnelObfuscator, screenReady func() bool, logger logger.ContextLogger) *SymmetricScreenTunnel {
 	return &SymmetricScreenTunnel{cam: cam, screen: screen, obf: obf, screenReady: screenReady, logger: logger}
 }
 
@@ -219,14 +217,11 @@ func (s *SymmetricScreenTunnel) SendData(data []byte) {
 	if len(data) >= 8 {
 		connID = binary.BigEndian.Uint32(data[4:8])
 	}
-	if connID == ControlConnID {
+	if connID == tunnel.ControlConnID {
 		s.cam.SendData(data)
 		return
 	}
-	tc := uint32(s.trackCount.Load())
-	if tc < 1 {
-		tc = 1
-	}
+	tc := max(uint32(s.trackCount.Load()), 1)
 	if connID%tc == 1 && s.screenUp() {
 		s.screen.SendData(data)
 		return

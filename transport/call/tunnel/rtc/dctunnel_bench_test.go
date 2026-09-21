@@ -1,9 +1,11 @@
-package tunnel
+package rtc
 
 import (
 	"context"
 	"io"
 	"testing"
+
+	"github.com/sagernet/sing-box/transport/call/tunnel"
 )
 
 type discardRawConn struct{}
@@ -43,7 +45,7 @@ func BenchmarkDCTunnelSendData(b *testing.B) {
 	sizes := []int{64, 512, 4096}
 	for _, size := range sizes {
 		payload := make([]byte, size)
-		frame := EncodeFrame(42, MsgData, payload)
+		frame := tunnel.EncodeFrame(42, tunnel.MsgData, payload)
 		b.Run(sizeLabel(size), func(b *testing.B) {
 			t := newBenchDCTunnel()
 			b.ReportAllocs()

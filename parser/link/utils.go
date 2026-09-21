@@ -27,6 +27,10 @@ func shadowsocksPluginOptions(plugin string) string {
 func v2rayTransportWsPath(WebsocketOptions *option.V2RayWebsocketOptions, path string) {
 	reg := regexp.MustCompile(`^(.*?)(?:\?ed=(\d*))?$`)
 	result := reg.FindStringSubmatch(path)
+	if result == nil {
+		WebsocketOptions.Path = path
+		return
+	}
 	WebsocketOptions.Path = result[1]
 	if result[2] != "" {
 		WebsocketOptions.EarlyDataHeaderName = "Sec-WebSocket-Protocol"

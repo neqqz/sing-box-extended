@@ -10,13 +10,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pion/webrtc/v4"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing-box/transport/call/tunnel"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+
+	headless "github.com/kulikov0/headless-client"
+	"github.com/kulikov0/headless-client/webrtc"
 )
 
 const (
@@ -78,15 +80,13 @@ func (j *WBStreamJoiner) RunWithParams(jsonParams string) {
 		return
 	}
 	j.logger.Debug(fmt.Sprintf("wbstream-joiner: obf key-source=%q localEpoch=0x%08x", params.RoomID, obf.LocalEpoch()))
-	var settingEngine *webrtc.SettingEngine
+	var configureSettingEngine func(*webrtc.SettingEngine)
 	if j.PCConfig != nil {
-		se := webrtc.SettingEngine{}
-		j.PCConfig.ConfigureSettingEngine(&se)
-		settingEngine = &se
+		configureSettingEngine = j.PCConfig.ConfigureSettingEngine
 	}
 	var attempt atomic.Int32
 	j.logger.Info("wbstream-joiner: connecting")
-	if err := j.runOnce(httpClient, params.RoomID, params.DisplayName, params.TunnelMode, obf, settingEngine, params.VP8FPS, params.VP8Batch, params.DualTrack, reliable, &attempt); err != nil {
+	if err := j.runOnce(httpClient, params.RoomID, params.DisplayName, params.TunnelMode, obf, configureSettingEngine, params.VP8FPS, params.VP8Batch, params.DualTrack, reliable, &attempt); err != nil {
 		j.logger.Error(fmt.Sprintf("wbstream-joiner: %v", err))
 		return
 	}
@@ -104,7 +104,7 @@ func (j *WBStreamJoiner) RunWithParams(jsonParams string) {
 			return
 		}
 		j.logger.Info(fmt.Sprintf("wbstream-joiner: reconnect attempt #%d", attempt.Load()))
-		if err := j.runOnce(httpClient, params.RoomID, params.DisplayName, params.TunnelMode, obf, settingEngine, params.VP8FPS, params.VP8Batch, params.DualTrack, reliable, &attempt); err != nil {
+		if err := j.runOnce(httpClient, params.RoomID, params.DisplayName, params.TunnelMode, obf, configureSettingEngine, params.VP8FPS, params.VP8Batch, params.DualTrack, reliable, &attempt); err != nil {
 			j.logger.Warn(fmt.Sprintf("wbstream-joiner: %v, will retry", err))
 		}
 	}
@@ -131,27 +131,27 @@ func (j *WBStreamJoiner) Close() {
 	}
 }
 
-func (j *WBStreamJoiner) runOnce(httpClient *http.Client, roomID, displayName, tunnelMode string, obf *tunnel.TunnelObfuscator, settingEngine *webrtc.SettingEngine, vp8FPS, vp8Batch int, dualTrack, reliable bool, attempt *atomic.Int32) error {
+func (j *WBStreamJoiner) runOnce(httpClient *http.Client, roomID, displayName, tunnelMode string, obf *tunnel.TunnelObfuscator, configureSettingEngine func(*webrtc.SettingEngine), vp8FPS, vp8Batch int, dualTrack, reliable bool, attempt *atomic.Int32) error {
 	_, roomToken, _, serverURL, authErr := AuthAndGetToken(httpClient, roomID, displayName)
 	if authErr != nil {
 		return fmt.Errorf("auth: %w", authErr)
 	}
 	j.logger.Debug(fmt.Sprintf("wbstream-joiner: server=%s", serverURL))
 	sess := NewSession(SessionConfig{
-		RoomToken:     roomToken,
-		ServerURL:     serverURL,
-		DisplayName:   displayName,
-		TunnelMode:    tunnelMode,
-		Obfuscator:    obf,
-		Logger:        j.logger,
-		SettingEngine: settingEngine,
-		Dialer:        j.dialer,
-		DNSRouter:     j.dnsRouter,
-		VP8FPS:        vp8FPS,
-		VP8Batch:      vp8Batch,
-		ScreenShare:   dualTrack,
-		IsJoiner:      true,
-		Reliable:      reliable,
+		RoomToken:              roomToken,
+		ServerURL:              serverURL,
+		DisplayName:            displayName,
+		TunnelMode:             tunnelMode,
+		Obfuscator:             obf,
+		Logger:                 j.logger,
+		ConfigureSettingEngine: configureSettingEngine,
+		Dialer:                 j.dialer,
+		DNSRouter:              j.dnsRouter,
+		VP8FPS:                 vp8FPS,
+		VP8Batch:               vp8Batch,
+		ScreenShare:            dualTrack,
+		IsJoiner:               true,
+		Reliable:               reliable,
 	})
 	sess.OnConnected = func(tun tunnel.DataTunnel) {
 		attempt.Store(0)
@@ -212,6 +212,8 @@ func (j *WBStreamJoiner) makeDialContext() func(ctx context.Context, network, ad
 }
 
 func (j *WBStreamJoiner) makeHTTPClient() *http.Client {
-	transport := &http.Transport{DialContext: j.makeDialContext()}
-	return &http.Client{Timeout: 60 * time.Second, Transport: transport}
+	return &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: headless.ChromeWindows.Transport(headless.TLSOptions{DialContext: j.makeDialContext()}),
+	}
 }

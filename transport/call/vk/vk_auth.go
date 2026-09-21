@@ -12,6 +12,8 @@ import (
 	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing/common/logger"
 	N "github.com/sagernet/sing/common/network"
+
+	headless "github.com/kulikov0/headless-client"
 )
 
 type vkAuthConfig struct {
@@ -32,10 +34,10 @@ type vkCaptchaError struct {
 
 func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.ContextLogger) (string, error) {
 	client := common.HttpClient(dialer)
-	httpPost := func(targetURL string, form url.Values, extraHeaders map[string]string) (map[string]interface{}, error) {
+	httpPost := func(targetURL string, form url.Values, extraHeaders map[string]string) (map[string]any, error) {
 		req, _ := http.NewRequest("POST", targetURL, strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("User-Agent", common.UserAgent)
+		req.Header.Set("User-Agent", headless.ChromeWindows.UserAgent())
 		req.Header.Set("Origin", "https://vk.ru")
 		req.Header.Set("Referer", "https://vk.ru/")
 		for k, v := range extraHeaders {
@@ -50,7 +52,7 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 		if err != nil {
 			return nil, err
 		}
-		var result map[string]interface{}
+		var result map[string]any
 		if err := json.Unmarshal(body, &result); err != nil {
 			return nil, fmt.Errorf("json: %w (body: %s)", err, string(body[:minInt(len(body), 200)]))
 		}
@@ -70,7 +72,7 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 	if err != nil {
 		return "", fmt.Errorf("get_anonym_token: %w", err)
 	}
-	dataMap, _ := anonResp["data"].(map[string]interface{})
+	dataMap, _ := anonResp["data"].(map[string]any)
 	accessToken, _ := dataMap["access_token"].(string)
 	if accessToken == "" {
 		return "", fmt.Errorf("empty access_token: %v", anonResp)
@@ -84,8 +86,8 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 	if err != nil {
 		return "", fmt.Errorf("calls.getSettings: %w", err)
 	}
-	if respObj, ok := settingsResp["response"].(map[string]interface{}); ok {
-		if settings, ok := respObj["settings"].(map[string]interface{}); ok {
+	if respObj, ok := settingsResp["response"].(map[string]any); ok {
+		if settings, ok := respObj["settings"].(map[string]any); ok {
 			if pk, ok := settings["public_key"].(string); ok {
 				cfg.PublicKey = pk
 			}
@@ -98,7 +100,7 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 		"vk_join_link": {joinLink},
 	}, auth)
 	if err == nil {
-		if respObj, ok := previewResp["response"].(map[string]interface{}); ok {
+		if respObj, ok := previewResp["response"].(map[string]any); ok {
 			if okLink, ok := respObj["ok_join_link"].(string); ok {
 				cfg.OkJoinLink = okLink
 			}
@@ -113,12 +115,12 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 	var callToken string
 	var apiBaseURL string
 	var okJoinLink string
-	for attempt := 0; attempt < 5; attempt++ {
+	for range 5 {
 		callResp, err := httpPost("https://api.vk.ru/method/calls.getAnonymousToken", callParams, auth)
 		if err != nil {
 			return "", fmt.Errorf("getAnonymousToken: %w", err)
 		}
-		if errObj, hasErr := callResp["error"].(map[string]interface{}); hasErr {
+		if errObj, hasErr := callResp["error"].(map[string]any); hasErr {
 			errCode, _ := errObj["error_code"].(float64)
 			if int(errCode) == 14 {
 				captchaErr := parseVKCaptchaError(errObj)
@@ -156,7 +158,7 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 			}
 			return "", fmt.Errorf("VK API error: %v", errObj)
 		}
-		respMap, ok := callResp["response"].(map[string]interface{})
+		respMap, ok := callResp["response"].(map[string]any)
 		if !ok {
 			return "", fmt.Errorf("unexpected response: %v", callResp)
 		}
@@ -174,7 +176,7 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 		baseURL += "/fb.do"
 	}
 	deviceID := fmt.Sprintf("%d", rand.Int63n(9e18))
-	sessionData, _ := json.Marshal(map[string]interface{}{
+	sessionData, _ := json.Marshal(map[string]any{
 		"version":        2,
 		"device_id":      deviceID,
 		"client_version": cfg.AppVersion,
@@ -215,7 +217,7 @@ func RunVKAuth(dialer N.Dialer, joinLink, displayName string, logger logger.Cont
 	return string(jsonBytes), nil
 }
 
-func parseVKCaptchaError(errObj map[string]interface{}) *vkCaptchaError {
+func parseVKCaptchaError(errObj map[string]any) *vkCaptchaError {
 	redirectURI, _ := errObj["redirect_uri"].(string)
 	if redirectURI == "" {
 		return nil

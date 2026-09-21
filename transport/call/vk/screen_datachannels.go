@@ -2,12 +2,15 @@ package vk
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 
-	"github.com/pion/datachannel"
-	"github.com/pion/webrtc/v4"
+	"github.com/sagernet/sing-box/transport/call/common"
 	"github.com/sagernet/sing/common/logger"
+
+	"github.com/kulikov0/headless-client/webrtc"
+	"github.com/pion/datachannel"
 )
 
 var errScreenNotReady = errors.New("screen DC not ready")
@@ -61,7 +64,7 @@ func readScreenDataChannel(dc *webrtc.DataChannel, handler func([]byte), logger 
 		var raw datachannel.ReadWriteCloser
 		raw, err := dc.Detach()
 		if err != nil {
-			logger.Warn("[vk-joiner] screen DC detach failed, using OnMessage")
+			logger.Warn(fmt.Sprintf("[vk-joiner] screen DC detach failed, using OnMessage: %v", err))
 			dc.OnMessage(func(m webrtc.DataChannelMessage) {
 				if !m.IsString && len(m.Data) > 0 {
 					frame := make([]byte, len(m.Data))
@@ -72,7 +75,7 @@ func readScreenDataChannel(dc *webrtc.DataChannel, handler func([]byte), logger 
 			return
 		}
 		logger.Debug("[vk-joiner] screen DC attached for reading")
-		buf := make([]byte, 65536)
+		buf := make([]byte, common.RTPBufSize)
 		for {
 			n, isString, rerr := raw.ReadDataChannel(buf)
 			if rerr != nil {
@@ -92,7 +95,7 @@ func attachScreenWriterDC(dc *webrtc.DataChannel, onRaw func(io.WriteCloser), lo
 	dc.OnOpen(func() {
 		raw, err := dc.Detach()
 		if err != nil {
-			logger.Warn("[vk-joiner] screen writer DC detach failed")
+			logger.Warn(fmt.Sprintf("[vk-joiner] screen writer DC detach failed: %v", err))
 			return
 		}
 		logger.Debug("[vk-joiner] screen DC attached for writing")
