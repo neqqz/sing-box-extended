@@ -870,6 +870,8 @@ jobs:
 
       - name: Build desktop (${{ matrix.target }})
         working-directory: clients/desktop
+        # bash required: Windows runners default to PowerShell and choke on `[ ]` / `source`.
+        shell: bash
         # Do NOT override CC with plain "clang" — that drops --target/sysroot from
         # build-naive and breaks arm64 (and can fight amd64 CXX). Use cronet env as-is.
         run: |
