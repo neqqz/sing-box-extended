@@ -875,23 +875,30 @@ jobs:
         # Do NOT override CC with plain "clang" — that drops --target/sysroot from
         # build-naive and breaks arm64 (and can fight amd64 CXX). Use cronet env as-is.
         run: |
+          # build-naive env lines are KEY=value with unquoted spaces (e.g.
+          # CC=/path/clang --target=aarch64-linux-gnu --sysroot=...).
+          # `source` treats --target=... as a command (exit 127). export "KEY=val" is safe.
+          load_cronet_env() {
+            local file="$1"
+            while IFS= read -r line || [ -n "$line" ]; do
+              case "$line" in
+                ''|\#*) continue ;;
+                *=*) export "$line" ;;
+              esac
+            done < "$file"
+          }
+
           if [ "${{ matrix.target }}" = "linux" ]; then
             export CGO_ENABLED=1
             # Same set as upstream package:linux default: x64, arm64, armv7l
             # amd64: inherits GITHUB_ENV from build-naive --target=linux/amd64
             pnpm run package:linux -- x64
             # arm64
-            set -a
-            # shellcheck disable=SC1091
-            source "$RUNNER_TEMP/cronet-env-arm64"
-            set +a
+            load_cronet_env "$RUNNER_TEMP/cronet-env-arm64"
             export CGO_ENABLED=1
             pnpm run package:linux -- arm64
             # armv7l
-            set -a
-            # shellcheck disable=SC1091
-            source "$RUNNER_TEMP/cronet-env-arm"
-            set +a
+            load_cronet_env "$RUNNER_TEMP/cronet-env-arm"
             export CGO_ENABLED=1
             pnpm run package:linux -- armv7l
           else
