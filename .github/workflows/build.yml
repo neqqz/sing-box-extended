@@ -222,6 +222,8 @@ jobs:
         run: |-
           git ls-remote --exit-code --tags origin v${{ needs.calculate_version.outputs.version }} || echo "PUBLISHED=false" >> "$GITHUB_ENV"
           git tag v${{ needs.calculate_version.outputs.version }} -f
+      - name: Check DEFAULT_BUILD_TAGS is in sync with DEFAULT_BUILD_TAGS_OTHERS
+        run: bash release/check_build_tags.sh
       - name: Set build tags
         run: |
           set -xeuo pipefail
@@ -720,6 +722,68 @@ jobs:
         with:
           go-version: '~1.26'
 
+      # NaiveProxy outbound for the Linux desktop daemon. This mirrors the
+      # "glibc" path of the main `build` job as closely as possible — that is
+      # the only combination (CGO_ENABLED=1, no --libc=musl) known to produce
+      # a working with_naive_outbound build in this repo. cronet-go and
+      # build-naive live outside this repo, so this hasn't been exercised by
+      # an actual CI run; if the "Build desktop (linux)" step fails on
+      # cgo/link errors, the safest fallback is to drop the CC: clang
+      # override below and let it inherit whatever CC build-naive's own env
+      # step sets, same as the CLI glibc build does.
+      - name: Install clang
+        if: matrix.target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+          clang --version
+
+      - name: Clone cronet-go
+        if: matrix.target == 'linux'
+        run: |
+          set -xeuo pipefail
+          CRONET_GO_VERSION=$(cat .github/CRONET_GO_VERSION)
+          git init ~/cronet-go
+          git -C ~/cronet-go remote add origin https://github.com/sagernet/cronet-go.git
+          git -C ~/cronet-go sparse-checkout set --no-cone '/*' '!/lib'
+          git -C ~/cronet-go fetch --depth=1 --filter=blob:none origin "$CRONET_GO_VERSION"
+          git -C ~/cronet-go checkout FETCH_HEAD
+          git -C ~/cronet-go submodule update --init --recursive --depth=1
+
+      - name: Regenerate Debian keyring
+        if: matrix.target == 'linux'
+        run: |
+          set -xeuo pipefail
+          rm -f ~/cronet-go/naiveproxy/src/build/linux/sysroot_scripts/keyring.gpg
+          cd ~/cronet-go
+          GPG_TTY=/dev/null ./naiveproxy/src/build/linux/sysroot_scripts/generate_keyring.sh
+
+      - name: Cache Chromium toolchain
+        if: matrix.target == 'linux'
+        id: cache-chromium-toolchain-desktop
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/cronet-go/naiveproxy/src/third_party/llvm-build/
+            ~/cronet-go/naiveproxy/src/gn/out/
+            ~/cronet-go/naiveproxy/src/chrome/build/pgo_profiles/
+            ~/cronet-go/naiveproxy/src/out/sysroot-build/
+          key: chromium-toolchain-desktop-linux-amd64-${{ hashFiles('.github/CRONET_GO_VERSION') }}
+
+      - name: Download Chromium toolchain
+        if: matrix.target == 'linux'
+        run: |
+          set -xeuo pipefail
+          cd ~/cronet-go
+          go run ./cmd/build-naive --target=linux/amd64 download-toolchain
+
+      - name: Set Chromium toolchain environment
+        if: matrix.target == 'linux'
+        run: |
+          set -xeuo pipefail
+          cd ~/cronet-go
+          go run ./cmd/build-naive --target=linux/amd64 env >> $GITHUB_ENV
+
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
@@ -803,12 +867,32 @@ jobs:
       - name: Build desktop (${{ matrix.target }})
         working-directory: clients/desktop
         run: pnpm run package:${{ matrix.target }}
+        env:
+          CC: ${{ matrix.target == 'linux' && 'clang' || '' }}
+          CGO_ENABLED: ${{ matrix.target == 'linux' && '1' || '' }}
 
       - name: Clean up signing material
         if: always() && matrix.target == 'win'
         working-directory: clients/desktop
         shell: bash
         run: rm -f signing.local.pfx signing.local.json
+
+      # The daemon links libcronet at runtime (see docs/installation/build-from-source.md,
+      # "For self-built binaries, download libcronet.so ... place in the same directory
+      # as sing-box binary"), it isn't statically embedded by cgo.
+      - name: Bundle libcronet.so
+        if: matrix.target == 'linux'
+        run: |
+          set -xeuo pipefail
+          CRONET_GO_VERSION=$(cat .github/CRONET_GO_VERSION)
+          LIBRARY_PATH="lib/linux_amd64/libcronet.so"
+          git init "$RUNNER_TEMP/cronet-go-lib"
+          git -C "$RUNNER_TEMP/cronet-go-lib" remote add origin https://github.com/sagernet/cronet-go.git
+          git -C "$RUNNER_TEMP/cronet-go-lib" sparse-checkout set --no-cone "/$LIBRARY_PATH"
+          git -C "$RUNNER_TEMP/cronet-go-lib" fetch --depth=1 --filter=blob:none origin "$CRONET_GO_VERSION"
+          git -C "$RUNNER_TEMP/cronet-go-lib" checkout FETCH_HEAD
+          find clients/desktop/release -maxdepth 1 -type d \( -name 'linux-unpacked' -o -iname '*linux*' \) -print -exec cp "$RUNNER_TEMP/cronet-go-lib/$LIBRARY_PATH" {} \; 2>/dev/null || true
+          cp "$RUNNER_TEMP/cronet-go-lib/$LIBRARY_PATH" clients/desktop/release/ 2>/dev/null || true
 
       - name: Collect artifacts
         shell: bash
