@@ -766,7 +766,7 @@ jobs:
             ~/cronet-go/naiveproxy/src/gn/out/
             ~/cronet-go/naiveproxy/src/chrome/build/pgo_profiles/
             ~/cronet-go/naiveproxy/src/out/sysroot-build/
-          key: chromium-toolchain-desktop-linux-amd64-arm64-${{ hashFiles('.github/CRONET_GO_VERSION') }}
+          key: chromium-toolchain-desktop-linux-amd64-arm64-arm-${{ hashFiles('.github/CRONET_GO_VERSION') }}
 
       - name: Download Chromium toolchain
         if: matrix.target == 'linux'
@@ -775,6 +775,7 @@ jobs:
           cd ~/cronet-go
           go run ./cmd/build-naive --target=linux/amd64 download-toolchain
           go run ./cmd/build-naive --target=linux/arm64 download-toolchain
+          go run ./cmd/build-naive --target=linux/arm download-toolchain
 
       - name: Set Chromium toolchain environment
         if: matrix.target == 'linux'
@@ -783,8 +784,9 @@ jobs:
           cd ~/cronet-go
           # Default job env = amd64 (clang++ --target=x86_64-linux-gnu + sysroot)
           go run ./cmd/build-naive --target=linux/amd64 env >> $GITHUB_ENV
-          # arm64 env (clang --target=aarch64-linux-gnu + sysroot) for the arm64 package pass
+          # Per-arch env for cross package passes (clang --target + sysroot)
           go run ./cmd/build-naive --target=linux/arm64 env > "$RUNNER_TEMP/cronet-env-arm64"
+          go run ./cmd/build-naive --target=linux/arm env > "$RUNNER_TEMP/cronet-env-arm"
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -873,15 +875,23 @@ jobs:
         run: |
           if [ "${{ matrix.target }}" = "linux" ]; then
             export CGO_ENABLED=1
+            # Same set as upstream package:linux default: x64, arm64, armv7l
             # amd64: inherits GITHUB_ENV from build-naive --target=linux/amd64
             pnpm run package:linux -- x64
-            # arm64: switch to aarch64 clang + sysroot from build-naive
+            # arm64
             set -a
             # shellcheck disable=SC1091
             source "$RUNNER_TEMP/cronet-env-arm64"
             set +a
             export CGO_ENABLED=1
             pnpm run package:linux -- arm64
+            # armv7l
+            set -a
+            # shellcheck disable=SC1091
+            source "$RUNNER_TEMP/cronet-env-arm"
+            set +a
+            export CGO_ENABLED=1
+            pnpm run package:linux -- armv7l
           else
             pnpm run package:${{ matrix.target }}
           fi
@@ -903,16 +913,19 @@ jobs:
           git init "$RUNNER_TEMP/cronet-go-lib"
           git -C "$RUNNER_TEMP/cronet-go-lib" remote add origin https://github.com/sagernet/cronet-go.git
           git -C "$RUNNER_TEMP/cronet-go-lib" sparse-checkout set --no-cone \
-            /lib/linux_amd64/libcronet.so /lib/linux_arm64/libcronet.so
+            /lib/linux_amd64/libcronet.so /lib/linux_arm64/libcronet.so /lib/linux_arm/libcronet.so
           git -C "$RUNNER_TEMP/cronet-go-lib" fetch --depth=1 --filter=blob:none origin "$CRONET_GO_VERSION"
           git -C "$RUNNER_TEMP/cronet-go-lib" checkout FETCH_HEAD
-          # amd64 unpacked dir
+          # amd64
           find clients/desktop/release -maxdepth 1 -type d \( -name 'linux-unpacked' -o -name '*x64*' -o -name '*amd64*' \) -print \
             -exec cp "$RUNNER_TEMP/cronet-go-lib/lib/linux_amd64/libcronet.so" {} \; 2>/dev/null || true
           cp "$RUNNER_TEMP/cronet-go-lib/lib/linux_amd64/libcronet.so" clients/desktop/release/ 2>/dev/null || true
-          # arm64 unpacked dir
+          # arm64
           find clients/desktop/release -maxdepth 1 -type d \( -name 'linux-arm64-unpacked' -o -name '*arm64*' \) -print \
             -exec cp "$RUNNER_TEMP/cronet-go-lib/lib/linux_arm64/libcronet.so" {} \; 2>/dev/null || true
+          # armv7l
+          find clients/desktop/release -maxdepth 1 -type d \( -name 'linux-armv7l-unpacked' -o -name '*armv7*' -o -name '*armhf*' \) -print \
+            -exec cp "$RUNNER_TEMP/cronet-go-lib/lib/linux_arm/libcronet.so" {} \; 2>/dev/null || true
 
 
       - name: Collect artifacts
