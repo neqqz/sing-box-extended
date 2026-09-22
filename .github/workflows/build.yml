@@ -889,17 +889,21 @@ jobs:
           }
 
           if [ "${{ matrix.target }}" = "linux" ]; then
+            # amd64: host arch — CGO + amd64 clang from GITHUB_ENV is fine for go run
             export CGO_ENABLED=1
-            # Same set as upstream package:linux default: x64, arm64, armv7l
-            # amd64: inherits GITHUB_ENV from build-naive --target=linux/amd64
             pnpm run package:linux -- x64
-            # arm64
+
+            # Cross arches: package.ts does `go run ./cmd/internal/build_boxdd`.
+            # That compiles the *host* tool first; if CC is aarch64/arm clang and
+            # CGO_ENABLED=1, it tries gcc_amd64.S with the cross assembler → fail.
+            # CGO_ENABLED=0 for the host go run; build_boxdd still sets CGO_ENABLED=1
+            # on the daemon build when CC is set.
             load_cronet_env "$RUNNER_TEMP/cronet-env-arm64"
-            export CGO_ENABLED=1
+            export CGO_ENABLED=0
             pnpm run package:linux -- arm64
-            # armv7l
+
             load_cronet_env "$RUNNER_TEMP/cronet-env-arm"
-            export CGO_ENABLED=1
+            export CGO_ENABLED=0
             pnpm run package:linux -- armv7l
           else
             pnpm run package:${{ matrix.target }}
