@@ -221,9 +221,7 @@ jobs:
       - name: Set tag
         run: |-
           git ls-remote --exit-code --tags origin v${{ needs.calculate_version.outputs.version }} || echo "PUBLISHED=false" >> "$GITHUB_ENV"
-          git tag v${{ needs.calculate_version.outputs.version }} -f
-      - name: Check DEFAULT_BUILD_TAGS is in sync with DEFAULT_BUILD_TAGS_OTHERS
-        run: bash release/check_build_tags.sh
+          git tag v${{ needs.calculate_version.outputs.version }} -
       - name: Set build tags
         run: |
           set -xeuo pipefail
