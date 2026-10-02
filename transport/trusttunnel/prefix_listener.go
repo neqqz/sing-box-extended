@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -58,16 +59,11 @@ type PrefixListener struct {
 
 // NewPrefixListener wraps inner with the pre-TLS ClientHello.Random check.
 // A nil provider disables the check (inner is returned as is).
-func NewPrefixListener(inner net.Listener, provider sboxtls.RandomPrefixProvider, prefixLen int, windowSeconds int, fallback string, log logger.ContextLogger) (net.Listener, error) {
+func NewPrefixListener(inner net.Listener, provider sboxtls.RandomPrefixProvider, prefixLen int, windowSeconds int, fallback string, fallbackSNIPort int, log logger.ContextLogger) (net.Listener, error) {
 	if provider == nil {
 		return inner, nil
 	}
-	fallbackPort := "443"
-	if fallback != "" {
-		if _, port, splitErr := net.SplitHostPort(fallback); splitErr == nil && port != "" {
-			fallbackPort = port
-		}
-	}
+	fallbackPort := resolveFallbackPort(fallback, fallbackSNIPort)
 	ownPort := ""
 	if addr := inner.Addr(); addr != nil {
 		if _, port, splitErr := net.SplitHostPort(addr.String()); splitErr == nil {
@@ -84,6 +80,23 @@ func NewPrefixListener(inner net.Listener, provider sboxtls.RandomPrefixProvider
 		ownPort:       ownPort,
 		logger:        log,
 	}, nil
+}
+
+// resolveFallbackPort picks the port that is paired with the SNI extracted from a
+// probe's ClientHello when dialing its "real" site. An explicit sniPort wins;
+// otherwise the port of the static fallback is used (the historical behaviour);
+// otherwise 443. The explicit option exists so the static fallback can be a local
+// site on another port while stolen SNIs still go to their own :443.
+func resolveFallbackPort(fallback string, sniPort int) string {
+	if sniPort > 0 {
+		return strconv.Itoa(sniPort)
+	}
+	if fallback != "" {
+		if _, port, err := net.SplitHostPort(fallback); err == nil && port != "" {
+			return port
+		}
+	}
+	return "443"
 }
 
 // peekResult is the outcome of inspecting the first bytes of a new connection.

@@ -245,7 +245,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		if h.randomReloader != nil {
 			randomProvider = h.randomReloader
 		}
-		checkedListener, err := trusttunnel.NewPrefixListener(rawListener, randomProvider, h.options.ClientRandomPrefixLen, h.options.ClientRandomPrefixWindow, h.options.FallbackServer, h.logger)
+		checkedListener, err := trusttunnel.NewPrefixListener(rawListener, randomProvider, h.options.ClientRandomPrefixLen, h.options.ClientRandomPrefixWindow, h.options.FallbackServer, int(h.options.FallbackSNIPort), h.logger)
 		if err != nil {
 			return err
 		}

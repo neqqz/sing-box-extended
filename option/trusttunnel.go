@@ -66,8 +66,15 @@ type TrustTunnelInboundOptions struct {
 	// (сканер, активный зонд) сырые байты проксируются на него, а не рвутся,
 	// когда SNI из ClientHello извлечь не удалось (см. transport/trusttunnel/prefix_listener.go —
 	// по умолчанию используется сам этот SNI, а FallbackServer лишь запасной вариант). Формат: "host:port".
-	FallbackServer string   `json:"fallback_server,omitempty"`
-	AllowedSNI     []string `json:"allowed_sni,omitempty"`
+	FallbackServer string `json:"fallback_server,omitempty"`
+	// FallbackSNIPort — порт, с которым в качестве цели fallback'а соединяется SNI,
+	// извлечённый из ClientHello зонда (SNI:порт — «настоящий» сайт того домена,
+	// который зонд сам запросил). По умолчанию берётся порт из fallback_server.
+	// Задайте явно (обычно 443), когда fallback_server — это ваш локальный сайт
+	// на другом порту (например 127.0.0.1:8444): он нужен только для зондов без SNI
+	// и с SNI, указывающим на этот же сервер, а чужие SNI по-прежнему ходят на :443.
+	FallbackSNIPort uint16   `json:"fallback_sni_port,omitempty"`
+	AllowedSNI      []string `json:"allowed_sni,omitempty"`
 	// RateLimitAuthAttempts — макс. неудачных попыток аутентификации с одного IP
 	// в течение RateLimitAuthWindow. Защита от брутфорса DPI.
 	RateLimitAuthAttempts int `json:"rate_limit_auth_attempts,omitempty"`
