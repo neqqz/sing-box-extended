@@ -386,6 +386,17 @@ func (c *UTLSClientConfig) stdTLSConfig() *tls.Config {
 // на уровне самого QUIC, а не только TLS).
 func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
 	chromeParrot := c.id == utls.HelloChrome_Auto
+	// Не-Chrome фингерпринты, у которых есть ClientHelloSpec, идут через
+	// uTLS-QUIC (UTLSClientHelloID в форке quic-go): браузерный ClientHello
+	// вместо Go'шного и, главное, доступный key_share для привязки
+	// client_random. Остальные (randomized и т.п.) остаются на голом crypto/tls.
+	var genericID *utls.ClientHelloID
+	if !chromeParrot {
+		if _, err := utls.UTLSIdToSpec(c.id); err == nil {
+			id := c.id
+			genericID = &id
+		}
+	}
 	var prefix, mask []byte
 	if len(c.clientRandomPrefixes) > 0 {
 		// Новый случайный выбор на КАЖДЫЙ dial (метод зовётся заново на каждое подключение).
@@ -403,8 +414,8 @@ func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
 		// посчитанное один раз при первом вызове.
 		length := RandomPrefixLenOrDefault(c.clientRandomPrefixLen)
 		window := CurrentRandomPrefixWindow(time.Now().Unix(), c.clientRandomPrefixWindow)
-		if chromeParrot {
-			// ChromeParrot идёт через uTLS (см. newUTLSQUICClient в форке
+		if chromeParrot || genericID != nil {
+			// ChromeParrot (и не-Chrome фингерпринты через UTLSClientHelloID) идёт через uTLS (см. newUTLSQUICClient в форке
 			// github.com/neqqz/quic-go), который даёт доступ к
 			// hello.KeyShares ДО отправки ClientHello — тем же способом,
 			// что и TCP-путь выше (utlsALPNWrapper.HandshakeContext),
@@ -424,7 +435,7 @@ func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
 			mask = nil
 		}
 	}
-	if len(prefix) == 0 && bind == nil && !chromeParrot {
+	if len(prefix) == 0 && bind == nil && !chromeParrot && genericID == nil {
 		return cfg
 	}
 	cloned := cfg.Clone()
@@ -436,6 +447,7 @@ func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
 		cloned.ClientRandomPrefixBind = bind
 	}
 	cloned.ChromeParrot = chromeParrot
+	cloned.UTLSClientHelloID = genericID
 	return cloned
 }
 

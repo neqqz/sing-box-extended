@@ -73,6 +73,10 @@ type ClientOptions struct {
 	DataPaddingMax   int
 	PacketPaddingMin int
 	PacketPaddingMax int
+	// ChromeH2: h2-путь шлёт преамбулу как Chrome (SETTINGS, WINDOW_UPDATE,
+	// порядок pseudo-header'ов). Включать только когда uTLS-отпечаток
+	// Chromium-подобный, иначе TLS и H2 отпечатки противоречат друг другу.
+	ChromeH2 bool
 }
 
 type Client struct {
@@ -158,6 +162,8 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			AllowHTTP:      true,
 			DataPaddingMin: options.DataPaddingMin,
 			DataPaddingMax: options.DataPaddingMax,
+
+			ChromeFingerprint: options.ChromeH2,
 		}
 	}
 	return client, nil

@@ -5,6 +5,7 @@ package trusttunnel
 import (
 	"context"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,6 +75,31 @@ func (d noDelayDialer) DialContext(ctx context.Context, network string, destinat
 	return trusttunnel.NewJitterConn(conn, d.jitterMinMS, d.jitterMaxMS), nil
 }
 
+// chromeFingerprintExact: тот самый случай, когда QUIC идёт через uTLS
+// ChromeParrot (utls.HelloChrome_Auto, см. common/tls/utls_client.go).
+func chromeFingerprintExact(o *option.OutboundTLSOptions) bool {
+	if o == nil {
+		return false
+	}
+	if o.UTLS == nil || !o.UTLS.Enabled {
+		// client_random_prefix* неявно включают chrome (common/tls/client.go).
+		return tls.HasNonEmpty(o.ClientRandomPrefix) || tls.HasNonEmpty(o.ClientRandomPrefixSecret)
+	}
+	return o.UTLS.Fingerprint == "" || o.UTLS.Fingerprint == "chrome"
+}
+
+// chromeLikeFingerprint: Chromium-семейство, для которого уместна
+// Chrome-преамбула HTTP/2.
+func chromeLikeFingerprint(o *option.OutboundTLSOptions) bool {
+	if chromeFingerprintExact(o) {
+		return true
+	}
+	if o == nil || o.UTLS == nil || !o.UTLS.Enabled {
+		return false
+	}
+	return strings.HasPrefix(o.UTLS.Fingerprint, "chrome_") || o.UTLS.Fingerprint == "edge"
+}
+
 func RegisterOutbound(registry *outbound.Registry) {
 	outbound.Register[option.TrustTunnelOutboundOptions](registry, C.TypeTrustTunnel, NewOutbound)
 }
@@ -118,7 +144,9 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	udpPaddingMin, udpPaddingMax := paddingRange(options.UDPPadding)
 	dataPaddingMin, dataPaddingMax := paddingRange(options.DataPadding)
 	packetPaddingMin, packetPaddingMax := paddingRange(options.PacketPadding)
+	chromeLike := chromeLikeFingerprint(options.TLS)
 	clientOpts := trusttunnel.ClientOptions{
+		ChromeH2:          !options.QUIC && chromeLike,
 		Dialer:            outboundDialer,
 		TLSConfig:         tlsConfig,
 		Server:            serverAddr,
