@@ -234,6 +234,7 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		conn.setup(request.Body, nil)
 		s.trackConn(username, conn)
+		closeOnCancel(request.Context(), conn, done)
 		firstPacket := buf.NewPacket()
 		destination, err := conn.ReadPacket(firstPacket)
 		if err != nil {
@@ -288,10 +289,9 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			},
 		}
 		conn.setup(request.Body, nil)
-		// Устанавливаем таймаут простоя для TCP-стрима при создании
-		_ = conn.SetDeadline(time.Now().Add(TCPStreamIdleTimeout))
 		wrapper := &h2ConnWrapper{Conn: conn}
 		s.trackConn(username, wrapper)
+		closeOnCancel(request.Context(), conn, done)
 		_ = s.handler.NewConnection(ctx, wrapper, M.Metadata{
 			Protocol:    "trusttunnel",
 			Source:      M.ParseSocksaddr(request.RemoteAddr),
