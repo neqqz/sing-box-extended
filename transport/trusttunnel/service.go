@@ -2,6 +2,8 @@ package trusttunnel
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"io"
 	"net"
@@ -68,6 +70,15 @@ func NewService(options ServiceOptions) *Service {
 		authMaxFailures: 50,
 		connCleanup:     time.Now(),
 		connCleanupSec:  60,
+	}
+
+	// rate_limit_auth_window / rate_limit_auth_attempts из конфига раньше
+	// молча игнорировались (значения были захардкожены выше).
+	if options.AuthRateLimit > 0 {
+		s.authRateLimit = options.AuthRateLimit
+	}
+	if options.AuthMaxFailures > 0 {
+		s.authMaxFailures = options.AuthMaxFailures
 	}
 
 	go s.cleanupConnections()
@@ -292,18 +303,26 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 }
 
+// dummyPassword сравнивается вместо настоящего пароля, когда пользователь
+// не найден: время ответа не должно зависеть от того, существует ли имя.
+const dummyPassword = "trusttunnel-dummy-password"
+
 func (s *Service) verify(authorization string) (username string, loaded bool) {
-	username, password, loaded := parseBasicAuth(authorization)
-	if !loaded {
-		return "", false
-	}
+	username, password, parsed := parseBasicAuth(authorization)
 	s.mu.RLock()
-	recordedPassword, loaded := s.users[username]
+	recordedPassword, known := s.users[username]
 	s.mu.RUnlock()
-	if !loaded {
-		return "", false
+	if !known {
+		recordedPassword = dummyPassword
 	}
-	if password != recordedPassword {
+	// Сравниваем хэши одинаковой длины в постоянном времени: прямое
+	// password != recorded выходило на первом отличающемся байте (и сразу
+	// при разной длине), а ранний return для неизвестного имени позволял
+	// перебирать имена по времени ответа.
+	got := sha256.Sum256([]byte(password))
+	want := sha256.Sum256([]byte(recordedPassword))
+	match := subtle.ConstantTimeCompare(got[:], want[:]) == 1
+	if !parsed || !known || !match {
 		return "", false
 	}
 	return username, true

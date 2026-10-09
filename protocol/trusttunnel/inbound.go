@@ -68,7 +68,10 @@ func (m *sniMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !checkSNI(m.allowedSNI, sni) {
 		m.logger.Debug("trusttunnel: rejected SNI: ", sni)
-		http.Error(w, "Forbidden", http.StatusForbidden)
+		// Тот же 404 без тела, что и service на провал авторизации (TCP-путь
+		// при том же условии просто закрывает соединение): 403 с текстом
+		// "Forbidden" отличал бы этот порт от обычного веб-сервера.
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 	m.next.ServeHTTP(w, r)

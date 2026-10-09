@@ -124,6 +124,13 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				if err != nil {
 					return nil, err
 				}
+				// KeepAlivePeriod со своим разбросом на каждое соединение,
+				// а не одно константное значение на все: ровный пинг раз в
+				// 7 секунд виден и под шифрованием.
+				if cfg != nil {
+					cfg = cfg.Clone()
+					cfg.KeepAlivePeriod = jitterDuration(DefaultHealthCheckTimeout, 0.3)
+				}
 				var conn *quic.Conn
 				// QUICDialer: если options.TLSConfig умеет патчить
 				// ClientHello.Random (ротация client_random_prefix_secret,
@@ -171,7 +178,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 
 func (c *Client) start() {
 	if c.healthCheck {
-		c.healthCheckTimer = time.NewTimer(DefaultHealthCheckTimeout)
+		c.healthCheckTimer = time.NewTimer(jitterDuration(DefaultHealthCheckTimeout, 0.3))
 		go c.loopHealthCheck()
 	}
 }
@@ -194,7 +201,7 @@ func (c *Client) resetHealthCheckTimer() {
 	if c.healthCheckTimer == nil {
 		return
 	}
-	c.healthCheckTimer.Reset(DefaultHealthCheckTimeout)
+	c.healthCheckTimer.Reset(jitterDuration(DefaultHealthCheckTimeout, 0.3))
 }
 
 func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
