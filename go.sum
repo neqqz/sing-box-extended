@@ -314,10 +314,10 @@ github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOF
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
 github.com/neqqz/net v0.0.0-20261009183813-aa5d3a326b3d h1:n5bT4FTinFq7m9/r1TrxK4jiBMGmuJBmHWmqCsG+Gls=
 github.com/neqqz/net v0.0.0-20261009183813-aa5d3a326b3d/go.mod h1:WgDCOTH8iwtB66T4/GfI94AHo/hhdb7Hah9NDseQfiI=
-github.com/neqqz/quic-go v0.0.0-20261008205619-d370fff8853d h1:voD0iFtjon4gaEoCgIZcuRxQz2i2wmrNvDtU97CRrZ0=
-github.com/neqqz/quic-go v0.0.0-20261008205619-d370fff8853d/go.mod h1:hmLC8GJPp+BrpBgrgJnacvI4fZGIhasuy1ROJJ8GR4E=
-github.com/neqqz/utls v1.8.8-0.20261001061501-88e04f6f8353 h1:uKsPuXQyVPGvgtRxEKA6TYxWZLNrRKMvskJ9Ciuw6C4=
-github.com/neqqz/utls v1.8.8-0.20261001061501-88e04f6f8353/go.mod h1:kncGGVhFaoGn5M3pFe3SXhZCzsbCJayNOH4UEqTKTko=
+github.com/neqqz/quic-go v0.0.0-20261010121855-2247922cbe3e h1:ZhiPlp8oCmlZYZa+NEHfAQhjMYI22/Nz2pbl9DqwYkw=
+github.com/neqqz/quic-go v0.0.0-20261010121855-2247922cbe3e/go.mod h1:hmLC8GJPp+BrpBgrgJnacvI4fZGIhasuy1ROJJ8GR4E=
+github.com/neqqz/utls v1.8.8-0.20261010121952-3c62d241b9b1 h1:TRxrAWy2v4nyR2g8dTqbZhnHxkmO5YmgdyakNS8RUU0=
+github.com/neqqz/utls v1.8.8-0.20261010121952-3c62d241b9b1/go.mod h1:kncGGVhFaoGn5M3pFe3SXhZCzsbCJayNOH4UEqTKTko=
 github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 h1:zYyBkD/k9seD2A7fsi6Oo2LfFZAehjjQMERAvZLEDnQ=
 github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646/go.mod h1:jpp1/29i3P1S/RLdc7JQKbRpFeM1dOBd8T9ki5s+AY8=
 github.com/openai/openai-go/v3 v3.26.0 h1:bRt6H/ozMNt/dDkN4gobnLqaEGrRGBzmbVs0xxJEnQE=
