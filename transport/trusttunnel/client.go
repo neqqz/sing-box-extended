@@ -32,11 +32,10 @@ import (
 )
 
 var (
-	appName       = "sing-box"
-	appVersion    = C.Version
-	tcpUserAgent  = runtime.GOOS + " " + appName + "/" + appVersion
-	udpUserAgent  = runtime.GOOS + " " + UDPMagicAddress
-	icmpUserAgent = runtime.GOOS + " " + ICMPMagicAddress
+	appName      = "sing-box"
+	appVersion   = C.Version
+	tcpUserAgent = runtime.GOOS + " " + appName + "/" + appVersion
+	udpUserAgent = runtime.GOOS + " " + UDPMagicAddress
 )
 
 type Dialer interface {
@@ -90,17 +89,21 @@ type Client struct {
 	healthCheck      bool
 	healthCheckTimer *time.Timer
 	count            atomic.Int64
+	udpPaddingMin    int
+	udpPaddingMax    int
 }
 
 func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	client := &Client{
-		ctx:          ctx,
-		cancel:       cancel,
-		server:       options.Server,
-		serverString: options.Server.String(),
-		auth:         buildAuth(options.Username, options.Password),
-		healthCheck:  options.HealthCheck,
+		ctx:           ctx,
+		cancel:        cancel,
+		server:        options.Server,
+		serverString:  options.Server.String(),
+		auth:          buildAuth(options.Username, options.Password),
+		healthCheck:   options.HealthCheck,
+		udpPaddingMin: options.UDPPaddingMin,
+		udpPaddingMax: options.UDPPaddingMax,
 	}
 	if options.QUIC {
 		congestionControlFactory, err := congestion.NewCongestionControl(options.CongestionControl, options.CWND, ntp.TimeFuncFromContext(ctx))
@@ -254,7 +257,7 @@ func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
-	conn := &clientPacketConn{}
+	conn := &clientPacketConn{paddingMin: c.udpPaddingMin, paddingMax: c.udpPaddingMax}
 	c.roundTrip(c.newConnectRequest(UDPMagicAddress, udpUserAgent), &conn.httpConn)
 	return conn, nil
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -16,9 +17,7 @@ import (
 
 const (
 	UDPMagicAddress           = "_udp2"
-	ICMPMagicAddress          = "_icmp"
 	HealthCheckMagicAddress   = "_check"
-	DefaultConnectionTimeout  = 30 * time.Second
 	DefaultHealthCheckTimeout = 7 * time.Second
 	DefaultSessionTimeout     = 30 * time.Second
 )
@@ -94,21 +93,19 @@ func randomUDPPadding(n int) ([]byte, error) {
 }
 
 type httpConn struct {
-	writer       io.Writer
-	flusher      http.Flusher
-	body         io.ReadCloser
-	setupOnce    sync.Once
-	created      chan struct{}
-	createErr    error
-	cancelFn     func()
-	closeFn      func()
-	remoteAddr   net.Addr
-	localAddr    net.Addr
-	deadline     *time.Timer
-	deadlineLock sync.Mutex
-	done         chan struct{}
-	closed       bool
-	mtx          sync.Mutex
+	writer     io.Writer
+	flusher    http.Flusher
+	body       io.ReadCloser
+	setupOnce  sync.Once
+	created    chan struct{}
+	createErr  error
+	cancelFn   func()
+	closeFn    func()
+	remoteAddr net.Addr
+	localAddr  net.Addr
+	done       chan struct{}
+	closed     bool
+	mtx        sync.Mutex
 }
 
 func (h *httpConn) setup(body io.ReadCloser, err error) {
@@ -207,27 +204,14 @@ func (h *httpConn) LocalAddr() net.Addr {
 	return &net.TCPAddr{}
 }
 
-func (h *httpConn) SetDeadline(t time.Time) error {
-	h.deadlineLock.Lock()
-	defer h.deadlineLock.Unlock()
-	if t.IsZero() {
-		if h.deadline != nil {
-			h.deadline.Stop()
-			h.deadline = nil
-		}
-		return nil
-	}
-	d := time.Until(t)
-	if h.deadline != nil {
-		h.deadline.Reset(d)
-		return nil
-	}
-	h.deadline = time.AfterFunc(d, func() { h.Close() })
-	return nil
-}
+// Deadlines are not supported: returning os.ErrInvalid makes sing-box wrap the
+// conn with deadline.NewConn (NeedAdditionalReadDeadline), which emulates them
+// without closing the stream from a timer.
+func (h *httpConn) SetDeadline(time.Time) error      { return os.ErrInvalid }
+func (h *httpConn) SetReadDeadline(time.Time) error  { return os.ErrInvalid }
+func (h *httpConn) SetWriteDeadline(time.Time) error { return os.ErrInvalid }
 
-func (h *httpConn) SetReadDeadline(t time.Time) error  { return h.SetDeadline(t) }
-func (h *httpConn) SetWriteDeadline(t time.Time) error { return h.SetDeadline(t) }
+func (h *httpConn) NeedAdditionalReadDeadline() bool { return true }
 
 var _ net.Conn = (*tcpConn)(nil)
 

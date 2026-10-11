@@ -197,7 +197,6 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		UDPPaddingMax:   udpPaddingMax,
 		AuthRateLimit:   time.Duration(h.options.RateLimitAuthWindow) * time.Second,
 		AuthMaxFailures: h.options.RateLimitAuthAttempts,
-		ConnCleanupSec:  60,
 	})
 	userMap := make(map[string]string, len(options.Users))
 	for _, u := range options.Users {
@@ -248,10 +247,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		if h.randomReloader != nil {
 			randomProvider = h.randomReloader
 		}
-		checkedListener, err := trusttunnel.NewPrefixListener(rawListener, randomProvider, h.options.ClientRandomPrefixLen, h.options.ClientRandomPrefixWindow, h.options.FallbackServer, int(h.options.FallbackSNIPort), h.logger)
-		if err != nil {
-			return err
-		}
+		prefixChecker := trusttunnel.NewPrefixChecker(rawListener.Addr(), randomProvider, h.options.ClientRandomPrefixLen, h.options.ClientRandomPrefixWindow, h.options.FallbackServer, int(h.options.FallbackSNIPort), h.logger)
 		if err = h.httpTLSConfig.Start(); err != nil {
 			return err
 		}
@@ -300,7 +296,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		// разбираются вручную, минуя http.Server для h2-соединений.
 		// SNI для этого пути проверяется в serveConn, поэтому передаём
 		// h.service напрямую, без sniMiddleware.
-		go h.acceptLoop(checkedListener, h.service)
+		go h.acceptLoop(rawListener, prefixChecker, h.service)
 	}
 
 	// ── UDP / HTTP3 (QUIC) ─────────────────────────────────────────────
@@ -342,8 +338,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		quicConfig := &quic.Config{
 			MaxIdleTimeout:        trusttunnel.DefaultSessionTimeout * 2,
 			KeepAlivePeriod:       trusttunnel.DefaultHealthCheckTimeout,
-			MaxIncomingStreams:    1 << 60,
-			Allow0RTT:             true,
+			MaxIncomingStreams:    4096,
 			ExtraPacketPaddingMin: packetPaddingMin,
 			ExtraPacketPaddingMax: packetPaddingMax,
 		}
@@ -418,7 +413,7 @@ func (h *Inbound) Close() error {
 // в http2.Server.ServeConn, всё остальное — в http.Server через одноразовый
 // listener. Это обходит жёсткий type assertion c.rwc.(*tls.Conn) в net/http,
 // который никогда не срабатывает на *aTLS.LazyConn.
-func (h *Inbound) acceptLoop(rawListener net.Listener, handler http.Handler) {
+func (h *Inbound) acceptLoop(rawListener net.Listener, checker *trusttunnel.PrefixChecker, handler http.Handler) {
 	for {
 		rawConn, err := rawListener.Accept()
 		if err != nil {
@@ -427,24 +422,23 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, handler http.Handler) {
 			}
 			return
 		}
-		// ВАЖНО: congestion_controller/cwnd раньше применялись только к
-		// QUIC-транспорту (см. NewCongestionControl ниже по файлу). Для
-		// скорости СКАЧИВАНИЯ через H2-путь это особенно чувствительно:
-		// именно сервер тут — отправитель, и именно его congestion control
-		// определяет throughput вниз к клиенту. Без этого H2-путь был
-		// целиком на системном дефолте ядра (обычно cubic), заметно более
-		// консервативном к потерям, чем настроенный BBR у QUIC-пути. Кастуем
-		// до *net.TCPConn здесь же, пока соединение ещё не обёрнуто в
-		// prefixListener/TLS — на нём type assertion надёжно срабатывает
-		// (см. trusttunnel.SetTCPCongestionControl, Linux-only, на прочих
-		// платформах — no-op).
+		// Congestion control ставим на сырой *net.TCPConn: после prefix-check
+		// соединение уже обёрнуто (peekedConn), и type assertion не сработал бы.
 		trusttunnel.SetTCPCongestionControl(rawConn, h.options.CongestionController)
-		// Timing=nil по умолчанию — без обёртки, без накладных расходов. См.
-		// transport/trusttunnel/jitter_conn.go — это про тайминги ИСХОДЯЩИХ
-		// от сервера пакетов (важно именно для скачивания, где сервер — отправитель).
-		timingMin, timingMax := timingRange(h.options.Timing)
-		jitteredConn := trusttunnel.NewJitterConn(rawConn, timingMin, timingMax)
-		go h.serveConn(jitteredConn, handler)
+		// Проверка prefix блокирует до tlsPeekTimeout — только в своей горутине,
+		// иначе один медленный клиент задерживает все accept.
+		go func() {
+			conn := rawConn
+			if checker != nil {
+				var ok bool
+				if conn, ok = checker.Check(rawConn); !ok {
+					return
+				}
+			}
+			// Timing=nil по умолчанию — без обёртки. См. transport/trusttunnel/jitter_conn.go.
+			timingMin, timingMax := timingRange(h.options.Timing)
+			h.serveConn(trusttunnel.NewJitterConn(conn, timingMin, timingMax), handler)
+		}()
 	}
 }
 
@@ -578,8 +572,9 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 	}
 }
 
-// singleConnListener отдаёт ровно одно уже установленное соединение,
-// чтобы прогнать его через стандартный http.Server как HTTP/1.1.
+// singleConnListener отдаёт ровно одно соединение для http.Server (HTTP/1.1).
+// Serve возвращается, когда http.Server закрыт либо соединение завершилось
+// (closeNotify) — иначе второй Accept блокировался бы навсегда (утечка горутины).
 type singleConnListener struct {
 	conn net.Conn
 	once sync.Once
@@ -592,7 +587,7 @@ func newSingleConnListener(conn net.Conn) *singleConnListener {
 
 func (l *singleConnListener) Accept() (net.Conn, error) {
 	var c net.Conn
-	l.once.Do(func() { c = l.conn })
+	l.once.Do(func() { c = &notifyConn{Conn: l.conn, onClose: l.Close} })
 	if c == nil {
 		<-l.done
 		return nil, io.EOF
@@ -610,6 +605,17 @@ func (l *singleConnListener) Close() error {
 }
 
 func (l *singleConnListener) Addr() net.Addr { return l.conn.LocalAddr() }
+
+// notifyConn сигналит listener'у о закрытии соединения, разблокируя второй Accept.
+type notifyConn struct {
+	net.Conn
+	onClose func() error
+}
+
+func (c *notifyConn) Close() error {
+	_ = c.onClose()
+	return c.Conn.Close()
+}
 
 func (h *Inbound) UpdateUsers(users []option.TrustTunnelUser) {
 	userMap := make(map[string]string, len(users))

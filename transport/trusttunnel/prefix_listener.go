@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	sboxtls "github.com/sagernet/sing-box/common/tls"
@@ -26,28 +29,24 @@ const (
 	// trying to extract SNI for the fallback path — real ClientHellos
 	// (even with a full uTLS Chrome extension set) are well under this.
 	maxClientHelloCapture = 8 << 10 // 8 KiB
+	maxPendingChecks      = 1024
+	maxFallbackRelays     = 256
+	fallbackRelayLifetime = 60 * time.Second
 )
 
-// PrefixListener wraps a net.Listener to validate TLS ClientHello.Random prefix
-// BEFORE passing the connection to the TLS layer. If the prefix doesn't match
-// but a fallback server is configured, well-formed TLS ClientHello connections
-// are transparently relayed to the domain the client actually asked for (its
-// own SNI) — a steal-handshake-style fallback — so an active probe gets the
-// same response a real client of that exact domain would see, instead of a
-// dead giveaway "connection closed with zero bytes sent". If prefix is empty,
-// the inner listener is returned unchanged.
+// PrefixChecker validates the TLS ClientHello.Random prefix of a new TCP
+// connection BEFORE it reaches the TLS layer. If the prefix doesn't match but
+// a fallback is configured, well-formed ClientHello connections are relayed to
+// the domain the client asked for (its own SNI) — steal-handshake-style — so an
+// active probe sees what a real client of that domain would see.
 //
-// SECURITY: No IP whitelisting - any IP can connect, but only those sending
-// a matching ClientHello.Random prefix will receive a response. Scanners
-// without the prefix get immediate reset without TLS handshake attempt,
-// providing reality-style HTTP fingerprinting without explicit IP bans.
-type PrefixListener struct {
-	net.Listener
+// Check blocks (up to tlsPeekTimeout) and must be called from a per-connection
+// goroutine, never from the accept loop: otherwise one stalled client delays
+// every other accept.
+type PrefixChecker struct {
 	// provider: current set of checks (static prefixes or rotating secrets,
 	// hot-reloadable — see common/tls/random_prefix_reload.go). A connection is
-	// accepted if it matches ANY entry. In secrets mode checkRandom derives the
-	// expected bytes fresh for the current window (and its neighbors, for clock
-	// skew) instead of comparing against a static value.
+	// accepted if it matches ANY entry.
 	provider      sboxtls.RandomPrefixProvider
 	prefixLen     int
 	windowSeconds int
@@ -55,31 +54,32 @@ type PrefixListener struct {
 	fallbackPort  string // port to pair with the extracted SNI when dialing
 	ownPort       string // our own listening port, used to detect self-loops
 	logger        logger.ContextLogger
+	matchSem      chan struct{} // bounds connections being peeked (pre-auth, unauthenticated)
+	relaySem      chan struct{} // bounds concurrent fallback relays
 }
 
-// NewPrefixListener wraps inner with the pre-TLS ClientHello.Random check.
-// A nil provider disables the check (inner is returned as is).
-func NewPrefixListener(inner net.Listener, provider sboxtls.RandomPrefixProvider, prefixLen int, windowSeconds int, fallback string, fallbackSNIPort int, log logger.ContextLogger) (net.Listener, error) {
+// NewPrefixChecker returns nil when provider is nil (check disabled).
+func NewPrefixChecker(addr net.Addr, provider sboxtls.RandomPrefixProvider, prefixLen int, windowSeconds int, fallback string, fallbackSNIPort int, log logger.ContextLogger) *PrefixChecker {
 	if provider == nil {
-		return inner, nil
+		return nil
 	}
-	fallbackPort := resolveFallbackPort(fallback, fallbackSNIPort)
 	ownPort := ""
-	if addr := inner.Addr(); addr != nil {
+	if addr != nil {
 		if _, port, splitErr := net.SplitHostPort(addr.String()); splitErr == nil {
 			ownPort = port
 		}
 	}
-	return &PrefixListener{
-		Listener:      inner,
+	return &PrefixChecker{
 		provider:      provider,
 		prefixLen:     prefixLen,
 		windowSeconds: windowSeconds,
 		fallback:      fallback,
-		fallbackPort:  fallbackPort,
+		fallbackPort:  resolveFallbackPort(fallback, fallbackSNIPort),
 		ownPort:       ownPort,
 		logger:        log,
-	}, nil
+		matchSem:      make(chan struct{}, maxPendingChecks),
+		relaySem:      make(chan struct{}, maxFallbackRelays),
+	}
 }
 
 // resolveFallbackPort picks the port that is paired with the SNI extracted from a
@@ -109,35 +109,29 @@ const (
 	peekReadFailed                       // couldn't read enough bytes in time
 )
 
-// Accept loops until it gets a connection that passes the prefix check,
-// or until the underlying listener returns an error. Connections that fail
-// the check are either dropped (garbage/timeout) or, if fallback is
-// configured and the connection was a well-formed ClientHello, relayed to
-// the fallback destination in a background goroutine.
-//
-// SECURITY: No IP whitelisting - any IP can connect, but only those sending
-// a matching ClientHello.Random prefix will receive a response. Scanners
-// without the prefix get immediate reset without TLS handshake attempt.
-func (l *PrefixListener) Accept() (net.Conn, error) {
-	for {
-		conn, err := l.Listener.Accept()
-		if err != nil {
-			return nil, err
-		}
-		peeked, result := l.checkRandom(conn)
-		switch result {
-		case peekMatched:
-			return &peekedConn{Conn: conn, buf: peeked}, nil
-		case peekMismatch:
-			if l.fallback != "" {
-				go l.relayToFallback(conn, peeked)
-				continue
-			}
-			conn.Close()
-		default: // peekNotClientHello, peekReadFailed
-			conn.Close()
+// Check returns the connection to hand to TLS (with peeked bytes replayed) and
+// true on a match. Otherwise it consumes conn itself (drop, or relay to the
+// fallback until it ends) and returns false.
+func (l *PrefixChecker) Check(conn net.Conn) (net.Conn, bool) {
+	select {
+	case l.matchSem <- struct{}{}:
+	default:
+		conn.Close()
+		return nil, false
+	}
+	peeked, result := l.checkRandom(conn)
+	<-l.matchSem
+	switch result {
+	case peekMatched:
+		return &peekedConn{Conn: conn, buf: peeked}, true
+	case peekMismatch:
+		if l.fallback != "" {
+			l.relayToFallback(conn, peeked)
+			return nil, false
 		}
 	}
+	conn.Close()
+	return nil, false
 }
 
 // checkRandom peeks at the TLS ClientHello and verifies the Random prefix/mask.
@@ -151,7 +145,7 @@ func (l *PrefixListener) Accept() (net.Conn, error) {
 // Without multi-record assembly a pure-X25519MLKEM768 ClientHello (~1.5KB+)
 // that was split by record_fragment loses key_share in the first record and
 // fails the rotating-prefix check even though the Random itself is correct.
-func (l *PrefixListener) checkRandom(conn net.Conn) ([]byte, peekResult) {
+func (l *PrefixChecker) checkRandom(conn net.Conn) ([]byte, peekResult) {
 	if err := conn.SetReadDeadline(time.Now().Add(tlsPeekTimeout)); err != nil {
 		return nil, peekReadFailed
 	}
@@ -380,18 +374,26 @@ func extractKeyShareFromClientHelloBody(body []byte) ([]byte, bool) {
 // splices the rest bidirectionally. Used for connections whose
 // client_random_prefix didn't match — instead of a telltale reset, the
 // prober gets the real, matching TLS response for the domain it asked for.
-// CRITICAL: This function only relays if authentication was verified on the
-// underlying connection (before this relay path is ever reached). The auth
-// check happens in service.go:158 (ServeHTTP) which validates
-// Proxy-Authorization before calling into the transport layer.
-func (l *PrefixListener) relayToFallback(conn net.Conn, peeked []byte) {
+func (l *PrefixChecker) relayToFallback(conn net.Conn, peeked []byte) {
 	defer conn.Close()
+
+	select {
+	case l.relaySem <- struct{}{}:
+		defer func() { <-l.relaySem }()
+	default:
+		return
+	}
+	_ = conn.SetDeadline(time.Now().Add(fallbackRelayLifetime))
 
 	captured, sni := l.captureClientHelloSNI(conn, peeked)
 
 	target := l.fallback
+	// The SNI is attacker-controlled: it may only lead to public addresses
+	// (publicOnlyDialer), the operator-configured static fallback may be local.
+	dialer := &net.Dialer{Timeout: fallbackDialTimeout}
 	if sni != "" {
 		target = net.JoinHostPort(sni, l.fallbackPort)
+		dialer.Control = publicOnly
 	}
 	if target == "" {
 		return
@@ -413,14 +415,16 @@ func (l *PrefixListener) relayToFallback(conn net.Conn, peeked []byte) {
 		}
 		l.logger.Debug("trusttunnel inbound: fallback target ", target, " resolves back to this server; using static fallback_server instead")
 		target = l.fallback
+		dialer.Control = nil
 	}
 
-	upstream, err := net.DialTimeout("tcp", target, fallbackDialTimeout)
+	upstream, err := dialer.Dial("tcp", target)
 	if err != nil {
 		l.logger.Debug("trusttunnel inbound: fallback dial to ", target, " failed: ", err)
 		return
 	}
 	defer upstream.Close()
+	_ = upstream.SetDeadline(time.Now().Add(fallbackRelayLifetime))
 
 	if len(captured) > 0 {
 		if _, err := upstream.Write(captured); err != nil {
@@ -447,6 +451,24 @@ func (l *PrefixListener) relayToFallback(conn net.Conn, peeked []byte) {
 	wg.Wait()
 }
 
+// publicOnly is a net.Dialer.Control that refuses non-public destinations;
+// it runs after DNS resolution on the actual IP, so rebinding can't bypass it.
+func publicOnly(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return err
+	}
+	ip = ip.Unmap()
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return errors.New("non-public fallback target")
+	}
+	return nil
+}
+
 // captureClientHelloSNI reads the rest of the ClientHello (bounded by
 // maxClientHelloCapture and tlsPeekTimeout, already partly consumed into
 // `already`) and extracts the SNI extension using the standard library's own
@@ -454,7 +476,7 @@ func (l *PrefixListener) relayToFallback(conn net.Conn, peeked []byte) {
 // already uses for TLS sniffing (see common/sniff/tls.go). Returns the full
 // raw bytes seen (for replay to the fallback) and the SNI, which is empty if
 // it couldn't be determined in time or wasn't present.
-func (l *PrefixListener) captureClientHelloSNI(conn net.Conn, already []byte) ([]byte, string) {
+func (l *PrefixChecker) captureClientHelloSNI(conn net.Conn, already []byte) ([]byte, string) {
 	var captured bytes.Buffer
 	captured.Write(already)
 
@@ -485,7 +507,7 @@ func (l *PrefixListener) captureClientHelloSNI(conn net.Conn, already []byte) ([
 // exhausting sockets/goroutines. Checked by port first (cheap), then by
 // resolving the host and comparing against this machine's own interface
 // addresses.
-func (l *PrefixListener) isSelfLoop(target string) bool {
+func (l *PrefixChecker) isSelfLoop(target string) bool {
 	host, port, err := net.SplitHostPort(target)
 	if err != nil || l.ownPort == "" || port != l.ownPort {
 		return false

@@ -34,7 +34,6 @@ type ServiceOptions struct {
 	UDPPaddingMax   int
 	AuthRateLimit   time.Duration
 	AuthMaxFailures int
-	ConnCleanupSec  int
 }
 
 type Service struct {
@@ -51,10 +50,6 @@ type Service struct {
 	authWindow      time.Time      // window start for failed attempts
 	authRateLimit   time.Duration  // rate limit window
 	authMaxFailures int            // max allowed failures per window
-
-	muConn         sync.RWMutex
-	connCleanup    time.Time // next connection cleanup
-	connCleanupSec int       // cleanup interval
 }
 
 func NewService(options ServiceOptions) *Service {
@@ -68,8 +63,6 @@ func NewService(options ServiceOptions) *Service {
 		authAttempts:    make(map[string]int),
 		authRateLimit:   5 * time.Minute,
 		authMaxFailures: 50,
-		connCleanup:     time.Now(),
-		connCleanupSec:  60,
 	}
 
 	// rate_limit_auth_window / rate_limit_auth_attempts из конфига раньше
@@ -80,8 +73,6 @@ func NewService(options ServiceOptions) *Service {
 	if options.AuthMaxFailures > 0 {
 		s.authMaxFailures = options.AuthMaxFailures
 	}
-
-	go s.cleanupConnections()
 
 	return s
 }
@@ -100,63 +91,6 @@ func (s *Service) UpdateUsers(users map[string]string) {
 	for _, conn := range closedConns {
 		conn.Close()
 	}
-}
-
-func (s *Service) cleanupConnections() {
-	ticker := time.NewTicker(time.Duration(s.connCleanupSec) * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			s.muConn.Lock()
-			now := time.Now()
-			if now.Sub(s.connCleanup) >= time.Duration(s.connCleanupSec)*time.Second {
-				s.connCleanup = now
-				var closedConns []io.Closer
-				for user, conns := range s.conns {
-					cleaned := make([]io.Closer, 0, len(conns))
-					for _, conn := range conns {
-						if !isConnAlive(conn) {
-							closedConns = append(closedConns, conn)
-						} else {
-							cleaned = append(cleaned, conn)
-						}
-					}
-					if len(cleaned) > 0 {
-						s.conns[user] = cleaned
-					} else {
-						delete(s.conns, user)
-					}
-				}
-				s.muConn.Unlock()
-				for _, conn := range closedConns {
-					conn.Close()
-				}
-			} else {
-				s.muConn.Unlock()
-			}
-		case <-s.ctx.Done():
-			return
-		}
-	}
-}
-
-func isConnAlive(conn io.Closer) bool {
-	// Проверяем, закрыт ли underlying io.ReadCloser
-	// Для httpConn это проверка через h.body == nil
-	if httpConn, ok := conn.(interface{ Body() io.ReadCloser }); ok {
-		body := httpConn.Body()
-		return body != nil
-	}
-	// Для h2ConnWrapper проверяем через поле closed (закрыто в CloseWrapper)
-	if wrapper, ok := conn.(*h2ConnWrapper); ok {
-		wrapper.access.Lock()
-		defer wrapper.access.Unlock()
-		return !wrapper.closed
-	}
-	// Для остальных типов соединений считаем их живыми
-	return true
 }
 
 func (s *Service) trackConn(username string, conn io.Closer) {
@@ -198,7 +132,7 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		// нет такого пути — камуфляж уровня SNI/random-prefix, только для
 		// самого HTTP-ответа.
 		writer.WriteHeader(http.StatusNotFound)
-		s.recordAuthFailure(ip, username)
+		s.recordAuthFailure(ip)
 		s.badRequest(request.Context(), request, E.New("authorization failed"))
 		return
 	}
@@ -328,8 +262,10 @@ func (s *Service) verify(authorization string) (username string, loaded bool) {
 	return username, true
 }
 
+// badRequest logs at debug level: every scanner that reaches the HTTP layer
+// ends up here, so ERROR would let anyone fill the log.
 func (s *Service) badRequest(ctx context.Context, request *http.Request, err error) {
-	s.logger.ErrorContext(ctx, E.Cause(err, "process connection from ", request.RemoteAddr))
+	s.logger.DebugContext(ctx, E.Cause(err, "process connection from ", request.RemoteAddr))
 }
 
 // rateLimitKey извлекает хост без порта из RemoteAddr. Раньше ключом был
@@ -365,7 +301,7 @@ func (s *Service) isRateLimited(ip string) bool {
 	return s.authAttempts[ip] >= s.authMaxFailures
 }
 
-func (s *Service) recordAuthFailure(ip, username string) {
+func (s *Service) recordAuthFailure(ip string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -428,6 +364,8 @@ func (w *h2ConnWrapper) Write(p []byte) (n int, err error) {
 	}
 	return w.Conn.Write(p)
 }
+
+func (w *h2ConnWrapper) NeedAdditionalReadDeadline() bool { return true }
 
 func (w *h2ConnWrapper) CloseWrapper() {
 	w.access.Lock()

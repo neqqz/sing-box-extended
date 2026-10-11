@@ -17,17 +17,10 @@ import (
 // осмысленный аналог — штатный "bbr" ядра.
 func linuxCongestionControlName(name string) string {
 	switch name {
-	case "bbr2":
-		return "bbr2"
-	case "reno":
-		return "reno"
-	case "cubic":
-		return "cubic"
-	case "", "bbr", "bbr_standard", "bbr2_variant":
-		return "bbr"
-	default:
-		return "bbr"
+	case "bbr2", "reno", "cubic":
+		return name
 	}
+	return "bbr"
 }
 
 // setTCPCongestionControl выставляет TCP_CONGESTION на сыром TCP-сокете.

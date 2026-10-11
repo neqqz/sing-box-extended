@@ -31,7 +31,10 @@ import (
 // Fqdn может встречаться десятки раз в секунду, а резолвить его на каждый
 // пакет — лишняя задержка и нагрузка на DNS без всякой пользы, т.к. IP
 // целевых доменов (CDN и т.п.) не меняется настолько быстро.
-const resolveCacheTTL = 30 * time.Second
+const (
+	resolveCacheTTL = 30 * time.Second
+	resolveCacheMax = 4096
+)
 
 // noDelayDialer НЕ форсирует TCP_NODELAY. Раньше здесь безусловно вызывался
 // tcpConn.SetNoDelay(true), что отключало алгоритм Нейгла: каждый мелкий
@@ -221,6 +224,17 @@ func (h *Outbound) resolveDestination(ctx context.Context, destination M.Socksad
 	resolved := M.Socksaddr{Addr: addresses[0], Port: destination.Port}
 
 	h.resolveMu.Lock()
+	if len(h.resolveCache) >= resolveCacheMax {
+		// shortcut: full sweep of expired entries on overflow, fine at this size; use an LRU if the bound is raised a lot.
+		for k, e := range h.resolveCache {
+			if !now.Before(e.expires) {
+				delete(h.resolveCache, k)
+			}
+		}
+		if len(h.resolveCache) >= resolveCacheMax {
+			clear(h.resolveCache)
+		}
+	}
 	h.resolveCache[destination.Fqdn] = resolveCacheEntry{addr: resolved, expires: now.Add(resolveCacheTTL)}
 	h.resolveMu.Unlock()
 
