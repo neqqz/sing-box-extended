@@ -91,7 +91,6 @@ type Inbound struct {
 	httpTLSConfig  tls.ServerConfig
 	http3TLSConfig tls.ServerConfig
 	network        []string
-	ipWhitelist    []string
 	// randomReloader: текущий набор проверок ClientHello.Random — статичные
 	// client_random_prefix ИЛИ секреты ротации client_random_prefix_secret
 	// (соединение принимается, если подходит под ЛЮБУЮ запись). Набор
@@ -166,6 +165,9 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		if err != nil {
 			return nil, err
 		}
+	}
+	if err := validatePaddings(options.UDPPadding, options.DataPadding, options.PacketPadding); err != nil {
+		return nil, err
 	}
 	networkList := options.Network.Build()
 	if len(networkList) == 0 {

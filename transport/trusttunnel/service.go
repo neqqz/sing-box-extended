@@ -41,7 +41,7 @@ type Service struct {
 	logger        logger.ContextLogger
 	users         map[string]string
 	handler       Handler
-	conns         map[string][]io.Closer
+	conns         map[string]map[io.Closer]struct{}
 	udpPaddingMin int
 	udpPaddingMax int
 
@@ -57,7 +57,7 @@ func NewService(options ServiceOptions) *Service {
 		ctx:             options.Ctx,
 		logger:          options.Logger,
 		handler:         options.Handler,
-		conns:           make(map[string][]io.Closer),
+		conns:           make(map[string]map[io.Closer]struct{}),
 		udpPaddingMin:   options.UDPPaddingMin,
 		udpPaddingMax:   options.UDPPaddingMax,
 		authAttempts:    make(map[string]int),
@@ -83,7 +83,9 @@ func (s *Service) UpdateUsers(users map[string]string) {
 	var closedConns []io.Closer
 	for user, conns := range s.conns {
 		if _, exists := users[user]; !exists {
-			closedConns = append(closedConns, conns...)
+			for conn := range conns {
+				closedConns = append(closedConns, conn)
+			}
 			delete(s.conns, user)
 		}
 	}
@@ -95,18 +97,18 @@ func (s *Service) UpdateUsers(users map[string]string) {
 
 func (s *Service) trackConn(username string, conn io.Closer) {
 	s.mu.Lock()
-	s.conns[username] = append(s.conns[username], conn)
+	if s.conns[username] == nil {
+		s.conns[username] = make(map[io.Closer]struct{})
+	}
+	s.conns[username][conn] = struct{}{}
 	s.mu.Unlock()
 }
 
 func (s *Service) untrackConn(username string, conn io.Closer) {
 	s.mu.Lock()
-	conns := s.conns[username]
-	for i, c := range conns {
-		if c == conn {
-			s.conns[username] = append(conns[:i], conns[i+1:]...)
-			break
-		}
+	delete(s.conns[username], conn)
+	if len(s.conns[username]) == 0 {
+		delete(s.conns, username)
 	}
 	s.mu.Unlock()
 }

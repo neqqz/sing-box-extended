@@ -4,6 +4,7 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -127,12 +128,6 @@ func (h *httpConn) waitCreated() error {
 	return h.createErr
 }
 
-func (h *httpConn) Body() io.ReadCloser {
-	h.mtx.Lock()
-	defer h.mtx.Unlock()
-	return h.body
-}
-
 func (h *httpConn) Close() error {
 	h.mtx.Lock()
 	h.closed = true
@@ -226,4 +221,19 @@ func (t *tcpConn) Read(b []byte) (n int, err error) {
 
 func (t *tcpConn) Write(b []byte) (int, error) {
 	return t.writeFlush(b)
+}
+
+// Wire limits: the UDP padding length is a uint16 in the frame header, the
+// h2 DATA pad length is one byte (RFC 9113 §6.1).
+const (
+	MaxUDPPadding  = 65535
+	MaxDataPadding = 255
+)
+
+// ValidatePadding rejects ranges that would silently corrupt the stream.
+func ValidatePadding(name string, min, max, limit int) error {
+	if min < 0 || max < min || max > limit {
+		return fmt.Errorf("%s: need 0 <= min <= max <= %d, got [%d, %d]", name, limit, min, max)
+	}
+	return nil
 }
