@@ -104,35 +104,35 @@ func TestMatchRotatingRandomPrefixBound(t *testing.T) {
 	secretB := []byte("secret-of-user-b")
 	secretC := []byte("secret-of-user-c")
 	bind := []byte("key-share-bytes")
-	const (
-		length = 8
-		window = 60
-		now    = int64(1_800_000_030)
-	)
-	cur := CurrentRandomPrefixWindow(now, window)
+	const length = 8
 
-	makeRandom := func(secret []byte, w int64, bindValue []byte) []byte {
+	makeRandom := func(secret, bindValue []byte) []byte {
 		random := make([]byte, 32)
-		copy(random, DeriveRotatingRandomPrefixBound(secret, length, w, bindValue))
+		copy(random, DeriveRotatingRandomPrefixBound(secret, length, bindValue))
 		return random
 	}
-
 	servers := [][]byte{secretA, secretB}
 
-	// any configured secret is accepted
-	require.True(t, MatchRotatingRandomPrefixBound(servers, length, window, makeRandom(secretA, cur, bind), bind, now))
-	require.True(t, MatchRotatingRandomPrefixBound(servers, length, window, makeRandom(secretB, cur, bind), bind, now))
-	// unknown secret is rejected
-	require.False(t, MatchRotatingRandomPrefixBound(servers, length, window, makeRandom(secretC, cur, bind), bind, now))
-	// neighbouring windows are tolerated, farther ones are not
-	require.True(t, MatchRotatingRandomPrefixBound(servers, length, window, makeRandom(secretB, cur-1, bind), bind, now))
-	require.True(t, MatchRotatingRandomPrefixBound(servers, length, window, makeRandom(secretB, cur+1, bind), bind, now))
-	require.False(t, MatchRotatingRandomPrefixBound(servers, length, window, makeRandom(secretB, cur+2, bind), bind, now))
+	// any configured secret is accepted, unknown one is rejected
+	require.True(t, MatchRotatingRandomPrefixBound(servers, length, makeRandom(secretA, bind), bind))
+	require.True(t, MatchRotatingRandomPrefixBound(servers, length, makeRandom(secretB, bind), bind))
+	require.False(t, MatchRotatingRandomPrefixBound(servers, length, makeRandom(secretC, bind), bind))
 	// bound to the key_share of this handshake
-	require.False(t, MatchRotatingRandomPrefixBound(servers, length, window, makeRandom(secretA, cur, bind), []byte("other"), now))
-	// degenerate inputs
-	require.False(t, MatchRotatingRandomPrefixBound(nil, length, window, makeRandom(secretA, cur, bind), bind, now))
-	require.False(t, MatchRotatingRandomPrefixBound(servers, length, window, make([]byte, 4), bind, now))
+	require.False(t, MatchRotatingRandomPrefixBound(servers, length, makeRandom(secretA, bind), []byte("other")))
+	// degenerate input
+	require.False(t, MatchRotatingRandomPrefixBound(nil, length, makeRandom(secretA, bind), bind))
+	require.False(t, MatchRotatingRandomPrefixBound(servers, length, make([]byte, 4), bind))
+}
+
+func TestReplayCache(t *testing.T) {
+	c := NewReplayCache()
+	a := make([]byte, 32)
+	b := make([]byte, 32)
+	b[31] = 1
+	require.False(t, c.Seen(a))
+	require.True(t, c.Seen(a))
+	require.False(t, c.Seen(b))
+	require.True(t, c.Seen(b))
 }
 
 func TestPickRandomPrefixSecret(t *testing.T) {

@@ -138,25 +138,20 @@ func PickRandomPrefixSecret(list [][]byte) []byte {
 	return list[rand.IntN(len(list))]
 }
 
-// MatchRotatingRandomPrefixBound — серверная проверка ротирующегося префикса:
-// true, если random начинается с префикса, выведенного из ЛЮБОГО из secrets
-// для текущего окна или одного из соседних (±1, допуск на рассинхрон часов),
-// с привязкой к bind (key_share этого handshake). См.
-// DeriveRotatingRandomPrefixBound. Стоимость — 3 HMAC-SHA256 на секрет.
-func MatchRotatingRandomPrefixBound(secrets [][]byte, length int, windowSeconds int, random, bind []byte, nowUnix int64) bool {
+// MatchRotatingRandomPrefixBound — серверная проверка: true, если random
+// начинается с префикса, выведенного из ЛЮБОГО из secrets с привязкой к bind
+// (key_share этого handshake). Без времени: реплей закрывает ReplayCache.
+func MatchRotatingRandomPrefixBound(secrets [][]byte, length int, random, bind []byte) bool {
 	if length > 32 {
 		length = 32
 	}
 	if length <= 0 || len(random) < length {
 		return false
 	}
-	now := CurrentRandomPrefixWindow(nowUnix, windowSeconds)
 	for _, secret := range secrets {
-		for _, window := range [3]int64{now - 1, now, now + 1} {
-			expected := DeriveRotatingRandomPrefixBound(secret, length, window, bind)
-			if subtle.ConstantTimeCompare(random[:length], expected) == 1 {
-				return true
-			}
+		expected := DeriveRotatingRandomPrefixBound(secret, length, bind)
+		if subtle.ConstantTimeCompare(random[:length], expected) == 1 {
+			return true
 		}
 	}
 	return false

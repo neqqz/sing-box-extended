@@ -98,10 +98,9 @@ type Inbound struct {
 	// common/tls/random_prefix_reload.go); nil, если проверка выключена.
 	// Один и тот же набор читают TCP/h2-путь (PrefixListener) и QUIC-путь
 	// (ServerClientRandomVerify).
-	randomReloader     *tls.RandomPrefixReloader
-	randomCancel       context.CancelFunc
-	randomPrefixLen    int
-	randomPrefixWindow int
+	randomReloader  *tls.RandomPrefixReloader
+	randomCancel    context.CancelFunc
+	randomPrefixLen int
 	// handshakeSem ограничивает число ОДНОВРЕМЕННО выполняемых TLS
 	// handshake'ов. Раньше go h.serveConn(...) запускался без всякого
 	// лимита — при burst'е из сотни+ соединений сразу (типичный триггер:
@@ -185,10 +184,9 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 			Logger:  logger,
 			Listen:  options.ListenOptions,
 		}),
-		randomReloader:     randomReloader,
-		randomPrefixLen:    options.ClientRandomPrefixLen,
-		randomPrefixWindow: options.ClientRandomPrefixWindow,
-		handshakeSem:       make(chan struct{}, DefaultMaxConcurrentHandshakes),
+		randomReloader:  randomReloader,
+		randomPrefixLen: options.ClientRandomPrefixLen,
+		handshakeSem:    make(chan struct{}, DefaultMaxConcurrentHandshakes),
 	}
 	udpPaddingMin, udpPaddingMax := paddingRange(options.UDPPadding)
 	service := trusttunnel.NewService(trusttunnel.ServiceOptions{
@@ -249,7 +247,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		if h.randomReloader != nil {
 			randomProvider = h.randomReloader
 		}
-		prefixChecker := trusttunnel.NewPrefixChecker(rawListener.Addr(), randomProvider, h.options.ClientRandomPrefixLen, h.options.ClientRandomPrefixWindow, h.options.FallbackServer, int(h.options.FallbackSNIPort), h.logger)
+		prefixChecker := trusttunnel.NewPrefixChecker(rawListener.Addr(), randomProvider, h.options.ClientRandomPrefixLen, h.options.FallbackServer, int(h.options.FallbackSNIPort), h.logger)
 		if err = h.httpTLSConfig.Start(); err != nil {
 			return err
 		}
@@ -369,7 +367,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			// приходит как есть в CRYPTO-фрейме).
 			reloader := h.randomReloader
 			length := tls.RandomPrefixLenOrDefault(h.randomPrefixLen)
-			window := h.randomPrefixWindow
+			replay := tls.NewReplayCache()
 			quicConfig.ServerClientRandomVerify = func(random [32]byte, clientHello []byte) bool {
 				set := reloader.Current()
 				if len(set.Secrets) > 0 {
@@ -381,7 +379,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 					}
 					// Принимаем совпадение с ЛЮБЫМ секретом из списка
 					// (например, по одному секрету на пользователя).
-					return tls.MatchRotatingRandomPrefixBound(set.Secrets, length, window, random[:], bind, time.Now().Unix())
+					return tls.MatchRotatingRandomPrefixBound(set.Secrets, length, random[:], bind) && !replay.Seen(random[:])
 				}
 				// Статичные префиксы: совпадение с ЛЮБЫМ из списка.
 				return tls.MatchAnyRandomPrefix(set.Prefixes, random[:])

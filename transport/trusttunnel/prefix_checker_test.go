@@ -23,7 +23,7 @@ func checkWith(t *testing.T, p sboxtls.RandomPrefix) (matched bool, wasClosed bo
 	go func() {
 		_ = tls.Client(cli, &tls.Config{InsecureSkipVerify: true, ServerName: "example.com"}).Handshake()
 	}()
-	checker := NewPrefixChecker(nil, staticProvider{&sboxtls.RandomPrefixSet{Prefixes: []sboxtls.RandomPrefix{p}}}, 0, 0, "", 0, logger.NOP())
+	checker := NewPrefixChecker(nil, staticProvider{&sboxtls.RandomPrefixSet{Prefixes: []sboxtls.RandomPrefix{p}}}, 0, "", 0, logger.NOP())
 	conn, ok := checker.Check(srv)
 	if ok {
 		return true, false

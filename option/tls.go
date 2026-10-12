@@ -151,8 +151,7 @@ type OutboundTLSOptions struct {
 	ClientRandomPrefixSecret badoption.Listable[string] `json:"client_random_prefix_secret,omitempty"`
 	// ClientRandomPrefixLen: длина деривируемого префикса в байтах (1-32, по умолчанию 8).
 	ClientRandomPrefixLen int `json:"client_random_prefix_len,omitempty"`
-	// ClientRandomPrefixWindow: длина окна ротации в секундах (по умолчанию 60).
-	// Сервер допускает текущее и соседние окна, чтобы не ловить рассинхрон часов.
+	// ClientRandomPrefixWindow: deprecated, ignored (префикс не зависит от времени).
 	ClientRandomPrefixWindow int                     `json:"client_random_prefix_window,omitempty"`
 	HandshakeTimeout         badoption.Duration      `json:"handshake_timeout,omitempty"`
 	ECH                      *OutboundECHOptions     `json:"ech,omitempty"`

@@ -413,7 +413,6 @@ func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
 		// заново на каждое подключение, а не переиспользовать значение,
 		// посчитанное один раз при первом вызове.
 		length := RandomPrefixLenOrDefault(c.clientRandomPrefixLen)
-		window := CurrentRandomPrefixWindow(time.Now().Unix(), c.clientRandomPrefixWindow)
 		if chromeParrot || genericID != nil {
 			// ChromeParrot (и не-Chrome фингерпринты через UTLSClientHelloID) идёт через uTLS (см. newUTLSQUICClient в форке
 			// github.com/neqqz/quic-go), который даёт доступ к
@@ -427,12 +426,13 @@ func (c *UTLSClientConfig) quicConfigWithRandom(cfg *quic.Config) *quic.Config {
 			// DeriveRotatingRandomPrefix в random_prefix_rotation.go) —
 			// для него остаётся небиндящий вариант в блоке else ниже.
 			bind = func(keyShare []byte) []byte {
-				return DeriveRotatingRandomPrefixBound(secret, length, window, keyShare)
+				return DeriveRotatingRandomPrefixBound(secret, length, keyShare)
 			}
 			prefix, mask = nil, nil
 		} else {
-			prefix = DeriveRotatingRandomPrefix(secret, length, window)
-			mask = nil
+			// shortcut: голый crypto/tls не даёт key_share, а сервер требует
+			// привязанный префикс — без uTLS-фингерпринта QUIC+secret не пройдёт.
+			prefix, mask = nil, nil
 		}
 	}
 	if len(prefix) == 0 && bind == nil && !chromeParrot && genericID == nil {
@@ -562,8 +562,7 @@ func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
 				bind = serializeKeyShares(hello.KeyShares)
 			}
 			length := RandomPrefixLenOrDefault(c.clientRandomPrefixLen)
-			window := CurrentRandomPrefixWindow(time.Now().Unix(), c.clientRandomPrefixWindow)
-			randomPrefix = DeriveRotatingRandomPrefixBound(PickRandomPrefixSecret(c.clientRandomPrefixSecrets), length, window, bind)
+			randomPrefix = DeriveRotatingRandomPrefixBound(PickRandomPrefixSecret(c.clientRandomPrefixSecrets), length, bind)
 			randomMask = nil
 		}
 

@@ -47,19 +47,19 @@ type PrefixChecker struct {
 	// provider: current set of checks (static prefixes or rotating secrets,
 	// hot-reloadable — see common/tls/random_prefix_reload.go). A connection is
 	// accepted if it matches ANY entry.
-	provider      sboxtls.RandomPrefixProvider
-	prefixLen     int
-	windowSeconds int
-	fallback      string // static "host:port" fallback, used when SNI can't be extracted
-	fallbackPort  string // port to pair with the extracted SNI when dialing
-	ownPort       string // our own listening port, used to detect self-loops
-	logger        logger.ContextLogger
-	matchSem      chan struct{} // bounds connections being peeked (pre-auth, unauthenticated)
-	relaySem      chan struct{} // bounds concurrent fallback relays
+	provider     sboxtls.RandomPrefixProvider
+	prefixLen    int
+	replay       *sboxtls.ReplayCache
+	fallback     string // static "host:port" fallback, used when SNI can't be extracted
+	fallbackPort string // port to pair with the extracted SNI when dialing
+	ownPort      string // our own listening port, used to detect self-loops
+	logger       logger.ContextLogger
+	matchSem     chan struct{} // bounds connections being peeked (pre-auth, unauthenticated)
+	relaySem     chan struct{} // bounds concurrent fallback relays
 }
 
 // NewPrefixChecker returns nil when provider is nil (check disabled).
-func NewPrefixChecker(addr net.Addr, provider sboxtls.RandomPrefixProvider, prefixLen int, windowSeconds int, fallback string, fallbackSNIPort int, log logger.ContextLogger) *PrefixChecker {
+func NewPrefixChecker(addr net.Addr, provider sboxtls.RandomPrefixProvider, prefixLen int, fallback string, fallbackSNIPort int, log logger.ContextLogger) *PrefixChecker {
 	if provider == nil {
 		return nil
 	}
@@ -70,15 +70,15 @@ func NewPrefixChecker(addr net.Addr, provider sboxtls.RandomPrefixProvider, pref
 		}
 	}
 	return &PrefixChecker{
-		provider:      provider,
-		prefixLen:     prefixLen,
-		windowSeconds: windowSeconds,
-		fallback:      fallback,
-		fallbackPort:  resolveFallbackPort(fallback, fallbackSNIPort),
-		ownPort:       ownPort,
-		logger:        log,
-		matchSem:      make(chan struct{}, maxPendingChecks),
-		relaySem:      make(chan struct{}, maxFallbackRelays),
+		provider:     provider,
+		prefixLen:    prefixLen,
+		replay:       sboxtls.NewReplayCache(),
+		fallback:     fallback,
+		fallbackPort: resolveFallbackPort(fallback, fallbackSNIPort),
+		ownPort:      ownPort,
+		logger:       log,
+		matchSem:     make(chan struct{}, maxPendingChecks),
+		relaySem:     make(chan struct{}, maxFallbackRelays),
 	}
 }
 
@@ -186,10 +186,9 @@ func (l *PrefixChecker) checkRandom(conn net.Conn) ([]byte, peekResult) {
 			// ClientHello without one. Either way: treat like a wrong prefix.
 			return wire, peekMismatch
 		}
-		// Accept the current window and its immediate neighbors (network
-		// delay / clock skew between client and server can put a connection
-		// one window off in either direction), for ANY configured secret.
-		if sboxtls.MatchRotatingRandomPrefixBound(set.Secrets, length, l.windowSeconds, random, bind, time.Now().Unix()) {
+		// ANY configured secret; a repeated Random is a replay, so it is
+		// treated like a wrong prefix (goes to fallback).
+		if sboxtls.MatchRotatingRandomPrefixBound(set.Secrets, length, random, bind) && !l.replay.Seen(random) {
 			return wire, peekMatched
 		}
 		return wire, peekMismatch
