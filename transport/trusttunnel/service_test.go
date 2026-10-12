@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -27,11 +28,40 @@ func TestServiceRejectsBadAuthAndRateLimits(t *testing.T) {
 			t.Fatalf("bad auth must look like a plain 404, got %d", code)
 		}
 	}
-	if !s.isRateLimited("1.2.3.4") {
+	if !s.isRateLimited("1.2.3.4", "u") {
 		t.Fatal("3 failures must trigger the limit")
 	}
-	if s.isRateLimited("5.6.7.8") {
+	if s.isRateLimited("5.6.7.8", "u") {
 		t.Fatal("limit must be per IP")
+	}
+}
+
+func TestRateLimitSharedNAT(t *testing.T) {
+	s := NewService(ServiceOptions{Ctx: context.Background(), Logger: logger.NOP(), AuthMaxFailures: 3})
+	s.UpdateUsers(map[string]string{"alice": "a", "bob": "b"})
+	do := func(auth string) int {
+		r := httptest.NewRequest(http.MethodConnect, "https://x", nil)
+		r.RemoteAddr = "10.0.0.1:1"
+		r.Header.Set("Proxy-Authorization", auth)
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, r)
+		return w.Code
+	}
+	for i := 0; i < 5; i++ {
+		do(buildAuth("alice", "wrong"))
+	}
+	if !s.isRateLimited("10.0.0.1", "alice") {
+		t.Fatal("alice must be limited")
+	}
+	if s.isRateLimited("10.0.0.1", "bob") {
+		t.Fatal("bob behind the same NAT must not be locked out")
+	}
+	// Rotating usernames must still hit the per-IP cap.
+	for i := 0; i < 40; i++ {
+		do(buildAuth("x"+strconv.Itoa(i), "wrong"))
+	}
+	if !s.isRateLimited("10.0.0.1", "bob") {
+		t.Fatal("per-IP cap must stop username rotation")
 	}
 }
 

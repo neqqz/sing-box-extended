@@ -158,6 +158,12 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 					return nil, err
 				}
 				conn.SetCongestionControl(congestionControlFactory(conn))
+				// quic.Dial* never closes a PacketConn it did not create, so the socket
+				// would leak for every connection that ends (idle, network change).
+				go func() {
+					<-conn.Context().Done()
+					_ = udpConn.Close()
+				}()
 				return conn, nil
 			},
 		}

@@ -102,6 +102,12 @@ type Inbound struct {
 	randomReloader  *tls.RandomPrefixReloader
 	randomCancel    context.CancelFunc
 	randomPrefixLen int
+	// conns — принятые TCP-соединения, прошедшие prefix-check: Close обязан их
+	// закрыть, иначе h2Server.ServeConn (блокируется на всю жизнь соединения)
+	// и записи в ResponseWriter переживают остановку inbound.
+	connsMtx    sync.Mutex
+	conns       map[net.Conn]struct{}
+	connsClosed bool
 	// handshakeSem ограничивает число ОДНОВРЕМЕННО выполняемых TLS
 	// handshake'ов. Раньше go h.serveConn(...) запускался без всякого
 	// лимита — при burst'е из сотни+ соединений сразу (типичный триггер:
@@ -396,9 +402,39 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 	return nil
 }
 
+// trackConn регистрирует соединение; false — inbound уже закрыт (соединение
+// закрыто здесь же).
+func (h *Inbound) trackConn(conn net.Conn) bool {
+	h.connsMtx.Lock()
+	defer h.connsMtx.Unlock()
+	if h.connsClosed {
+		_ = conn.Close()
+		return false
+	}
+	if h.conns == nil {
+		h.conns = make(map[net.Conn]struct{})
+	}
+	h.conns[conn] = struct{}{}
+	return true
+}
+
+func (h *Inbound) untrackConn(conn net.Conn) {
+	h.connsMtx.Lock()
+	delete(h.conns, conn)
+	h.connsMtx.Unlock()
+}
+
 func (h *Inbound) Close() error {
 	if h.randomCancel != nil {
 		h.randomCancel()
+	}
+	h.connsMtx.Lock()
+	h.connsClosed = true
+	conns := h.conns
+	h.conns = nil
+	h.connsMtx.Unlock()
+	for conn := range conns {
+		_ = conn.Close()
 	}
 	return common.Close(
 		h.listener,
@@ -415,14 +451,30 @@ func (h *Inbound) Close() error {
 // listener. Это обходит жёсткий type assertion c.rwc.(*tls.Conn) в net/http,
 // который никогда не срабатывает на *aTLS.LazyConn.
 func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixChecker, handler http.Handler) {
+	var delay time.Duration
 	for {
 		rawConn, err := rawListener.Accept()
 		if err != nil {
-			if !errors.Is(err, net.ErrClosed) {
-				h.logger.Error("trusttunnel: accept: ", err)
+			if errors.Is(err, net.ErrClosed) {
+				return
 			}
+			// EMFILE/ENFILE/ECONNABORTED are temporary: back off and retry like
+			// net/http.Server does, instead of leaving the listener dead for good.
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Temporary() { //nolint:staticcheck
+				delay = min(max(delay*2, 5*time.Millisecond), time.Second)
+				h.logger.Warn("trusttunnel: accept: ", err, "; retrying in ", delay)
+				select {
+				case <-time.After(delay):
+					continue
+				case <-h.ctx.Done():
+					return
+				}
+			}
+			h.logger.Error("trusttunnel: accept: ", err)
 			return
 		}
+		delay = 0
 		// Congestion control ставим на сырой *net.TCPConn: после prefix-check
 		// соединение уже обёрнуто (peekedConn), и type assertion не сработал бы.
 		trusttunnel.SetTCPCongestionControl(rawConn, h.options.CongestionController)
@@ -438,7 +490,12 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixCheck
 			}
 			// Timing=nil по умолчанию — без обёртки. См. transport/trusttunnel/obfs/jitter.go.
 			timingMin, timingMax := timingRange(h.options.Timing)
-			h.serveConn(obfs.NewJitterConn(conn, timingMin, timingMax), handler)
+			jc := obfs.NewJitterConn(conn, timingMin, timingMax)
+			if !h.trackConn(jc) {
+				return
+			}
+			defer h.untrackConn(jc)
+			h.serveConn(jc, handler)
 		}()
 	}
 }

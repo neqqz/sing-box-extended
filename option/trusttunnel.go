@@ -25,7 +25,7 @@ type TrustTunnelTimingOptions struct {
 type TrustTunnelInboundOptions struct {
 	ListenOptions
 	InboundTLSOptionsContainer
-	Users                []TrustTunnelUser        `json:"users,omitempty"`
+	Users                []TrustTunnelUser         `json:"users,omitempty"`
 	Network              NetworkList               `json:"network,omitempty"`
 	CongestionController string                    `json:"congestion_controller,omitempty"`
 	CWND                 int                       `json:"cwnd,omitempty"`
@@ -50,7 +50,7 @@ type TrustTunnelInboundOptions struct {
 	// client whose secret matches ANY entry (e.g. one secret per user). When
 	// set, it takes priority over the static ClientRandomPrefix for verification.
 	ClientRandomPrefixSecret badoption.Listable[string] `json:"client_random_prefix_secret,omitempty"`
-	ClientRandomPrefixLen int `json:"client_random_prefix_len,omitempty"`
+	ClientRandomPrefixLen    int                        `json:"client_random_prefix_len,omitempty"`
 	// ClientRandomPrefixFile / ClientRandomPrefixSecretFile — файлы со списками
 	// префиксов ("hex" или "hex/mask_hex") и секретов (hex), по одной записи на
 	// строку; пустые строки игнорируются, всё после '#' — комментарий (удобно
@@ -100,14 +100,14 @@ type TrustTunnelOutboundOptions struct {
 	DialerOptions
 	ServerOptions
 	OutboundTLSOptionsContainer
-	Username             string                       `json:"username,omitempty"`
-	Password             string                       `json:"password,omitempty"`
-	Network              NetworkList                  `json:"network,omitempty"`
-	HealthCheck          bool                         `json:"health_check,omitempty"`
-	QUIC                 bool                         `json:"quic,omitempty"`
-	CongestionController string                       `json:"congestion_controller,omitempty"`
-	CWND                 int                          `json:"cwnd,omitempty"`
-	Timing               *TrustTunnelTimingOptions    `json:"timing,omitempty"`
+	Username             string                    `json:"username,omitempty"`
+	Password             string                    `json:"password,omitempty"`
+	Network              NetworkList               `json:"network,omitempty"`
+	HealthCheck          bool                      `json:"health_check,omitempty"`
+	QUIC                 bool                      `json:"quic,omitempty"`
+	CongestionController string                    `json:"congestion_controller,omitempty"`
+	CWND                 int                       `json:"cwnd,omitempty"`
+	Timing               *TrustTunnelTimingOptions `json:"timing,omitempty"`
 	// See the matching fields on TrustTunnelInboundOptions for the format
 	// and rationale.
 	DataPadding   *TrustTunnelPaddingOptions   `json:"data_padding,omitempty"`

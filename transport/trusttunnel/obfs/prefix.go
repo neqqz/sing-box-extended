@@ -30,6 +30,10 @@ const (
 	// (even with a full uTLS Chrome extension set) are well under this.
 	maxClientHelloCapture = 8 << 10 // 8 KiB
 	maxPendingChecks      = 1024
+	// maxPendingChecksPerIP: one source (a scanner) must not fill matchSem and
+	// starve everyone else. Kept generous because CGNAT shares one IP.
+	maxPendingChecksPerIP = 64
+	selfLoopLookupTimeout = 2 * time.Second
 	maxFallbackRelays     = 256
 	fallbackRelayLifetime = 60 * time.Second
 )
@@ -55,6 +59,8 @@ type PrefixChecker struct {
 	ownPort      string // our own listening port, used to detect self-loops
 	logger       logger.ContextLogger
 	matchSem     chan struct{} // bounds connections being peeked (pre-auth, unauthenticated)
+	pendingMtx   sync.Mutex
+	pendingByIP  map[netip.Addr]int
 	relaySem     chan struct{} // bounds concurrent fallback relays
 }
 
@@ -78,6 +84,7 @@ func NewPrefixChecker(addr net.Addr, provider sboxtls.RandomPrefixProvider, pref
 		ownPort:      ownPort,
 		logger:       log,
 		matchSem:     make(chan struct{}, maxPendingChecks),
+		pendingByIP:  make(map[netip.Addr]int),
 		relaySem:     make(chan struct{}, maxFallbackRelays),
 	}
 }
@@ -99,6 +106,44 @@ func resolveFallbackPort(fallback string, sniPort int) string {
 	return "443"
 }
 
+// acquirePending takes a global and a per-source slot for the pre-auth peek.
+func (l *PrefixChecker) acquirePending(conn net.Conn) (netip.Addr, func(), bool) {
+	var ip netip.Addr
+	if ap, err := netip.ParseAddrPort(conn.RemoteAddr().String()); err == nil {
+		ip = ap.Addr().Unmap()
+	}
+	if ip.IsValid() {
+		l.pendingMtx.Lock()
+		if l.pendingByIP[ip] >= maxPendingChecksPerIP {
+			l.pendingMtx.Unlock()
+			return ip, nil, false
+		}
+		l.pendingByIP[ip]++
+		l.pendingMtx.Unlock()
+	}
+	select {
+	case l.matchSem <- struct{}{}:
+	default:
+		l.releaseIP(ip)
+		return ip, nil, false
+	}
+	return ip, func() {
+		<-l.matchSem
+		l.releaseIP(ip)
+	}, true
+}
+
+func (l *PrefixChecker) releaseIP(ip netip.Addr) {
+	if !ip.IsValid() {
+		return
+	}
+	l.pendingMtx.Lock()
+	if l.pendingByIP[ip]--; l.pendingByIP[ip] <= 0 {
+		delete(l.pendingByIP, ip)
+	}
+	l.pendingMtx.Unlock()
+}
+
 // peekResult is the outcome of inspecting the first bytes of a new connection.
 type peekResult int
 
@@ -113,14 +158,13 @@ const (
 // true on a match. Otherwise it consumes conn itself (drop, or relay to the
 // fallback until it ends) and returns false.
 func (l *PrefixChecker) Check(conn net.Conn) (net.Conn, bool) {
-	select {
-	case l.matchSem <- struct{}{}:
-	default:
+	_, release, ok := l.acquirePending(conn)
+	if !ok {
 		conn.Close()
 		return nil, false
 	}
 	peeked, result := l.checkRandom(conn)
-	<-l.matchSem
+	release()
 	switch result {
 	case peekMatched:
 		return &peekedConn{Conn: conn, buf: peeked}, true
@@ -511,7 +555,9 @@ func (l *PrefixChecker) isSelfLoop(target string) bool {
 	if err != nil || l.ownPort == "" || port != l.ownPort {
 		return false
 	}
-	ips, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
+	ctx, cancel := context.WithTimeout(context.Background(), selfLoopLookupTimeout)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
 		return false
 	}

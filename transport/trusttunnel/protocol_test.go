@@ -2,6 +2,7 @@ package trusttunnel
 
 import (
 	"errors"
+	"io"
 	"os"
 	"testing"
 	"time"
@@ -14,5 +15,20 @@ func TestHTTPConnDeadlineUnsupported(t *testing.T) {
 	}
 	if !c.NeedAdditionalReadDeadline() {
 		t.Fatal("NeedAdditionalReadDeadline must be true")
+	}
+}
+
+func TestHTTPConnCloseUnblocksStuckWrite(t *testing.T) {
+	pr, pw := io.Pipe()
+	c := &httpConn{writer: pw, created: make(chan struct{})}
+	c.cancelFn = func() { _ = pr.CloseWithError(io.ErrClosedPipe) }
+	go func() { _ = c.writeChunks([]byte("x")) }() // blocks: nobody reads pr
+	time.Sleep(50 * time.Millisecond)
+	closed := make(chan struct{})
+	go func() { _ = c.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close hangs behind a blocked Write")
 	}
 }

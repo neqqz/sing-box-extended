@@ -130,18 +130,21 @@ func (h *httpConn) waitCreated() error {
 }
 
 func (h *httpConn) Close() error {
+	// Record ErrClosed before cancelling, so the request goroutine cannot win
+	// with context.Canceled. Cancel before locking: a Write blocked on peer flow
+	// control holds h.mtx, and only aborting the request unblocks it.
+	h.setup(nil, net.ErrClosed)
+	if h.cancelFn != nil {
+		h.cancelFn()
+	}
 	h.mtx.Lock()
 	h.closed = true
 	h.mtx.Unlock()
-	h.setup(nil, net.ErrClosed)
 	if closer, ok := h.writer.(io.Closer); ok {
 		_ = closer.Close()
 	}
 	if h.body != nil {
 		_ = h.body.Close()
-	}
-	if h.cancelFn != nil {
-		h.cancelFn()
 	}
 	if h.closeFn != nil {
 		h.closeFn()
