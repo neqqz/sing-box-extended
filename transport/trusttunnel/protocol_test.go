@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TesthttpConnDeadlineUnsupported(t *testing.T) {
+func TestHTTPConnDeadlineUnsupported(t *testing.T) {
 	var c httpConn
 	if err := c.SetDeadline(time.Now().Add(time.Second)); !errors.Is(err, os.ErrInvalid) {
 		t.Fatal("SetDeadline must return os.ErrInvalid so sing-box wraps the conn")

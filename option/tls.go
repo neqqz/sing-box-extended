@@ -149,11 +149,11 @@ type OutboundTLSOptions struct {
 	// не увидит фиксированной сигнатуры, в отличие от статичного ClientRandomPrefix.
 	ClientRandomPrefixSecret badoption.Listable[string] `json:"client_random_prefix_secret,omitempty"`
 	// ClientRandomPrefixLen: длина деривируемого префикса в байтах (1-32, по умолчанию 8).
-	ClientRandomPrefixLen int `json:"client_random_prefix_len,omitempty"`
-	HandshakeTimeout     badoption.Duration `json:"handshake_timeout,omitempty"`
-	ECH                      *OutboundECHOptions     `json:"ech,omitempty"`
-	UTLS                     *OutboundUTLSOptions    `json:"utls,omitempty"`
-	Reality                  *OutboundRealityOptions `json:"reality,omitempty"`
+	ClientRandomPrefixLen int                     `json:"client_random_prefix_len,omitempty"`
+	HandshakeTimeout      badoption.Duration      `json:"handshake_timeout,omitempty"`
+	ECH                   *OutboundECHOptions     `json:"ech,omitempty"`
+	UTLS                  *OutboundUTLSOptions    `json:"utls,omitempty"`
+	Reality               *OutboundRealityOptions `json:"reality,omitempty"`
 }
 
 type OutboundTLSOptionsContainer struct {
