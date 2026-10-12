@@ -853,6 +853,14 @@ jobs:
           command -v bsdtar
           bsdtar --version | head -1
 
+      # clients/desktop builds its Wayland menu module with cargo-zigbuild,
+      # which needs `zig` on PATH ("Failed to find zig" otherwise).
+      - name: Install zig
+        if: matrix.target == 'linux'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+
       - name: Write Windows signing config
         if: matrix.target == 'win'
         working-directory: clients/desktop
