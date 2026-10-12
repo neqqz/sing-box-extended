@@ -56,7 +56,6 @@ type UTLSClientConfig struct {
 	// вместо использования статичных clientRandomPrefixes выше.
 	clientRandomPrefixSecrets [][]byte
 	clientRandomPrefixLen     int
-	clientRandomPrefixWindow  int
 	spoof                     string
 	spoofMethod               tlsspoof.Method
 }
@@ -153,7 +152,6 @@ func (c *UTLSClientConfig) Client(conn net.Conn) (Conn, error) {
 		clientRandomPrefixes:      c.clientRandomPrefixes,
 		clientRandomPrefixSecrets: c.clientRandomPrefixSecrets,
 		clientRandomPrefixLen:     c.clientRandomPrefixLen,
-		clientRandomPrefixWindow:  c.clientRandomPrefixWindow,
 	}, nil
 }
 
@@ -275,7 +273,7 @@ func (c *UTLSClientConfig) buildUConn(conn net.Conn, cfg *utls.Config) (*utls.UC
 // сгенерированного uTLS'ом hello.KeyShares, в том же порядке, в котором они
 // уйдут на провод. Это ровно то же самое, что сервер потом достаёт из сырых
 // байт реального ClientHello сам (см. extractKeyShareData в
-// transport/trusttunnel/prefix_listener.go) — обе стороны должны получить
+// transport/trusttunnel/obfs/prefix.go) — обе стороны должны получить
 // побайтово одинаковый результат, иначе DeriveRotatingRandomPrefixBound не
 // сойдётся.
 func serializeKeyShares(shares []utls.KeyShare) []byte {
@@ -310,7 +308,6 @@ func (c *UTLSClientConfig) Clone() Config {
 		clientRandomPrefixes:      c.clientRandomPrefixes,
 		clientRandomPrefixSecrets: c.clientRandomPrefixSecrets,
 		clientRandomPrefixLen:     c.clientRandomPrefixLen,
-		clientRandomPrefixWindow:  c.clientRandomPrefixWindow,
 		spoof:                     c.spoof,
 		spoofMethod:               c.spoofMethod,
 	}
@@ -524,7 +521,6 @@ type utlsALPNWrapper struct {
 	// значению для всех клиентов в течение окна (как было раньше).
 	clientRandomPrefixSecrets [][]byte
 	clientRandomPrefixLen     int
-	clientRandomPrefixWindow  int
 }
 
 func (c *utlsALPNWrapper) HandshakeContext(ctx context.Context) error {
@@ -751,7 +747,6 @@ func newUTLSClient(ctx context.Context, logger logger.ContextLogger, serverAddre
 		clientRandomPrefixes:      clientRandomPrefixes,
 		clientRandomPrefixSecrets: clientRandomPrefixSecrets,
 		clientRandomPrefixLen:     options.ClientRandomPrefixLen,
-		clientRandomPrefixWindow:  options.ClientRandomPrefixWindow,
 		spoof:                     spoof,
 		spoofMethod:               spoofMethod,
 	}

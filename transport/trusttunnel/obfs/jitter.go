@@ -1,10 +1,23 @@
-package trusttunnel
+package obfs
 
 import (
 	"math/rand"
+	randv2 "math/rand/v2"
 	"net"
 	"time"
 )
+
+// JitterDuration возвращает base, случайно сдвинутый на ±fraction (0.3 =
+// ±30%). Строго периодический трафик (health-check и keepalive ровно раз в
+// 7 секунд) — устойчивая сигнатура даже под шифрованием; небольшой разброс
+// её размывает, не меняя средней частоты.
+func JitterDuration(base time.Duration, fraction float64) time.Duration {
+	if base <= 0 || fraction <= 0 {
+		return base
+	}
+	delta := (randv2.Float64()*2 - 1) * fraction
+	return base + time.Duration(float64(base)*delta)
+}
 
 // jitterConn — обёртка над net.Conn, добавляющая случайную задержку перед
 // каждым Write(). Цель — разрушить статистику интервалов между исходящими

@@ -141,19 +141,16 @@ type OutboundTLSOptions struct {
 	// ротации ниже.
 	ClientRandomPrefix badoption.Listable[string] `json:"client_random_prefix,omitempty"`
 	// ClientRandomPrefixSecret: hex общий секрет (строка или массив строк; на
-	// клиенте обычно один, на сервере — по одному на пользователя). Если задан — префикс
-	// ClientHello.Random вычисляется заново на КАЖДОМ соединении как
-	// HMAC-SHA256(secret, "trusttunnel-random-prefix-v1:" || time_window),
-	// а не берётся статично из ClientRandomPrefix. За счёт этого одинаковых
-	// байт в этом месте ClientHello не бывает дважды — full-reassembly DPI,
-	// собирающая статистику по многим соединениям, не увидит фиксированной
-	// сигнатуры, в отличие от статичного ClientRandomPrefix.
+	// клиенте обычно один, на сервере — по одному на пользователя). Если задан —
+	// префикс ClientHello.Random вычисляется заново на КАЖДОМ соединении как
+	// HMAC-SHA256(secret, "trusttunnel-random-prefix-v3-bound:" || len(key_share) || key_share),
+	// а не берётся статично из ClientRandomPrefix. Префикс уникален для handshake
+	// (свежий key_share) и снаружи неотличим от случайных байт — full-reassembly DPI
+	// не увидит фиксированной сигнатуры, в отличие от статичного ClientRandomPrefix.
 	ClientRandomPrefixSecret badoption.Listable[string] `json:"client_random_prefix_secret,omitempty"`
 	// ClientRandomPrefixLen: длина деривируемого префикса в байтах (1-32, по умолчанию 8).
 	ClientRandomPrefixLen int `json:"client_random_prefix_len,omitempty"`
-	// ClientRandomPrefixWindow: deprecated, ignored (префикс не зависит от времени).
-	ClientRandomPrefixWindow int                     `json:"client_random_prefix_window,omitempty"`
-	HandshakeTimeout         badoption.Duration      `json:"handshake_timeout,omitempty"`
+	HandshakeTimeout     badoption.Duration `json:"handshake_timeout,omitempty"`
 	ECH                      *OutboundECHOptions     `json:"ech,omitempty"`
 	UTLS                     *OutboundUTLSOptions    `json:"utls,omitempty"`
 	Reality                  *OutboundRealityOptions `json:"reality,omitempty"`

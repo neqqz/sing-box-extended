@@ -17,6 +17,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/transport/trusttunnel"
+	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -54,7 +55,7 @@ type noDelayDialer struct {
 	// раньше H2-путь этот параметр полностью игнорировал и жил на
 	// системном дефолте ядра (обычно cubic).
 	congestionControl string
-	// jitterMinMS/jitterMaxMS — см. transport/trusttunnel/jitter_conn.go.
+	// jitterMinMS/jitterMaxMS — см. transport/trusttunnel/obfs/jitter.go.
 	// 0/0 (дефолт) = выключено, без накладных расходов.
 	jitterMinMS int
 	jitterMaxMS int
@@ -68,7 +69,7 @@ func (d noDelayDialer) DialContext(ctx context.Context, network string, destinat
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		trusttunnel.SetTCPCongestionControl(tcpConn, d.congestionControl)
 	}
-	return trusttunnel.NewJitterConn(conn, d.jitterMinMS, d.jitterMaxMS), nil
+	return obfs.NewJitterConn(conn, d.jitterMinMS, d.jitterMaxMS), nil
 }
 
 // chromeFingerprintExact: тот самый случай, когда QUIC идёт через uTLS

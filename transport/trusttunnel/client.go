@@ -19,6 +19,7 @@ import (
 	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -60,7 +61,7 @@ type ClientOptions struct {
 	MaxStreams        int
 	UDPPaddingMin     int
 	UDPPaddingMax     int
-	// JitterMinMS/JitterMaxMS: см. jitter_conn.go. Применяется и к h2-пути
+	// JitterMinMS/JitterMaxMS: см. obfs/jitter.go. Применяется и к h2-пути
 	// (через враппер над options.Dialer в protocol/trusttunnel/outbound.go),
 	// и к QUIC-пути (напрямую здесь, на PacketConn перед DialEarly).
 	JitterMinMS int
@@ -132,7 +133,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				// 7 секунд виден и под шифрованием.
 				if cfg != nil {
 					cfg = cfg.Clone()
-					cfg.KeepAlivePeriod = jitterDuration(DefaultHealthCheckTimeout, 0.3)
+					cfg.KeepAlivePeriod = obfs.JitterDuration(DefaultHealthCheckTimeout, 0.3)
 				}
 				var conn *quic.Conn
 				// QUICDialer: если options.TLSConfig умеет патчить
@@ -147,7 +148,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				// qtls.DialEarly принимает net.Conn.
 				// tls.QUICDialer.DialEarly принимает net.PacketConn + addr.
 				if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
-					pktConn := NewJitterPacketConn(bufio.NewUnbindPacketConn(udpConn), options.JitterMinMS, options.JitterMaxMS)
+					pktConn := obfs.NewJitterPacketConn(bufio.NewUnbindPacketConn(udpConn), options.JitterMinMS, options.JitterMaxMS)
 					conn, err = qd.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), cfg)
 				} else {
 					conn, err = qtls.DialEarly(ctx, udpConn, options.TLSConfig, cfg)
@@ -181,7 +182,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 
 func (c *Client) start() {
 	if c.healthCheck {
-		c.healthCheckTimer = time.NewTimer(jitterDuration(DefaultHealthCheckTimeout, 0.3))
+		c.healthCheckTimer = time.NewTimer(obfs.JitterDuration(DefaultHealthCheckTimeout, 0.3))
 		go c.loopHealthCheck()
 	}
 }
@@ -204,7 +205,7 @@ func (c *Client) resetHealthCheckTimer() {
 	if c.healthCheckTimer == nil {
 		return
 	}
-	c.healthCheckTimer.Reset(jitterDuration(DefaultHealthCheckTimeout, 0.3))
+	c.healthCheckTimer.Reset(obfs.JitterDuration(DefaultHealthCheckTimeout, 0.3))
 }
 
 func (c *Client) roundTrip(request *http.Request, conn *httpConn) {

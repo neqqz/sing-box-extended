@@ -1,4 +1,4 @@
-package trusttunnel
+package obfs
 
 import (
 	"bytes"

@@ -216,12 +216,12 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		done := make(chan struct{})
 		conn := &tcpConn{
-			httpConn{
-				writer:     writer,
-				flusher:    flusher,
-				created:    make(chan struct{}),
-				done:       done,
-				remoteAddr: parseRemoteAddr(request.RemoteAddr),
+			httpConn: httpConn{
+				writer:  writer,
+				flusher: flusher,
+				created: make(chan struct{}),
+				done:    done,
+				remoteAddr:  parseRemoteAddr(request.RemoteAddr),
 			},
 		}
 		conn.setup(request.Body, nil)

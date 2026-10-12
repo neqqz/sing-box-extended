@@ -22,6 +22,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/transport/trusttunnel"
+	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
 	"github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/auth"
@@ -247,7 +248,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		if h.randomReloader != nil {
 			randomProvider = h.randomReloader
 		}
-		prefixChecker := trusttunnel.NewPrefixChecker(rawListener.Addr(), randomProvider, h.options.ClientRandomPrefixLen, h.options.FallbackServer, int(h.options.FallbackSNIPort), h.logger)
+		prefixChecker := obfs.NewPrefixChecker(rawListener.Addr(), randomProvider, h.options.ClientRandomPrefixLen, h.options.FallbackServer, int(h.options.FallbackSNIPort), h.logger)
 		if err = h.httpTLSConfig.Start(); err != nil {
 			return err
 		}
@@ -317,10 +318,10 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			return err
 		}
 		// Timing=nil по умолчанию — оборачивание пропускается, без изменений
-		// в поведении/performance. См. transport/trusttunnel/jitter_conn.go
+		// в поведении/performance. См. transport/trusttunnel/obfs/jitter.go
 		// про риски для QUIC-пути конкретно (шум в BBR/cubic RTT-замерах quic-go).
 		timingMin, timingMax := timingRange(h.options.Timing)
-		jitteredUDPConn := trusttunnel.NewJitterPacketConn(udpConn, timingMin, timingMax)
+		jitteredUDPConn := obfs.NewJitterPacketConn(udpConn, timingMin, timingMax)
 		congestionControlFactory, err := congestion.NewCongestionControl(
 			h.options.CongestionController, h.options.CWND, ntp.TimeFuncFromContext(h.ctx),
 		)
@@ -352,7 +353,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			// соединение, с допуском ±1 окно на рассинхрон часов.
 			//
 			// Биндим к key_share так же, как h2-путь (см.
-			// transport/trusttunnel/prefix_listener.go) — раньше здесь
+			// transport/trusttunnel/obfs/prefix.go) — раньше здесь
 			// была небиндящая DeriveRotatingRandomPrefix (см. её
 			// doc-комментарий в common/tls/random_prefix_rotation.go для
 			// разбора самой уязвимости), потому что форк sagernet/quic-go
@@ -361,7 +362,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			// прокидывает туда же и сырые байты ClientHello (см.
 			// ServerClientRandomVerify в interface.go того форка), так что
 			// можно вытащить key_share тем же кодом, что и h2-путь
-			// (trusttunnel.ExtractKeyShareFromHandshakeMessage — тот же
+			// (obfs.ExtractKeyShareFromHandshakeMessage — тот же
 			// парсинг, что и extractKeyShareData, только без 5-байтного
 			// TLS record-заголовка: у QUIC его просто нет, ClientHello
 			// приходит как есть в CRYPTO-фрейме).
@@ -371,7 +372,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 			quicConfig.ServerClientRandomVerify = func(random [32]byte, clientHello []byte) bool {
 				set := reloader.Current()
 				if len(set.Secrets) > 0 {
-					bind, ok := trusttunnel.ExtractKeyShareFromHandshakeMessage(clientHello)
+					bind, ok := obfs.ExtractKeyShareFromHandshakeMessage(clientHello)
 					if !ok {
 						// Нет key_share — не откатываемся на голый random,
 						// это и есть закрываемая дыра.
@@ -413,7 +414,7 @@ func (h *Inbound) Close() error {
 // в http2.Server.ServeConn, всё остальное — в http.Server через одноразовый
 // listener. Это обходит жёсткий type assertion c.rwc.(*tls.Conn) в net/http,
 // который никогда не срабатывает на *aTLS.LazyConn.
-func (h *Inbound) acceptLoop(rawListener net.Listener, checker *trusttunnel.PrefixChecker, handler http.Handler) {
+func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixChecker, handler http.Handler) {
 	for {
 		rawConn, err := rawListener.Accept()
 		if err != nil {
@@ -435,9 +436,9 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, checker *trusttunnel.Pref
 					return
 				}
 			}
-			// Timing=nil по умолчанию — без обёртки. См. transport/trusttunnel/jitter_conn.go.
+			// Timing=nil по умолчанию — без обёртки. См. transport/trusttunnel/obfs/jitter.go.
 			timingMin, timingMax := timingRange(h.options.Timing)
-			h.serveConn(trusttunnel.NewJitterConn(conn, timingMin, timingMax), handler)
+			h.serveConn(obfs.NewJitterConn(conn, timingMin, timingMax), handler)
 		}()
 	}
 }
