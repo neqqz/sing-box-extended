@@ -197,13 +197,11 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	}
 	udpPaddingMin, udpPaddingMax := paddingRange(options.UDPPadding)
 	service := trusttunnel.NewService(trusttunnel.ServiceOptions{
-		Ctx:             ctx,
-		Logger:          logger,
-		Handler:         (*inboundHandler)(h),
-		UDPPaddingMin:   udpPaddingMin,
-		UDPPaddingMax:   udpPaddingMax,
-		AuthRateLimit:   time.Duration(h.options.RateLimitAuthWindow) * time.Second,
-		AuthMaxFailures: h.options.RateLimitAuthAttempts,
+		Ctx:           ctx,
+		Logger:        logger,
+		Handler:       (*inboundHandler)(h),
+		UDPPaddingMin: udpPaddingMin,
+		UDPPaddingMax: udpPaddingMax,
 	})
 	userMap := make(map[string]string, len(options.Users))
 	for _, u := range options.Users {

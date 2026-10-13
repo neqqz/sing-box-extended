@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/buf"
@@ -27,13 +26,11 @@ type Handler interface {
 }
 
 type ServiceOptions struct {
-	Ctx             context.Context
-	Logger          logger.ContextLogger
-	Handler         Handler
-	UDPPaddingMin   int
-	UDPPaddingMax   int
-	AuthRateLimit   time.Duration
-	AuthMaxFailures int
+	Ctx           context.Context
+	Logger        logger.ContextLogger
+	Handler       Handler
+	UDPPaddingMin int
+	UDPPaddingMax int
 }
 
 type Service struct {
@@ -45,35 +42,18 @@ type Service struct {
 	udpPaddingMin int
 	udpPaddingMax int
 
-	mu              sync.RWMutex
-	authAttempts    map[string]int // username -> failed attempts count
-	authWindow      time.Time      // window start for failed attempts
-	authRateLimit   time.Duration  // rate limit window
-	authMaxFailures int            // max allowed failures per window
+	mu sync.RWMutex
 }
 
 func NewService(options ServiceOptions) *Service {
 	s := &Service{
-		ctx:             options.Ctx,
-		logger:          options.Logger,
-		handler:         options.Handler,
-		conns:           make(map[string]map[io.Closer]struct{}),
-		udpPaddingMin:   options.UDPPaddingMin,
-		udpPaddingMax:   options.UDPPaddingMax,
-		authAttempts:    make(map[string]int),
-		authRateLimit:   5 * time.Minute,
-		authMaxFailures: 50,
+		ctx:           options.Ctx,
+		logger:        options.Logger,
+		handler:       options.Handler,
+		conns:         make(map[string]map[io.Closer]struct{}),
+		udpPaddingMin: options.UDPPaddingMin,
+		udpPaddingMax: options.UDPPaddingMax,
 	}
-
-	// rate_limit_auth_window / rate_limit_auth_attempts из конфига раньше
-	// молча игнорировались (значения были захардкожены выше).
-	if options.AuthRateLimit > 0 {
-		s.authRateLimit = options.AuthRateLimit
-	}
-	if options.AuthMaxFailures > 0 {
-		s.authMaxFailures = options.AuthMaxFailures
-	}
-
 	return s
 }
 
@@ -114,19 +94,7 @@ func (s *Service) untrackConn(username string, conn io.Closer) {
 }
 
 func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	// Rate limit проверка ДЛЯ ВСЕХ запросов (даже с неверным auth)
-	ip := rateLimitKey(request.RemoteAddr)
 	authorization := request.Header.Get("Proxy-Authorization")
-	user, _, _ := parseBasicAuth(authorization)
-	if s.isRateLimited(ip, user) {
-		// Тот же 404, что и ниже на провал авторизации — отдельный код
-		// ответа для "слишком много попыток" сам по себе был бы сигнатурой,
-		// по которой сканер отличил бы trusttunnel от обычного 404-сервера.
-		writer.WriteHeader(http.StatusNotFound)
-		s.badRequest(request.Context(), request, E.New("rate limited"))
-		return
-	}
-
 	username, loaded := s.verify(authorization)
 	if !loaded {
 		// 407 прямым текстом палит, что порт держит прокси/CONNECT-сервер —
@@ -135,12 +103,10 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		// нет такого пути — камуфляж уровня SNI/random-prefix, только для
 		// самого HTTP-ответа.
 		writer.WriteHeader(http.StatusNotFound)
-		s.recordAuthFailure(ip, user)
 		s.badRequest(request.Context(), request, E.New("authorization failed"))
 		return
 	}
 
-	s.clearAuthFailures(ip, username) // Очищаем счётчик этого пользователя при успешном auth
 	if request.Method != http.MethodConnect {
 		// 405 палит, что именно. Используем 404 для скрытия user enumeration
 		writer.WriteHeader(http.StatusNotFound)
@@ -269,76 +235,6 @@ func (s *Service) verify(authorization string) (username string, loaded bool) {
 // ends up here, so ERROR would let anyone fill the log.
 func (s *Service) badRequest(ctx context.Context, request *http.Request, err error) {
 	s.logger.DebugContext(ctx, E.Cause(err, "process connection from ", request.RemoteAddr))
-}
-
-// rateLimitKey извлекает хост без порта из RemoteAddr. Раньше ключом был
-// весь RemoteAddr (host:port) — а поскольку сканер/DPI-проба обычно шлёт
-// каждую попытку с НОВОГО TCP-соединения (новый исходный порт), это
-// гарантированно раскладывало его попытки по разным ключам, и счётчик
-// никогда не накапливался против одного и того же атакующего.
-func rateLimitKey(remoteAddr string) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		return remoteAddr
-	}
-	return host
-}
-
-// Лимит неудач двухуровневый, потому что за одним (CGNAT/офисным) IP сидят
-// разные пользователи: ошибка пароля у одного не должна закрывать остальных.
-//   - ведро (ip, имя): authMaxFailures — блокирует только того, кто ошибается;
-//   - ведро ip целиком: authMaxFailures*authIPFactor — не даёт перебирать
-//     пароли, подставляя каждый раз новое имя.
-//
-// Ответ при блокировке всё тот же 404, так что снаружи ведро не видно.
-const (
-	authIPFactor    = 10
-	authMaxTracked  = 100000 // потолок размера карты внутри одного окна
-	authBucketSplit = "\x00"
-)
-
-func authUserKey(ip, user string) string { return ip + authBucketSplit + user }
-
-// rotateAuthWindowLocked начинает новое окно, если старое истекло или карта
-// раздулась (иначе поток случайных имён растил бы память до конца окна).
-func (s *Service) rotateAuthWindowLocked(now time.Time) bool {
-	if now.Sub(s.authWindow) >= s.authRateLimit || len(s.authAttempts) >= authMaxTracked {
-		s.authAttempts = make(map[string]int)
-		s.authWindow = now
-		return true
-	}
-	return false
-}
-
-// isRateLimited сообщает, превышен ли лимит неудачных попыток авторизации
-// для пары (ip, user) или для ip в целом.
-func (s *Service) isRateLimited(ip, user string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.rotateAuthWindowLocked(time.Now()) {
-		return false
-	}
-	return s.authAttempts[authUserKey(ip, user)] >= s.authMaxFailures ||
-		s.authAttempts[ip] >= s.authMaxFailures*authIPFactor
-}
-
-func (s *Service) recordAuthFailure(ip, user string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.rotateAuthWindowLocked(time.Now())
-	s.authAttempts[authUserKey(ip, user)]++
-	s.authAttempts[ip]++
-}
-
-// clearAuthFailures сбрасывает только ведро пользователя. Ведро ip не трогаем:
-// иначе атакующий с одним валидным аккаунтом обнулял бы свой счётчик перебора.
-func (s *Service) clearAuthFailures(ip, user string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	delete(s.authAttempts, authUserKey(ip, user))
 }
 
 // isBenignFirstPacketClose сообщает, является ли err штатной, инициированной
