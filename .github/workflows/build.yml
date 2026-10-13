@@ -39,7 +39,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '~1.26'
       - name: Check input version
@@ -117,7 +117,7 @@ jobs:
           fetch-depth: 0
       - name: Setup Go
         if: ${{ ! matrix.legacy_win7 }}
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '~1.26'
       - name: Cache Go for Windows 7
@@ -175,7 +175,7 @@ jobs:
             ~/cronet-go/naiveproxy/src/out/sysroot-build/
           key: chromium-toolchain-${{ matrix.arch }}-${{ matrix.variant }}-${{ hashFiles('.github/CRONET_GO_VERSION') }}
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -479,12 +479,12 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '~1.26'
           
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -593,7 +593,7 @@ jobs:
           fetch-depth: 0
           submodules: 'recursive'
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '~1.26'
       - name: Setup Android NDK
@@ -611,7 +611,7 @@ jobs:
           git tag v${{ needs.calculate_version.outputs.version }} -f
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -716,7 +716,7 @@ jobs:
           submodules: recursive
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '~1.26'
 
@@ -789,12 +789,12 @@ jobs:
           go run ./cmd/build-naive --target=linux/arm env > "$RUNNER_TEMP/cronet-env-arm"
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10.15.0
           run_install: false
@@ -968,7 +968,7 @@ jobs:
           ls -la dist || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.target }}
           path: dist/*
