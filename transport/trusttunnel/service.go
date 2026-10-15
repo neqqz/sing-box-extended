@@ -284,6 +284,11 @@ func (w *h2ConnWrapper) Write(p []byte) (n int, err error) {
 
 func (w *h2ConnWrapper) NeedAdditionalReadDeadline() bool { return true }
 
+func (w *h2ConnWrapper) Close() error {
+	w.CloseWrapper()
+	return w.Conn.Close()
+}
+
 func (w *h2ConnWrapper) CloseWrapper() {
 	w.access.Lock()
 	defer w.access.Unlock()
