@@ -41,7 +41,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '~1.26'
+          go-version: '1.26.9'
+          check-latest: true
       - name: Check input version
         if: github.event_name == 'workflow_dispatch'
         run: |-
@@ -119,7 +120,8 @@ jobs:
         if: ${{ ! matrix.legacy_win7 }}
         uses: actions/setup-go@v7
         with:
-          go-version: '~1.26'
+          go-version: '1.26.9'
+          check-latest: true
       - name: Cache Go for Windows 7
         if: matrix.legacy_win7
         id: cache-go-for-windows7
@@ -481,7 +483,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '~1.26'
+          go-version: '1.26.9'
+          check-latest: true
           
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -595,7 +598,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '~1.26'
+          go-version: '1.26.9'
+          check-latest: true
       - name: Setup Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
@@ -718,7 +722,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '~1.26'
+          go-version: '1.26.9'
+          check-latest: true
 
       # NaiveProxy outbound for the Linux desktop daemon. This mirrors the
       # "glibc" path of the main `build` job as closely as possible — that is
