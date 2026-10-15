@@ -5,9 +5,9 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
@@ -45,7 +45,7 @@ func parseBasicAuth(auth string) (username, password string, ok bool) {
 func parse16BytesIP(buffer [16]byte) netip.Addr {
 	var zeroPrefix [12]byte
 	isIPv4 := bytes.HasPrefix(buffer[:], zeroPrefix[:])
-	isIPv4 = isIPv4 && !(buffer[12] == 0 && buffer[13] == 0 && buffer[14] == 0 && buffer[15] == 1)
+	isIPv4 = isIPv4 && !(buffer[12] == 0 && buffer[13] == 0 && buffer[14] == 0 && (buffer[15] == 0 || buffer[15] == 1))
 	if isIPv4 {
 		return netip.AddrFrom4([4]byte(buffer[12:16]))
 	}
@@ -72,11 +72,12 @@ func randomUDPPaddingLength(min, max int) int {
 	if max == min {
 		return min
 	}
-	n, err := crand.Int(crand.Reader, big.NewInt(int64(max-min+1)))
-	if err != nil {
+	var buf [2]byte
+	if _, err := crand.Read(buf[:]); err != nil {
 		return min
 	}
-	return min + int(n.Int64())
+	n := int(binary.BigEndian.Uint16(buf[:])) % (max - min + 1)
+	return min + n
 }
 
 // randomUDPPadding возвращает n случайных байт паддинга (nil, если n<=0).
@@ -106,6 +107,7 @@ type httpConn struct {
 	remoteAddr net.Addr
 	localAddr  net.Addr
 	done       chan struct{}
+	doneOnce   sync.Once
 	closed     bool
 	mtx        sync.Mutex
 }
@@ -150,11 +152,9 @@ func (h *httpConn) Close() error {
 		h.closeFn()
 	}
 	if h.done != nil {
-		select {
-		case <-h.done:
-		default:
+		h.doneOnce.Do(func() {
 			close(h.done)
-		}
+		})
 	}
 	return nil
 }

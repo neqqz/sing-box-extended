@@ -256,7 +256,7 @@ func isBenignFirstPacketClose(err error) bool {
 	if errors.As(err, &streamErr) && streamErr.Code == http2.ErrCodeCancel {
 		return true
 	}
-	return errors.Is(err, io.EOF)
+	return errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed)
 }
 
 func parseRemoteAddr(addr string) net.Addr {

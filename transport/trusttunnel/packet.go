@@ -73,10 +73,11 @@ func (u *clientPacketConn) readPacketFromServer(buffer *buf.Buffer) (destination
 	destination.Addr = parse16BytesIP(sourceAddressBuffer)
 	common.Must(binary.Read(header, binary.BigEndian, &destination.Port))
 	common.Must(rw.SkipN(header, 16+2))
-	payloadLen := int(length) - (2 + 16 + 2 + 16 + 2) - int(paddingLen)
-	if payloadLen < 0 {
+	const minHeaderLen = 2 + 16 + 2 + 16 + 2
+	if uint64(length) < uint64(minHeaderLen)+uint64(paddingLen) {
 		return M.Socksaddr{}, E.New("invalid udp length: ", length)
 	}
+	payloadLen := int(length) - minHeaderLen - int(paddingLen)
 	_, err = buffer.ReadFullFrom(u.body, payloadLen)
 	if err != nil {
 		return
@@ -181,10 +182,11 @@ func (u *serverPacketConn) readPacketFromClient(buffer *buf.Buffer) (destination
 			return M.Socksaddr{}, err
 		}
 	}
-	payloadLen := int(length) - (2 + 16 + 2 + 16 + 2 + 1 + int(appNameLen)) - int(paddingLen)
-	if payloadLen < 0 {
+	minHeaderLen := 2 + 16 + 2 + 16 + 2 + 1 + int(appNameLen)
+	if uint64(length) < uint64(minHeaderLen)+uint64(paddingLen) {
 		return M.Socksaddr{}, E.New("invalid udp length: ", length)
 	}
+	payloadLen := int(length) - minHeaderLen - int(paddingLen)
 	_, err = buffer.ReadFullFrom(u.body, payloadLen)
 	if err != nil {
 		return

@@ -314,6 +314,7 @@ type MultiplexClient struct {
 	ctx            context.Context
 	options        ClientOptions
 	clients        []*Client
+	closed         bool
 }
 
 func NewMultiplexClient(ctx context.Context, options ClientOptions) (*MultiplexClient, error) {
@@ -354,9 +355,19 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 	return t.ListenPacket(ctx)
 }
 
+func (c *MultiplexClient) Reset() {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	for _, t := range c.clients {
+		_ = t.Close()
+	}
+	c.clients = nil
+}
+
 func (c *MultiplexClient) Close() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	c.closed = true
 	var errs []error
 	for _, t := range c.clients {
 		if err := t.Close(); err != nil {
@@ -370,6 +381,17 @@ func (c *MultiplexClient) Close() error {
 func (c *MultiplexClient) getClient() (*Client, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	if c.closed {
+		return nil, net.ErrClosed
+	}
+	alive := c.clients[:0]
+	for _, t := range c.clients {
+		if t.ctx.Err() == nil {
+			alive = append(alive, t)
+		}
+	}
+	c.clients = alive
+
 	var transport *Client
 	for _, t := range c.clients {
 		if transport == nil || t.count.Load() < transport.count.Load() {

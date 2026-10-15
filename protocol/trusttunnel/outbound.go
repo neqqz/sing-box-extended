@@ -284,7 +284,7 @@ func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 // Dial()/ListenPacket() сам поднимет свежий транспорт — как и у остальных
 // протоколов, без ручного пересоздания объекта здесь.
 func (h *Outbound) InterfaceUpdated(ctx context.Context) {
-	_ = h.client.Close()
+	h.client.Reset()
 }
 
 func (h *Outbound) Close() error {

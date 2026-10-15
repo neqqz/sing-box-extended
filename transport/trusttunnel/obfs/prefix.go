@@ -238,7 +238,7 @@ func (l *PrefixChecker) checkRandom(conn net.Conn) ([]byte, peekResult) {
 		return wire, peekMismatch
 	}
 
-	if sboxtls.MatchAnyRandomPrefix(set.Prefixes, random) {
+	if sboxtls.MatchAnyRandomPrefix(set.Prefixes, random) && !l.replay.Seen(random) {
 		return wire, peekMatched
 	}
 	return wire, peekMismatch

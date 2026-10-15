@@ -387,7 +387,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 					return tls.MatchRotatingRandomPrefixBound(set.Secrets, length, random[:], bind) && !replay.Seen(random[:])
 				}
 				// Статичные префиксы: совпадение с ЛЮБЫМ из списка.
-				return tls.MatchAnyRandomPrefix(set.Prefixes, random[:])
+				return tls.MatchAnyRandomPrefix(set.Prefixes, random[:]) && !replay.Seen(random[:])
 			}
 		}
 		quicListener, err := qtls.ListenEarly(jitteredUDPConn, h.http3TLSConfig, quicConfig)
