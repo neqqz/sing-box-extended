@@ -5,7 +5,6 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	randv2 "math/rand/v2"
 )
 
 const (
@@ -61,10 +62,14 @@ func buildPaddingIP(addr netip.Addr) (buffer [16]byte) {
 	return buffer
 }
 
+var udpPaddingPool [65536]byte
+
+func init() {
+	_, _ = crand.Read(udpPaddingPool[:])
+}
+
 // randomUDPPaddingLength возвращает случайную длину паддинга в [min, max]
-// (в байтах). Криптографически случайную — паддинг живёт внутри TLS/QUIC,
-// но лишний предсказуемый паттерн размеров лучше не оставлять и там.
-// 0, если паддинг выключен (max<=0) или диапазон некорректен.
+// (в байтах).
 func randomUDPPaddingLength(min, max int) int {
 	if max <= 0 || min < 0 || max < min {
 		return 0
@@ -72,27 +77,19 @@ func randomUDPPaddingLength(min, max int) int {
 	if max == min {
 		return min
 	}
-	var buf [2]byte
-	if _, err := crand.Read(buf[:]); err != nil {
-		return min
-	}
-	n := int(binary.BigEndian.Uint16(buf[:])) % (max - min + 1)
-	return min + n
+	return min + randv2.IntN(max-min+1)
 }
 
-// randomUDPPadding возвращает n случайных байт паддинга (nil, если n<=0).
-// Раньше эта функция сама писала в w отдельным Write; теперь байты
-// возвращаются вызывающему, чтобы он мог передать их в writeChunks вместе
-// с header/payload — одним write-локом, без гонки с Close().
+// randomUDPPadding возвращает n байт случайного паддинга без аллокаций в куче.
 func randomUDPPadding(n int) ([]byte, error) {
 	if n <= 0 {
 		return nil, nil
 	}
-	padding := make([]byte, n)
-	if _, err := crand.Read(padding); err != nil {
-		return nil, err
+	if n >= len(udpPaddingPool) {
+		return udpPaddingPool[:], nil
 	}
-	return padding, nil
+	offset := randv2.IntN(len(udpPaddingPool) - n + 1)
+	return udpPaddingPool[offset : offset+n], nil
 }
 
 type httpConn struct {
