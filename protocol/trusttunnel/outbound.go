@@ -305,6 +305,9 @@ type resolvingPacketConn struct {
 
 func (c *resolvingPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	destination := M.SocksaddrFromNet(addr)
+	if !destination.IsFqdn() {
+		return c.PacketConn.WriteTo(p, addr)
+	}
 	resolved, err := c.outbound.resolveDestination(c.ctx, destination)
 	if err != nil {
 		return 0, err

@@ -1,7 +1,6 @@
 package obfs
 
 import (
-	"math/rand"
 	randv2 "math/rand/v2"
 	"net"
 	"time"
@@ -54,7 +53,7 @@ func (c *jitterConn) Write(b []byte) (int, error) {
 	spread := c.maxMs - c.minMs
 	delayMs := c.minMs
 	if spread > 0 {
-		delayMs += rand.Intn(spread + 1) //nolint:gosec // не крипто-контекст, просто тайминг-шум
+		delayMs += randv2.IntN(spread + 1)
 	}
 	if delayMs > 0 {
 		time.Sleep(time.Duration(delayMs) * time.Millisecond)
@@ -93,7 +92,7 @@ func (c *jitterPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	spread := c.maxMs - c.minMs
 	delayMs := c.minMs
 	if spread > 0 {
-		delayMs += rand.Intn(spread + 1) //nolint:gosec
+		delayMs += randv2.IntN(spread + 1)
 	}
 	if delayMs > 0 {
 		time.Sleep(time.Duration(delayMs) * time.Millisecond)

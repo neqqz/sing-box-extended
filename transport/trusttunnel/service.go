@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 
 	"github.com/sagernet/sing/common/auth"
@@ -264,10 +265,10 @@ func isBenignFirstPacketClose(err error) bool {
 }
 
 func parseRemoteAddr(addr string) net.Addr {
-	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
-	if err != nil {
-		return nil
+	if ap, err := netip.ParseAddrPort(addr); err == nil {
+		return net.TCPAddrFromAddrPort(ap)
 	}
+	tcpAddr, _ := net.ResolveTCPAddr("tcp", addr)
 	return tcpAddr
 }
 

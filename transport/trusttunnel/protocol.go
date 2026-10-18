@@ -1,7 +1,6 @@
 package trusttunnel
 
 import (
-	"bytes"
 	"context"
 	crand "crypto/rand"
 	"encoding/base64"
@@ -43,14 +42,14 @@ func parseBasicAuth(auth string) (username, password string, ok bool) {
 	return
 }
 
-func parse16BytesIP(buffer [16]byte) netip.Addr {
-	var zeroPrefix [12]byte
-	isIPv4 := bytes.HasPrefix(buffer[:], zeroPrefix[:])
-	isIPv4 = isIPv4 && !(buffer[12] == 0 && buffer[13] == 0 && buffer[14] == 0 && (buffer[15] == 0 || buffer[15] == 1))
-	if isIPv4 {
-		return netip.AddrFrom4([4]byte(buffer[12:16]))
+func parse16BytesIP(b [16]byte) netip.Addr {
+	if b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
+		b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
+		b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0 &&
+		!(b[12] == 0 && b[13] == 0 && b[14] == 0 && (b[15] == 0 || b[15] == 1)) {
+		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
 	}
-	return netip.AddrFrom16(buffer)
+	return netip.AddrFrom16(b)
 }
 
 func buildPaddingIP(addr netip.Addr) (buffer [16]byte) {
@@ -162,6 +161,34 @@ func (h *httpConn) writeFlush(p []byte) (n int, err error) {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+// write3Chunks writes three chunks without variadic slice allocation overhead.
+func (h *httpConn) write3Chunks(c1, c2, c3 []byte) error {
+	h.mtx.Lock()
+	defer h.mtx.Unlock()
+	if h.closed {
+		return net.ErrClosed
+	}
+	if len(c1) > 0 {
+		if _, err := h.writer.Write(c1); err != nil {
+			return err
+		}
+	}
+	if len(c2) > 0 {
+		if _, err := h.writer.Write(c2); err != nil {
+			return err
+		}
+	}
+	if len(c3) > 0 {
+		if _, err := h.writer.Write(c3); err != nil {
+			return err
+		}
+	}
+	if h.flusher != nil {
+		h.flusher.Flush()
+	}
+	return nil
 }
 
 // writeChunks writes chunks to the underlying writer under h.mtx, so it
