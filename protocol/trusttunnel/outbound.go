@@ -218,6 +218,9 @@ func (h *Outbound) resolveDestination(ctx context.Context, destination M.Socksad
 	}
 	h.resolveMu.Unlock()
 
+	if h.dnsRouter == nil {
+		return M.Socksaddr{}, E.New("dns router not available to resolve ", destination.Fqdn)
+	}
 	addresses, err := h.dnsRouter.Lookup(ctx, destination.Fqdn, adapter.DNSQueryOptions{})
 	if err != nil {
 		return M.Socksaddr{}, E.Cause(err, "resolve ", destination.Fqdn)

@@ -161,11 +161,13 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		destination = destination.Unwrap()
 		cachedConn := bufio.NewCachedPacketConn(conn, firstPacket, destination)
-		_ = s.handler.NewPacketConnection(ctx, cachedConn, M.Metadata{
+		if err = s.handler.NewPacketConnection(ctx, cachedConn, M.Metadata{
 			Protocol:    "trusttunnel",
 			Source:      M.ParseSocksaddr(request.RemoteAddr),
 			Destination: destination,
-		})
+		}); err != nil {
+			_ = cachedConn.Close()
+		}
 		<-done
 		s.untrackConn(username, conn)
 	case HealthCheckMagicAddress:
@@ -195,11 +197,13 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		wrapper := &h2ConnWrapper{Conn: conn}
 		s.trackConn(username, wrapper)
 		closeOnCancel(request.Context(), conn, done)
-		_ = s.handler.NewConnection(ctx, wrapper, M.Metadata{
+		if err := s.handler.NewConnection(ctx, wrapper, M.Metadata{
 			Protocol:    "trusttunnel",
 			Source:      M.ParseSocksaddr(request.RemoteAddr),
 			Destination: M.ParseSocksaddr(request.Host).Unwrap(),
-		})
+		}); err != nil {
+			_ = wrapper.Close()
+		}
 		<-done
 		s.untrackConn(username, wrapper)
 		wrapper.CloseWrapper()

@@ -506,7 +506,7 @@ func publicOnly(_, address string, _ syscall.RawConn) error {
 		return err
 	}
 	ip = ip.Unmap()
-	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 		return errors.New("non-public fallback target")
 	}
 	return nil

@@ -202,8 +202,12 @@ func (c *Client) loopHealthCheck() {
 			return
 		}
 		ctx, cancel := context.WithTimeout(c.ctx, DefaultHealthCheckTimeout)
-		_ = c.HealthCheck(ctx)
+		err := c.HealthCheck(ctx)
 		cancel()
+		if err != nil {
+			_ = c.Close()
+			return
+		}
 	}
 }
 
@@ -232,6 +236,9 @@ func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
 			_ = pipeWriter.CloseWithError(err)
 			_ = pipeReader.CloseWithError(err)
 			conn.setup(nil, err)
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				c.cancel()
+			}
 		} else if response.StatusCode != http.StatusOK {
 			_ = response.Body.Close()
 			err = fmt.Errorf("unexpected status code: %d", response.StatusCode)

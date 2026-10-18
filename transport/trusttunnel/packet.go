@@ -78,6 +78,9 @@ func (u *clientPacketConn) readPacketFromServer(buffer *buf.Buffer) (destination
 		return M.Socksaddr{}, E.New("invalid udp length: ", length)
 	}
 	payloadLen := int(length) - minHeaderLen - int(paddingLen)
+	if payloadLen > math.MaxUint16 {
+		return M.Socksaddr{}, E.New("invalid udp length: ", length)
+	}
 	_, err = buffer.ReadFullFrom(u.body, payloadLen)
 	if err != nil {
 		return
@@ -187,6 +190,9 @@ func (u *serverPacketConn) readPacketFromClient(buffer *buf.Buffer) (destination
 		return M.Socksaddr{}, E.New("invalid udp length: ", length)
 	}
 	payloadLen := int(length) - minHeaderLen - int(paddingLen)
+	if payloadLen > math.MaxUint16 {
+		return M.Socksaddr{}, E.New("invalid udp length: ", length)
+	}
 	_, err = buffer.ReadFullFrom(u.body, payloadLen)
 	if err != nil {
 		return
