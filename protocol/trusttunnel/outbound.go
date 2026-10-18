@@ -308,7 +308,13 @@ func (c *resolvingPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	if !destination.IsFqdn() {
 		return c.PacketConn.WriteTo(p, addr)
 	}
-	resolved, err := c.outbound.resolveDestination(c.ctx, destination)
+	ctx := c.ctx
+	var cancel context.CancelFunc
+	if ctx == nil || ctx.Err() != nil {
+		ctx, cancel = context.WithTimeout(context.Background(), C.TCPTimeout)
+		defer cancel()
+	}
+	resolved, err := c.outbound.resolveDestination(ctx, destination)
 	if err != nil {
 		return 0, err
 	}

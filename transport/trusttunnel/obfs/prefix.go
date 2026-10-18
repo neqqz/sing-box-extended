@@ -261,11 +261,11 @@ func readFullClientHello(conn net.Conn) (wire, logical []byte, ok bool) {
 
 	// Need at least: record hdr(5) + hs type(1) + hs len(3) + enough for Random.
 	for {
-		header := make([]byte, 5)
-		if _, err := io.ReadFull(conn, header); err != nil {
+		var header [5]byte
+		if _, err := io.ReadFull(conn, header[:]); err != nil {
 			return wireBuf.Bytes(), nil, false
 		}
-		wireBuf.Write(header)
+		wireBuf.Write(header[:])
 
 		if header[0] != 0x16 { // content_type = Handshake
 			return wireBuf.Bytes(), nil, false
@@ -467,7 +467,9 @@ func (l *PrefixChecker) relayToFallback(conn net.Conn, peeked []byte) {
 		return
 	}
 	defer upstream.Close()
-	_ = upstream.SetDeadline(time.Now().Add(fallbackRelayLifetime))
+	deadline := time.Now().Add(fallbackRelayLifetime)
+	_ = upstream.SetDeadline(deadline)
+	_ = conn.SetDeadline(deadline)
 
 	if len(captured) > 0 {
 		if _, err := upstream.Write(captured); err != nil {
@@ -482,6 +484,8 @@ func (l *PrefixChecker) relayToFallback(conn net.Conn, peeked []byte) {
 		_, _ = io.Copy(upstream, conn)
 		if c, ok := upstream.(interface{ CloseWrite() error }); ok {
 			_ = c.CloseWrite()
+		} else {
+			_ = upstream.Close()
 		}
 	}()
 	go func() {
@@ -489,6 +493,8 @@ func (l *PrefixChecker) relayToFallback(conn net.Conn, peeked []byte) {
 		_, _ = io.Copy(conn, upstream)
 		if c, ok := conn.(interface{ CloseWrite() error }); ok {
 			_ = c.CloseWrite()
+		} else {
+			_ = conn.Close()
 		}
 	}()
 	wg.Wait()

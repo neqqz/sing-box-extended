@@ -97,7 +97,7 @@ func (u *clientPacketConn) writePacketToServer(buffer *buf.Buffer, source M.Sock
 	appLen := len(appName)
 	lengthField := uint32(2 + 16 + 2 + 16 + 2 + 1 + appLen + payloadLen + paddingLen)
 	destinationAddress := buildPaddingIP(source.Addr)
-	var header [64]byte
+	var header [43 + math.MaxUint8]byte
 	hdr := header[:43+appLen]
 	binary.BigEndian.PutUint32(hdr[0:4], lengthField)
 	binary.BigEndian.PutUint16(hdr[4:6], uint16(paddingLen))

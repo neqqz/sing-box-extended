@@ -391,13 +391,15 @@ func (c *MultiplexClient) getClient() (*Client, error) {
 	if c.closed {
 		return nil, net.ErrClosed
 	}
-	alive := c.clients[:0]
+	n := 0
 	for _, t := range c.clients {
 		if t.ctx.Err() == nil {
-			alive = append(alive, t)
+			c.clients[n] = t
+			n++
 		}
 	}
-	c.clients = alive
+	clear(c.clients[n:])
+	c.clients = c.clients[:n]
 
 	var transport *Client
 	for _, t := range c.clients {

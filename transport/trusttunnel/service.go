@@ -76,6 +76,22 @@ func (s *Service) UpdateUsers(users map[string]string) {
 	}
 }
 
+func (s *Service) Close() error {
+	s.mu.Lock()
+	var closedConns []io.Closer
+	for _, conns := range s.conns {
+		for conn := range conns {
+			closedConns = append(closedConns, conn)
+		}
+	}
+	clear(s.conns)
+	s.mu.Unlock()
+	for _, conn := range closedConns {
+		_ = conn.Close()
+	}
+	return nil
+}
+
 func (s *Service) trackConn(username string, conn io.Closer) {
 	s.mu.Lock()
 	if s.conns[username] == nil {
@@ -171,6 +187,7 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		<-done
 		s.untrackConn(username, conn)
+		_ = cachedConn.Close()
 	case HealthCheckMagicAddress:
 		// HealthCheckMagicAddress требует авторизации - уже проверена выше
 		writer.WriteHeader(http.StatusOK)

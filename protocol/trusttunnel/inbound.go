@@ -436,6 +436,7 @@ func (h *Inbound) Close() error {
 	}
 	return common.Close(
 		h.listener,
+		common.PtrOrNil(h.service),
 		common.PtrOrNil(h.httpServer),
 		common.PtrOrNil(h.http3Server),
 		h.httpTLSConfig,
@@ -584,6 +585,14 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 			}
 		}
 	}()
+	semReleased := false
+	releaseSem := func() {
+		if !semReleased {
+			<-h.handshakeSem
+			semReleased = true
+		}
+	}
+	defer releaseSem()
 	tlsConn, err := tls.ServerHandshake(ctx, trackedConn, h.httpTLSConfig)
 	close(handshakeDone)
 	<-watchdogDone
@@ -603,7 +612,7 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 	// выглядело как обрывы http2-пути, коррелирующие не с сетью, а с общим
 	// числом одновременно подключённых клиентов/устройств (типичный
 	// триггер — синхронный реконнект пачки клиентов после сетевого сбоя).
-	<-h.handshakeSem
+	releaseSem()
 	if err != nil {
 		h.logger.Debug("trusttunnel: TLS handshake failed after ", time.Since(handshakeStart), ": ", err)
 		rawConn.Close()
@@ -632,9 +641,10 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 // Serve возвращается, когда http.Server закрыт либо соединение завершилось
 // (closeNotify) — иначе второй Accept блокировался бы навсегда (утечка горутины).
 type singleConnListener struct {
-	conn net.Conn
-	once sync.Once
-	done chan struct{}
+	conn      net.Conn
+	once      sync.Once
+	closeOnce sync.Once
+	done      chan struct{}
 }
 
 func newSingleConnListener(conn net.Conn) *singleConnListener {
@@ -652,11 +662,9 @@ func (l *singleConnListener) Accept() (net.Conn, error) {
 }
 
 func (l *singleConnListener) Close() error {
-	select {
-	case <-l.done:
-	default:
+	l.closeOnce.Do(func() {
 		close(l.done)
-	}
+	})
 	return nil
 }
 
@@ -666,10 +674,13 @@ func (l *singleConnListener) Addr() net.Addr { return l.conn.LocalAddr() }
 type notifyConn struct {
 	net.Conn
 	onClose func() error
+	once    sync.Once
 }
 
 func (c *notifyConn) Close() error {
-	_ = c.onClose()
+	c.once.Do(func() {
+		_ = c.onClose()
+	})
 	return c.Conn.Close()
 }
 
