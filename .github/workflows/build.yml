@@ -27,6 +27,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ inputs.build }}
   cancel-in-progress: true
 
+env:
+  GOPROXY: https://proxy.golang.org,direct
+  GODEBUG: http2client=0
+  GOPRIVATE: github.com/shtorm-7/*,github.com/neqqz/*
+
 jobs:
   calculate_version:
     name: Calculate version
