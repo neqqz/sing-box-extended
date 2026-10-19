@@ -341,11 +341,12 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		}
 		packetPaddingMin, packetPaddingMax := paddingRange(h.options.PacketPadding)
 		quicConfig := &quic.Config{
-			MaxIdleTimeout:        trusttunnel.DefaultSessionTimeout * 2,
-			KeepAlivePeriod:       trusttunnel.DefaultHealthCheckTimeout,
-			MaxIncomingStreams:    4096,
-			ExtraPacketPaddingMin: packetPaddingMin,
-			ExtraPacketPaddingMax: packetPaddingMax,
+			MaxIdleTimeout:          trusttunnel.DefaultSessionTimeout * 2,
+			KeepAlivePeriod:         trusttunnel.DefaultHealthCheckTimeout,
+			MaxIncomingStreams:      4096,
+			ExtraPacketPaddingMin:   packetPaddingMin,
+			ExtraPacketPaddingMax:   packetPaddingMax,
+			DisablePathMTUDiscovery: h.options.DisablePathMTUDiscovery,
 		}
 		if h.randomReloader != nil {
 			// Проверка ClientHello.Random на QUIC-пути через
