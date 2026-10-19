@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"runtime"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
+	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -46,21 +48,22 @@ type Dialer interface {
 }
 
 type ClientOptions struct {
-	Dialer            N.Dialer
-	TLSConfig         tls.Config
-	Server            M.Socksaddr
-	Username          string
-	Password          string
-	QUIC              bool
-	CongestionControl string
-	CWND              int
-	Logger            logger.Logger
-	HealthCheck       bool
-	MaxConnections    int
-	MinStreams        int
-	MaxStreams        int
-	UDPPaddingMin     int
-	UDPPaddingMax     int
+	Dialer                  N.Dialer
+	TLSConfig               tls.Config
+	Server                  M.Socksaddr
+	Username                string
+	Password                string
+	QUIC                    bool
+	DisablePathMTUDiscovery bool
+	CongestionControl       string
+	CWND                    int
+	Logger                  logger.Logger
+	HealthCheck             bool
+	MaxConnections          int
+	MinStreams              int
+	MaxStreams              int
+	UDPPaddingMin           int
+	UDPPaddingMax           int
 	// JitterMinMS/JitterMaxMS: см. obfs/jitter.go. Применяется и к h2-пути
 	// (через враппер над options.Dialer в protocol/trusttunnel/outbound.go),
 	// и к QUIC-пути (напрямую здесь, на PacketConn перед DialEarly).
@@ -116,10 +119,11 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			options.TLSConfig.SetNextProtos([]string{"h3"})
 		}
 		quicConfig := &quic.Config{
-			MaxIdleTimeout:        DefaultSessionTimeout * 2,
-			KeepAlivePeriod:       DefaultHealthCheckTimeout,
-			ExtraPacketPaddingMin: options.PacketPaddingMin,
-			ExtraPacketPaddingMax: options.PacketPaddingMax,
+			MaxIdleTimeout:          DefaultSessionTimeout * 2,
+			KeepAlivePeriod:         DefaultHealthCheckTimeout,
+			DisablePathMTUDiscovery: options.DisablePathMTUDiscovery,
+			ExtraPacketPaddingMin:   options.PacketPaddingMin,
+			ExtraPacketPaddingMax:   options.PacketPaddingMax,
 		}
 		client.roundTripper = &http3.Transport{
 			QUICConfig: quicConfig,
@@ -218,21 +222,31 @@ func (c *Client) resetHealthCheckTimer() {
 	c.healthCheckTimer.Reset(obfs.JitterDuration(DefaultHealthCheckTimeout, 0.3))
 }
 
-func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
+func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *httpConn) error {
 	c.startOnce.Do(c.start)
 	pipeReader, pipeWriter := io.Pipe()
 	request.Body = pipeReader
 	*conn = httpConn{writer: pipeWriter, created: make(chan struct{})}
 	c.count.Add(1)
 	conn.closeFn = sync.OnceFunc(func() { c.count.Add(-1) })
-	ctx, cancel := context.WithCancel(c.ctx)
+	requestCtx, cancel := context.WithCancel(c.ctx)
 	conn.cancelFn = cancel
+	gotConn := make(chan bool, 1)
+	streamCtx := httptrace.WithClientTrace(requestCtx, &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			select {
+			case gotConn <- true:
+			default:
+			}
+		},
+	})
+	var requestErr common.TypedValue[error]
 	go func() {
-		timeout := time.AfterFunc(C.TCPTimeout, cancel)
-		defer timeout.Stop()
-		request = request.WithContext(ctx)
+		request = request.WithContext(streamCtx)
 		response, err := c.roundTripper.RoundTrip(request)
 		if err != nil {
+			requestErr.Store(err)
+			close(gotConn)
 			_ = pipeWriter.CloseWithError(err)
 			_ = pipeReader.CloseWithError(err)
 			conn.setup(nil, err)
@@ -242,6 +256,7 @@ func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
 		} else if response.StatusCode != http.StatusOK {
 			_ = response.Body.Close()
 			err = fmt.Errorf("unexpected status code: %d", response.StatusCode)
+			requestErr.Store(err)
 			_ = pipeWriter.CloseWithError(err)
 			_ = pipeReader.CloseWithError(err)
 			conn.setup(nil, err)
@@ -250,6 +265,12 @@ func (c *Client) roundTrip(request *http.Request, conn *httpConn) {
 			conn.setup(response.Body, nil)
 		}
 	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-gotConn:
+		return requestErr.Load()
+	}
 }
 
 func (c *Client) newConnectRequest(host, userAgent string) *http.Request {
@@ -266,13 +287,21 @@ func (c *Client) newConnectRequest(host, userAgent string) *http.Request {
 
 func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 	conn := &tcpConn{}
-	c.roundTrip(c.newConnectRequest(host, tcpUserAgent), &conn.httpConn)
+	err := c.roundTrip(ctx, c.newConnectRequest(host, tcpUserAgent), &conn.httpConn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	return conn, nil
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 	conn := &clientPacketConn{paddingMin: c.udpPaddingMin, paddingMax: c.udpPaddingMax}
-	c.roundTrip(c.newConnectRequest(UDPMagicAddress, udpUserAgent), &conn.httpConn)
+	err := c.roundTrip(ctx, c.newConnectRequest(UDPMagicAddress, udpUserAgent), &conn.httpConn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	return conn, nil
 }
 

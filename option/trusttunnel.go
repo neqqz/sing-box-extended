@@ -25,11 +25,12 @@ type TrustTunnelTimingOptions struct {
 type TrustTunnelInboundOptions struct {
 	ListenOptions
 	InboundTLSOptionsContainer
-	Users                []TrustTunnelUser         `json:"users,omitempty"`
-	Network              NetworkList               `json:"network,omitempty"`
-	CongestionController string                    `json:"congestion_controller,omitempty"`
-	CWND                 int                       `json:"cwnd,omitempty"`
-	Timing               *TrustTunnelTimingOptions `json:"timing,omitempty"`
+	Users                   []TrustTunnelUser         `json:"users,omitempty"`
+	Network                 NetworkList               `json:"network,omitempty"`
+	CongestionController    string                    `json:"congestion_controller,omitempty"`
+	CWND                    int                       `json:"cwnd,omitempty"`
+	DisablePathMTUDiscovery bool                      `json:"disable_path_mtu_discovery,omitempty"`
+	Timing                  *TrustTunnelTimingOptions `json:"timing,omitempty"`
 	// DataPadding: рандомный PADDED-паддинг на h2 DATA-фреймы (байты). У
 	// PADDED-флага HTTP/2 однобайтовое поле длины паддинга (RFC 7540 §6.1),
 	// поэтому Max > 255 не имеет смысла на этом пути.
@@ -95,14 +96,15 @@ type TrustTunnelOutboundOptions struct {
 	DialerOptions
 	ServerOptions
 	OutboundTLSOptionsContainer
-	Username             string                    `json:"username,omitempty"`
-	Password             string                    `json:"password,omitempty"`
-	Network              NetworkList               `json:"network,omitempty"`
-	HealthCheck          bool                      `json:"health_check,omitempty"`
-	QUIC                 bool                      `json:"quic,omitempty"`
-	CongestionController string                    `json:"congestion_controller,omitempty"`
-	CWND                 int                       `json:"cwnd,omitempty"`
-	Timing               *TrustTunnelTimingOptions `json:"timing,omitempty"`
+	Username                string                       `json:"username,omitempty"`
+	Password                string                       `json:"password,omitempty"`
+	Network                 NetworkList                  `json:"network,omitempty"`
+	HealthCheck             bool                         `json:"health_check,omitempty"`
+	QUIC                    bool                         `json:"quic,omitempty"`
+	CongestionController    string                       `json:"congestion_controller,omitempty"`
+	CWND                    int                          `json:"cwnd,omitempty"`
+	DisablePathMTUDiscovery bool                         `json:"disable_path_mtu_discovery,omitempty"`
+	Timing                  *TrustTunnelTimingOptions    `json:"timing,omitempty"`
 	// See the matching fields on TrustTunnelInboundOptions for the format
 	// and rationale.
 	DataPadding   *TrustTunnelPaddingOptions   `json:"data_padding,omitempty"`

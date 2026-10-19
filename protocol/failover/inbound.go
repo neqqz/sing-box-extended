@@ -2,7 +2,6 @@ package failover
 
 import (
 	"context"
-	"errors"
 	"net"
 	"sync"
 
@@ -60,9 +59,9 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	return inbound, nil
 }
 
-func (h *Inbound) Start(stage adapter.StartStage) error {
+func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	for _, inbound := range h.inbounds {
-		err := inbound.Start(stage)
+		err := scope.Start("inbound/"+inbound.Type()+"["+inbound.Tag()+"]", inbound, stage)
 		if err != nil {
 			return err
 		}
@@ -70,18 +69,15 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 	return nil
 }
 
-func (h *Inbound) Close() error {
-	errs := make([]error, 0)
+func (h *Inbound) References() []string {
+	var references []string
 	for _, inbound := range h.inbounds {
-		err := inbound.Close()
-		if err != nil {
-			errs = append(errs, err)
+		referrer, isReferrer := inbound.(adapter.Referrer)
+		if isReferrer {
+			references = append(references, referrer.References()...)
 		}
 	}
-	if len(errs) != 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	return references
 }
 
 func (h *Inbound) connHandler(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) error {

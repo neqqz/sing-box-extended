@@ -2,7 +2,6 @@ package bond
 
 import (
 	"context"
-	"errors"
 	"net"
 	"time"
 
@@ -69,29 +68,31 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	return inbound, nil
 }
 
-func (h *Inbound) Start(stage adapter.StartStage) error {
+func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	for _, inbound := range h.inbounds {
-		err := inbound.Start(stage)
+		err := scope.Start("inbound/"+inbound.Type()+"["+inbound.Tag()+"]", inbound, stage)
 		if err != nil {
 			return err
 		}
 	}
+	if stage == adapter.StartStateInitialize {
+		scope.Add(func() error {
+			h.conns.Close()
+			return nil
+		})
+	}
 	return nil
 }
 
-func (h *Inbound) Close() error {
-	h.conns.Close()
-	errs := make([]error, 0)
+func (h *Inbound) References() []string {
+	var references []string
 	for _, inbound := range h.inbounds {
-		err := inbound.Close()
-		if err != nil {
-			errs = append(errs, err)
+		referrer, isReferrer := inbound.(adapter.Referrer)
+		if isReferrer {
+			references = append(references, referrer.References()...)
 		}
 	}
-	if len(errs) != 0 {
-		return errors.Join(errs...)
-	}
-	return nil
+	return references
 }
 
 func (h *Inbound) connHandler(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) error {

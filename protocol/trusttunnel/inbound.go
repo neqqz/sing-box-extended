@@ -212,10 +212,11 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	return h, nil
 }
 
-func (h *Inbound) Start(stage adapter.StartStage) error {
+func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage != adapter.StartStateStart {
 		return nil
 	}
+	scope.Add(h.Close)
 
 	// Горячая замена client_random_prefix / client_random_prefix_secret из файлов.
 	if h.randomReloader != nil {
@@ -317,6 +318,7 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		if err = h.http3TLSConfig.Start(); err != nil {
 			return err
 		}
+		scope.Add(h.http3TLSConfig.Close)
 		udpConn, err := h.listener.ListenUDP()
 		if err != nil {
 			return err
@@ -341,11 +343,13 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 		}
 		packetPaddingMin, packetPaddingMax := paddingRange(h.options.PacketPadding)
 		quicConfig := &quic.Config{
-			MaxIdleTimeout:        trusttunnel.DefaultSessionTimeout * 2,
-			KeepAlivePeriod:       trusttunnel.DefaultHealthCheckTimeout,
-			MaxIncomingStreams:    4096,
-			ExtraPacketPaddingMin: packetPaddingMin,
-			ExtraPacketPaddingMax: packetPaddingMax,
+			MaxIdleTimeout:          trusttunnel.DefaultSessionTimeout * 2,
+			KeepAlivePeriod:         trusttunnel.DefaultHealthCheckTimeout,
+			MaxIncomingStreams:      4096,
+			Allow0RTT:               true,
+			DisablePathMTUDiscovery: h.options.DisablePathMTUDiscovery,
+			ExtraPacketPaddingMin:   packetPaddingMin,
+			ExtraPacketPaddingMax:   packetPaddingMax,
 		}
 		if h.randomReloader != nil {
 			// Проверка ClientHello.Random на QUIC-пути через
@@ -683,7 +687,6 @@ func (c *notifyConn) Close() error {
 	})
 	return c.Conn.Close()
 }
-
 func (h *Inbound) UpdateUsers(users []option.TrustTunnelUser) {
 	userMap := make(map[string]string, len(users))
 	for _, u := range users {

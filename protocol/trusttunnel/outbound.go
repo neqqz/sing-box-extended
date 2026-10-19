@@ -146,25 +146,26 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	packetPaddingMin, packetPaddingMax := paddingRange(options.PacketPadding)
 	chromeLike := chromeLikeFingerprint(options.TLS)
 	clientOpts := trusttunnel.ClientOptions{
-		ChromeH2:          !options.QUIC && chromeLike,
-		Dialer:            outboundDialer,
-		TLSConfig:         tlsConfig,
-		Server:            serverAddr,
-		Username:          options.Username,
-		Password:          options.Password,
-		QUIC:              options.QUIC,
-		CongestionControl: options.CongestionController,
-		CWND:              options.CWND,
-		Logger:            logger,
-		HealthCheck:       options.HealthCheck,
-		UDPPaddingMin:     udpPaddingMin,
-		UDPPaddingMax:     udpPaddingMax,
-		JitterMinMS:       timingMin,
-		JitterMaxMS:       timingMax,
-		DataPaddingMin:    dataPaddingMin,
-		DataPaddingMax:    dataPaddingMax,
-		PacketPaddingMin:  packetPaddingMin,
-		PacketPaddingMax:  packetPaddingMax,
+		ChromeH2:                !options.QUIC && chromeLike,
+		Dialer:                  outboundDialer,
+		TLSConfig:               tlsConfig,
+		Server:                  serverAddr,
+		Username:                options.Username,
+		Password:                options.Password,
+		QUIC:                    options.QUIC,
+		DisablePathMTUDiscovery: options.DisablePathMTUDiscovery,
+		CongestionControl:       options.CongestionController,
+		CWND:                    options.CWND,
+		Logger:                  logger,
+		HealthCheck:             options.HealthCheck,
+		UDPPaddingMin:           udpPaddingMin,
+		UDPPaddingMax:           udpPaddingMax,
+		JitterMinMS:             timingMin,
+		JitterMaxMS:             timingMax,
+		DataPaddingMin:          dataPaddingMin,
+		DataPaddingMax:          dataPaddingMax,
+		PacketPaddingMin:        packetPaddingMin,
+		PacketPaddingMax:        packetPaddingMax,
 	}
 	// Раньше без multiplex.enabled создавался голый *Client — у него нет
 	// самовосстановления: Close() убивает его насовсем, и любую сетевую
@@ -290,8 +291,12 @@ func (h *Outbound) InterfaceUpdated(ctx context.Context) {
 	h.client.Reset()
 }
 
-func (h *Outbound) Close() error {
-	return h.client.Close()
+func (h *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage != adapter.StartStateInitialize {
+		return nil
+	}
+	scope.Add(h.client.Close)
+	return nil
 }
 
 // resolvingPacketConn резолвит Fqdn-only destination на каждый WriteTo,

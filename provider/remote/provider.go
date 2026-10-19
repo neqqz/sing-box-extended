@@ -105,7 +105,11 @@ func NewProviderRemote(ctx context.Context, router adapter.Router, logFactory lo
 	return p, nil
 }
 
-func (s *ProviderRemote) Start() error {
+func (s *ProviderRemote) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if stage != adapter.StartStateStart {
+		return nil
+	}
+	scope.Add(s.Close)
 	s.cacheFile = service.FromContext[adapter.CacheFile](s.ctx)
 	if s.cacheFile != nil && s.cacheFile.StoreSubscriptions() {
 		if saveSub := s.cacheFile.LoadSubscription(s.Tag()); saveSub != nil {
@@ -133,9 +137,24 @@ func (s *ProviderRemote) Start() error {
 	} else {
 		s.dialer = s.outbound.Default()
 	}
-
+	err := s.Adapter.Start()
+	if err != nil {
+		return err
+	}
+	s.ticker = time.NewTicker(s.updateInterval)
 	go s.loopUpdate()
-	return s.Adapter.Start()
+	return nil
+}
+
+func (s *ProviderRemote) References() []string {
+	if s.downloadDetour != "" {
+		return []string{s.downloadDetour}
+	}
+	defaultOutbound := s.outbound.Default()
+	if defaultOutbound == nil {
+		return nil
+	}
+	return []string{defaultOutbound.Tag()}
 }
 
 func (s *ProviderRemote) Update() error {
@@ -276,22 +295,17 @@ func (s *ProviderRemote) fetch(ctx context.Context) error {
 
 func (s *ProviderRemote) loopUpdate() {
 	if time.Since(s.lastUpdated) < s.updateInterval {
-		select {
-		case <-s.ctx.Done():
-			return
-		case <-time.After(time.Until(s.lastUpdated.Add(s.updateInterval))):
-			s.updateOnce()
-		}
+		s.ticker.Reset(time.Until(s.lastUpdated.Add(s.updateInterval)))
 	} else {
 		s.updateOnce()
 	}
-	s.ticker = time.NewTicker(s.updateInterval)
 	for {
 		runtime.GC()
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-s.ticker.C:
+			s.ticker.Reset(s.updateInterval)
 			s.updateOnce()
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -41,7 +42,12 @@ func RegisterOutbound(registry *outbound.Registry) {
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.MieruOutboundOptions) (adapter.Outbound, error) {
-	outboundDialer, err := dialer.New(ctx, options.DialerOptions, M.IsDomainName(options.Server))
+	outboundDialer, err := dialer.NewWithOptions(dialer.Options{
+		Context:          ctx,
+		Options:          options.DialerOptions,
+		RemoteIsDomain:   M.IsDomainName(options.Server),
+		ResolverOnDetour: true,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -55,21 +61,19 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	}, nil
 }
 
-func (o *Outbound) Start(stage adapter.StartStage) error {
+func (o *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage != adapter.StartStatePostStart {
 		return nil
 	}
-	serverOptions := o.options
-	if M.IsDomainName(serverOptions.Server) {
-		addresses, err := o.dnsRouter.Lookup(o.ctx, serverOptions.Server, adapter.DNSQueryOptions{})
-		if err != nil {
-			return fmt.Errorf("failed to resolve mieru server address: %w", err)
-		}
-		serverOptions.Server = addresses[0].String()
-	}
-	config, err := buildMieruClientConfig(serverOptions, mieruDialer{dialer: o.dialer})
+	config, err := buildMieruClientConfig(o.options, mieruDialer{dialer: o.dialer})
 	if err != nil {
 		return fmt.Errorf("failed to build mieru client config: %w", err)
+	}
+	if M.IsDomainName(o.options.Server) {
+		config.Resolver = mieruResolver{
+			dnsRouter:    o.dnsRouter,
+			queryOptions: o.dialer.(dialer.ResolveDialer).QueryOptions(),
+		}
 	}
 	c := mieruclient.NewClient()
 	if err := c.Store(config); err != nil {
@@ -80,6 +84,9 @@ func (o *Outbound) Start(stage adapter.StartStage) error {
 	}
 	o.logger.NoticeContext(o.ctx, "mieru client is started")
 	o.client = c
+	scope.Add(func() error {
+		return common.Close(o.client)
+	})
 	return nil
 }
 
@@ -130,10 +137,6 @@ func (o *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 	return mierucommon.NewUDPAssociateWrapper(mierucommon.NewPacketOverStreamTunnel(streamConn)), nil
 }
 
-func (o *Outbound) Close() error {
-	return common.Close(o.client)
-}
-
 // mieruDialer is an adapter to mieru dialer interface.
 type mieruDialer struct {
 	dialer N.Dialer
@@ -149,9 +152,32 @@ func (md mieruDialer) ListenPacket(ctx context.Context, network, laddr, raddr st
 	return md.dialer.ListenPacket(ctx, addr)
 }
 
+type mieruResolver struct {
+	dnsRouter    adapter.DNSRouter
+	queryOptions adapter.DNSQueryOptions
+}
+
+func (r mieruResolver) LookupIP(ctx context.Context, network, host string) ([]net.IP, error) {
+	queryOptions := r.queryOptions
+	switch network {
+	case "ip4":
+		queryOptions.Strategy = C.DomainStrategyIPv4Only
+	case "ip6":
+		queryOptions.Strategy = C.DomainStrategyIPv6Only
+	}
+	addresses, err := r.dnsRouter.Lookup(ctx, host, queryOptions)
+	if err != nil {
+		return nil, err
+	}
+	return common.Map(addresses, func(it netip.Addr) net.IP {
+		return it.AsSlice()
+	}), nil
+}
+
 var (
 	_ mierucommon.Dialer       = (*mieruDialer)(nil)
 	_ mierucommon.PacketDialer = (*mieruDialer)(nil)
+	_ mierucommon.DNSResolver  = (*mieruResolver)(nil)
 )
 
 // streamer converts a net.PacketConn to a net.Conn.
