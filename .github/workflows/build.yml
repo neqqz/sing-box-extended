@@ -30,7 +30,6 @@ concurrency:
 env:
   GOPROXY: https://proxy.golang.org,direct
   GODEBUG: http2client=0
-  GOPRIVATE: github.com/shtorm-7/*,github.com/neqqz/*
 
 jobs:
   calculate_version:
