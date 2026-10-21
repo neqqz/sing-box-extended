@@ -16,3 +16,10 @@ func validateUDPPadding(udp *option.TrustTunnelPaddingOptions) error {
 	min, max := paddingRange(udp)
 	return trusttunnel.ValidatePadding("udp_padding", min, max, trusttunnel.MaxUDPPadding)
 }
+
+func timingRange(t *option.TrustTunnelTimingOptions) (minMS, maxMS, packets int) {
+	if t == nil {
+		return 0, 0, 0
+	}
+	return t.MinMS, t.MaxMS, t.Packets
+}

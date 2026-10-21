@@ -9,6 +9,17 @@ type TrustTunnelPaddingOptions struct {
 	Max int `json:"max,omitempty"`
 }
 
+// TrustTunnelTimingOptions задаёт умный джиттер по времени на фазе установления соединения.
+// Если MaxMS > 0, перед отправкой первых Packets пакетов (по умолчанию 5) добавляется
+// случайная задержка в [MinMS, MaxMS] мс. Защищает от timing-анализа рукопожатия DPI,
+// при этом автоматически отключается на фазе потоковой передачи (bulk transfer),
+// не снижая скорость соединения и не ломая pacing BBR/Cubic.
+type TrustTunnelTimingOptions struct {
+	MinMS   int `json:"min_ms,omitempty"`
+	MaxMS   int `json:"max_ms,omitempty"`
+	Packets int `json:"packets,omitempty"`
+}
+
 type TrustTunnelInboundOptions struct {
 	ListenOptions
 	InboundTLSOptionsContainer
@@ -17,6 +28,7 @@ type TrustTunnelInboundOptions struct {
 	CongestionController         string                     `json:"congestion_controller,omitempty"`
 	CWND                         int                        `json:"cwnd,omitempty"`
 	DisablePathMTUDiscovery      bool                       `json:"disable_path_mtu_discovery,omitempty"`
+	Timing                       *TrustTunnelTimingOptions  `json:"timing,omitempty"`
 	ClientRandomPrefix           badoption.Listable[string] `json:"client_random_prefix,omitempty"`
 	ClientRandomPrefixSecret     badoption.Listable[string] `json:"client_random_prefix_secret,omitempty"`
 	ClientRandomPrefixLen        int                        `json:"client_random_prefix_len,omitempty"`
@@ -51,6 +63,7 @@ type TrustTunnelOutboundOptions struct {
 	CongestionController    string                       `json:"congestion_controller,omitempty"`
 	CWND                    int                          `json:"cwnd,omitempty"`
 	DisablePathMTUDiscovery bool                         `json:"disable_path_mtu_discovery,omitempty"`
+	Timing                  *TrustTunnelTimingOptions    `json:"timing,omitempty"`
 	Multiplex               *TrustTunnelMultiplexOptions `json:"multiplex,omitempty"`
 	UDPPadding              *TrustTunnelPaddingOptions   `json:"udp_padding,omitempty"`
 }

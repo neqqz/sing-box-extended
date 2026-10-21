@@ -18,6 +18,7 @@ import (
 	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
+	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -59,6 +60,9 @@ type ClientOptions struct {
 	MaxStreams              int
 	UDPPaddingMin           int
 	UDPPaddingMax           int
+	JitterMinMS             int
+	JitterMaxMS             int
+	JitterPackets           int
 }
 
 type Client struct {
@@ -107,7 +111,8 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				}
 				var conn *quic.Conn
 				if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
-					conn, err = qd.DialEarly(ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), cfg)
+					pktConn := obfs.NewJitterPacketConn(bufio.NewUnbindPacketConn(udpConn), options.JitterMinMS, options.JitterMaxMS, options.JitterPackets)
+					conn, err = qd.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), cfg)
 				} else {
 					conn, err = qtls.DialEarly(ctx, udpConn, options.TLSConfig, cfg)
 				}

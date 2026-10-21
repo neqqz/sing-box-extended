@@ -16,6 +16,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/transport/trusttunnel"
+	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -32,20 +33,23 @@ const (
 	resolveCacheMax = 4096
 )
 
-type tcpCongestionDialer struct {
+type tcpTimingDialer struct {
 	N.Dialer
 	congestionControl string
+	minMS             int
+	maxMS             int
+	packets           int
 }
 
-func (d tcpCongestionDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+func (d tcpTimingDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
 	conn, err := d.Dialer.DialContext(ctx, network, destination)
 	if err != nil {
 		return nil, err
 	}
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
+	if tcpConn, ok := conn.(*net.TCPConn); ok && d.congestionControl != "" {
 		trusttunnel.SetTCPCongestionControl(tcpConn, d.congestionControl)
 	}
-	return conn, nil
+	return obfs.NewJitterConn(conn, d.minMS, d.maxMS, d.packets), nil
 }
 
 func RegisterOutbound(registry *outbound.Registry) {
@@ -82,8 +86,15 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if err != nil {
 		return nil, err
 	}
-	if options.CongestionController != "" {
-		outboundDialer = tcpCongestionDialer{Dialer: outboundDialer, congestionControl: options.CongestionController}
+	timingMin, timingMax, timingPackets := timingRange(options.Timing)
+	if options.CongestionController != "" || timingMax > 0 {
+		outboundDialer = tcpTimingDialer{
+			Dialer:            outboundDialer,
+			congestionControl: options.CongestionController,
+			minMS:             timingMin,
+			maxMS:             timingMax,
+			packets:           timingPackets,
+		}
 	}
 	serverAddr := options.ServerOptions.Build()
 	networkList := options.Network.Build()
@@ -105,6 +116,9 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		Logger:                  logger,
 		UDPPaddingMin:           udpPaddingMin,
 		UDPPaddingMax:           udpPaddingMax,
+		JitterMinMS:             timingMin,
+		JitterMaxMS:             timingMax,
+		JitterPackets:           timingPackets,
 	}
 	// Раньше без multiplex.enabled создавался голый *Client — у него нет
 	// самовосстановления: Close() убивает его насовсем, и любую сетевую

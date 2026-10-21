@@ -273,7 +273,9 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 				return tls.MatchAnyRandomPrefix(set.Prefixes, random[:]) && !replay.Seen(random[:])
 			}
 		}
-		quicListener, err := qtls.ListenEarly(udpConn, h.http3TLSConfig, quicConfig)
+		timingMin, timingMax, timingPackets := timingRange(h.options.Timing)
+		jitteredUDPConn := obfs.NewJitterPacketConn(udpConn, timingMin, timingMax, timingPackets)
+		quicListener, err := qtls.ListenEarly(jitteredUDPConn, h.http3TLSConfig, quicConfig)
 		if err != nil {
 			return err
 		}
@@ -354,6 +356,7 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixCheck
 		}
 		delay = 0
 		trusttunnel.SetTCPCongestionControl(rawConn, h.options.CongestionController)
+		timingMin, timingMax, timingPackets := timingRange(h.options.Timing)
 		go func() {
 			conn := rawConn
 			if checker != nil {
@@ -362,11 +365,12 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixCheck
 					return
 				}
 			}
-			if !h.trackConn(conn) {
+			jc := obfs.NewJitterConn(conn, timingMin, timingMax, timingPackets)
+			if !h.trackConn(jc) {
 				return
 			}
-			defer h.untrackConn(conn)
-			h.serveConn(conn, handler)
+			defer h.untrackConn(jc)
+			h.serveConn(jc, handler)
 		}()
 	}
 }
