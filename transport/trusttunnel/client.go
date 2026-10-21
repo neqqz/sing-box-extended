@@ -14,12 +14,10 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
-	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -56,43 +54,23 @@ type ClientOptions struct {
 	CongestionControl       string
 	CWND                    int
 	Logger                  logger.Logger
-	HealthCheck             bool
 	MaxConnections          int
 	MinStreams              int
 	MaxStreams              int
 	UDPPaddingMin           int
 	UDPPaddingMax           int
-	// JitterMinMS/JitterMaxMS: см. obfs/jitter.go. Применяется и к h2-пути
-	// (через враппер над options.Dialer в protocol/trusttunnel/outbound.go),
-	// и к QUIC-пути (напрямую здесь, на PacketConn перед DialEarly).
-	JitterMinMS int
-	JitterMaxMS int
-	// DataPaddingMin/Max (h2) и PacketPaddingMin/Max (QUIC) — см.
-	// golang.org/x/net/http2's Transport.DataPaddingMin/Max и
-	// quic-go's Config.ExtraPacketPaddingMin/Max соответственно.
-	DataPaddingMin   int
-	DataPaddingMax   int
-	PacketPaddingMin int
-	PacketPaddingMax int
-	// ChromeH2: h2-путь шлёт преамбулу как Chrome (SETTINGS, WINDOW_UPDATE,
-	// порядок pseudo-header'ов). Включать только когда uTLS-отпечаток
-	// Chromium-подобный, иначе TLS и H2 отпечатки противоречат друг другу.
-	ChromeH2 bool
 }
 
 type Client struct {
-	ctx              context.Context
-	cancel           context.CancelFunc
-	server           M.Socksaddr
-	serverString     string
-	auth             string
-	roundTripper     http.RoundTripper
-	startOnce        sync.Once
-	healthCheck      bool
-	healthCheckTimer atomic.Pointer[time.Timer]
-	count            atomic.Int64
-	udpPaddingMin    int
-	udpPaddingMax    int
+	ctx           context.Context
+	cancel        context.CancelFunc
+	server        M.Socksaddr
+	serverString  string
+	auth          string
+	roundTripper  http.RoundTripper
+	count         atomic.Int64
+	udpPaddingMin int
+	udpPaddingMax int
 }
 
 func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
@@ -103,7 +81,6 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		server:        options.Server,
 		serverString:  options.Server.String(),
 		auth:          buildAuth(options.Username, options.Password),
-		healthCheck:   options.HealthCheck,
 		udpPaddingMin: options.UDPPaddingMin,
 		udpPaddingMax: options.UDPPaddingMax,
 	}
@@ -118,10 +95,8 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		}
 		quicConfig := &quic.Config{
 			MaxIdleTimeout:          DefaultSessionTimeout * 2,
-			KeepAlivePeriod:         DefaultHealthCheckTimeout,
+			KeepAlivePeriod:         DefaultKeepAlivePeriod,
 			DisablePathMTUDiscovery: options.DisablePathMTUDiscovery,
-			ExtraPacketPaddingMin:   options.PacketPaddingMin,
-			ExtraPacketPaddingMax:   options.PacketPaddingMax,
 		}
 		client.roundTripper = &http3.Transport{
 			QUICConfig: quicConfig,
@@ -130,28 +105,9 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 				if err != nil {
 					return nil, err
 				}
-				// KeepAlivePeriod со своим разбросом на каждое соединение,
-				// а не одно константное значение на все: ровный пинг раз в
-				// 7 секунд виден и под шифрованием.
-				if cfg != nil {
-					cfg = cfg.Clone()
-					cfg.KeepAlivePeriod = obfs.JitterDuration(DefaultHealthCheckTimeout, 0.3)
-				}
 				var conn *quic.Conn
-				// QUICDialer: если options.TLSConfig умеет патчить
-				// ClientHello.Random (ротация client_random_prefix_secret,
-				// см. common/tls/utls_client.go), используем именно его —
-				// иначе обычный qtls.DialEarly ничего про наш префикс не
-				// знает. Пересчитывается заново на каждый вызов этого
-				// замыкания, а не один раз при старте — иначе все
-				// реконнекты в рамках одного multiplex.max_connections
-				// получили бы один и тот же "случайный" префикс навсегда.
-				//
-				// qtls.DialEarly принимает net.Conn.
-				// tls.QUICDialer.DialEarly принимает net.PacketConn + addr.
 				if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
-					pktConn := obfs.NewJitterPacketConn(bufio.NewUnbindPacketConn(udpConn), options.JitterMinMS, options.JitterMaxMS)
-					conn, err = qd.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), cfg)
+					conn, err = qd.DialEarly(ctx, bufio.NewUnbindPacketConn(udpConn), udpConn.RemoteAddr(), cfg)
 				} else {
 					conn, err = qtls.DialEarly(ctx, udpConn, options.TLSConfig, cfg)
 				}
@@ -178,50 +134,13 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			DialTLSContext: func(ctx context.Context, network, addr string, _ *stdtls.Config) (net.Conn, error) {
 				return tlsDialer.DialContext(ctx, network, client.server)
 			},
-			AllowHTTP:      true,
-			DataPaddingMin: options.DataPaddingMin,
-			DataPaddingMax: options.DataPaddingMax,
-
-			ChromeFingerprint: options.ChromeH2,
+			AllowHTTP: true,
 		}
 	}
 	return client, nil
 }
 
-func (c *Client) start() {
-	if c.healthCheck {
-		timer := time.NewTimer(obfs.JitterDuration(DefaultHealthCheckTimeout, 0.3))
-		c.healthCheckTimer.Store(timer)
-		go c.loopHealthCheck(timer)
-	}
-}
-
-func (c *Client) loopHealthCheck(timer *time.Timer) {
-	for {
-		select {
-		case <-timer.C:
-		case <-c.ctx.Done():
-			timer.Stop()
-			return
-		}
-		ctx, cancel := context.WithTimeout(c.ctx, DefaultHealthCheckTimeout)
-		err := c.HealthCheck(ctx)
-		cancel()
-		if err != nil {
-			_ = c.Close()
-			return
-		}
-	}
-}
-
-func (c *Client) resetHealthCheckTimer() {
-	if timer := c.healthCheckTimer.Load(); timer != nil {
-		timer.Reset(obfs.JitterDuration(DefaultHealthCheckTimeout, 0.3))
-	}
-}
-
 func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *httpConn) error {
-	c.startOnce.Do(c.start)
 	pipeReader, pipeWriter := io.Pipe()
 	request.Body = pipeReader
 	remoteAddr := conn.remoteAddr
@@ -248,7 +167,6 @@ func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *htt
 			_ = pipeReader.CloseWithError(err)
 			conn.setup(nil, err)
 		} else {
-			c.resetHealthCheckTimer()
 			conn.setup(response.Body, nil)
 		}
 	}()
@@ -324,37 +242,11 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 
 func (c *Client) Close() error {
 	c.cancel()
-	// QUIC (http3.Transport): io.Closer.Close() рвёт СРАЗУ ВСЕ активные
-	// QUIC-соединения на транспорте, включая мультиплексированные стримы
-	// других, ещё живых логических клиентов — если этот Close() вызван не
-	// на полном завершении, а как побочный эффект (например, MultiplexClient
-	// когда-нибудь начнёт убирать нездоровые клиенты по одному), это
-	// сносило бы заодно и здоровые. Раз в текущей MultiplexClient.getClient()
-	// такого пути нет (клиенты никогда не закрываются поодиночке вне
-	// общего MultiplexClient.Close()) — сейчас это безопасно как есть,
-	// но если появится точечное закрытие отдельных *Client — см. историю
-	// этого файла, там уже был баг именно на этом месте.
 	if closer, ok := c.roundTripper.(io.Closer); ok {
 		_ = closer.Close()
 	}
 	if t, ok := c.roundTripper.(*http2.Transport); ok {
 		t.CloseIdleConnections()
-	}
-	if timer := c.healthCheckTimer.Swap(nil); timer != nil {
-		timer.Stop()
-	}
-	return nil
-}
-
-func (c *Client) HealthCheck(ctx context.Context) error {
-	defer c.resetHealthCheckTimer()
-	response, err := c.roundTripper.RoundTrip(c.newConnectRequest(HealthCheckMagicAddress, runtime.GOOS).WithContext(ctx))
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", response.StatusCode)
 	}
 	return nil
 }

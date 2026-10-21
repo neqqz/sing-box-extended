@@ -5,7 +5,6 @@ package trusttunnel
 import (
 	"context"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/transport/trusttunnel"
-	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -28,41 +26,18 @@ import (
 	"github.com/sagernet/sing/service"
 )
 
-// resolveCacheTTL — сколько держим резолв домена без повторного запроса к
-// DNS. Короткий TTL: в горячем UDP-потоке (QUIC-датаграммы) один и тот же
-// Fqdn может встречаться десятки раз в секунду, а резолвить его на каждый
-// пакет — лишняя задержка и нагрузка на DNS без всякой пользы, т.к. IP
-// целевых доменов (CDN и т.п.) не меняется настолько быстро.
+// resolveCacheTTL — сколько держим резолв домена без повторного запроса к DNS.
 const (
 	resolveCacheTTL = 30 * time.Second
 	resolveCacheMax = 4096
 )
 
-// noDelayDialer НЕ форсирует TCP_NODELAY. Раньше здесь безусловно вызывался
-// tcpConn.SetNoDelay(true), что отключало алгоритм Нейгла: каждый мелкий
-// H2-кадр (WINDOW_UPDATE, SETTINGS ACK, крошечные DATA-фреймы мультиплекса)
-// уходил в эфир немедленно отдельной передачей, вместо того чтобы ядро
-// могло их слегка укрупнить перед отправкой — заметно чаще будило
-// радиомодуль на мобильных сетях, чем протоколы без такого форсирования
-// (например, vless). Настройки конфига для этого больше нет: сокет всегда
-// остаётся на дефолте ядра (обычно Nagle включён), как и у остальных
-// протоколов в этом репозитории.
-type noDelayDialer struct {
+type tcpCongestionDialer struct {
 	N.Dialer
-	// congestionControl — то же значение, что и congestion_controller в
-	// конфиге (по умолчанию используется для QUIC, см. common/congestion).
-	// Здесь применяется к сырому TCP-сокету H2-пути через setsockopt
-	// TCP_CONGESTION (см. transport/trusttunnel/tcp_congestion_linux.go) —
-	// раньше H2-путь этот параметр полностью игнорировал и жил на
-	// системном дефолте ядра (обычно cubic).
 	congestionControl string
-	// jitterMinMS/jitterMaxMS — см. transport/trusttunnel/obfs/jitter.go.
-	// 0/0 (дефолт) = выключено, без накладных расходов.
-	jitterMinMS int
-	jitterMaxMS int
 }
 
-func (d noDelayDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+func (d tcpCongestionDialer) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
 	conn, err := d.Dialer.DialContext(ctx, network, destination)
 	if err != nil {
 		return nil, err
@@ -70,32 +45,7 @@ func (d noDelayDialer) DialContext(ctx context.Context, network string, destinat
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		trusttunnel.SetTCPCongestionControl(tcpConn, d.congestionControl)
 	}
-	return obfs.NewJitterConn(conn, d.jitterMinMS, d.jitterMaxMS), nil
-}
-
-// chromeFingerprintExact: тот самый случай, когда QUIC идёт через uTLS
-// ChromeParrot (utls.HelloChrome_Auto, см. common/tls/utls_client.go).
-func chromeFingerprintExact(o *option.OutboundTLSOptions) bool {
-	if o == nil {
-		return false
-	}
-	if o.UTLS == nil || !o.UTLS.Enabled {
-		// client_random_prefix* неявно включают chrome (common/tls/client.go).
-		return tls.HasNonEmpty(o.ClientRandomPrefix) || tls.HasNonEmpty(o.ClientRandomPrefixSecret)
-	}
-	return o.UTLS.Fingerprint == "" || o.UTLS.Fingerprint == "chrome"
-}
-
-// chromeLikeFingerprint: Chromium-семейство, для которого уместна
-// Chrome-преамбула HTTP/2.
-func chromeLikeFingerprint(o *option.OutboundTLSOptions) bool {
-	if chromeFingerprintExact(o) {
-		return true
-	}
-	if o == nil || o.UTLS == nil || !o.UTLS.Enabled {
-		return false
-	}
-	return strings.HasPrefix(o.UTLS.Fingerprint, "chrome_") || o.UTLS.Fingerprint == "edge"
+	return conn, nil
 }
 
 func RegisterOutbound(registry *outbound.Registry) {
@@ -125,17 +75,16 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if options.TLS == nil || !options.TLS.Enabled {
 		return nil, C.ErrTLSRequired
 	}
-	if err := validatePaddings(options.UDPPadding, options.DataPadding, options.PacketPadding); err != nil {
+	if err := validateUDPPadding(options.UDPPadding); err != nil {
 		return nil, err
 	}
 	outboundDialer, err := dialer.New(ctx, options.DialerOptions, options.ServerIsDomain())
 	if err != nil {
 		return nil, err
 	}
-	timingMin, timingMax := timingRange(options.Timing)
-	// NODELAY не форсируется (см. комментарий у noDelayDialer) — опции
-	// конфига для этого больше нет.
-	outboundDialer = noDelayDialer{Dialer: outboundDialer, congestionControl: options.CongestionController, jitterMinMS: timingMin, jitterMaxMS: timingMax}
+	if options.CongestionController != "" {
+		outboundDialer = tcpCongestionDialer{Dialer: outboundDialer, congestionControl: options.CongestionController}
+	}
 	serverAddr := options.ServerOptions.Build()
 	networkList := options.Network.Build()
 	tlsConfig, err := tls.NewClient(ctx, logger, options.Server, common.PtrValueOrDefault(options.TLS))
@@ -143,11 +92,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		return nil, err
 	}
 	udpPaddingMin, udpPaddingMax := paddingRange(options.UDPPadding)
-	dataPaddingMin, dataPaddingMax := paddingRange(options.DataPadding)
-	packetPaddingMin, packetPaddingMax := paddingRange(options.PacketPadding)
-	chromeLike := chromeLikeFingerprint(options.TLS)
 	clientOpts := trusttunnel.ClientOptions{
-		ChromeH2:                !options.QUIC && chromeLike,
 		Dialer:                  outboundDialer,
 		TLSConfig:               tlsConfig,
 		Server:                  serverAddr,
@@ -158,15 +103,8 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		CongestionControl:       options.CongestionController,
 		CWND:                    options.CWND,
 		Logger:                  logger,
-		HealthCheck:             options.HealthCheck,
 		UDPPaddingMin:           udpPaddingMin,
 		UDPPaddingMax:           udpPaddingMax,
-		JitterMinMS:             timingMin,
-		JitterMaxMS:             timingMax,
-		DataPaddingMin:          dataPaddingMin,
-		DataPaddingMax:          dataPaddingMax,
-		PacketPaddingMin:        packetPaddingMin,
-		PacketPaddingMax:        packetPaddingMax,
 	}
 	// Раньше без multiplex.enabled создавался голый *Client — у него нет
 	// самовосстановления: Close() убивает его насовсем, и любую сетевую

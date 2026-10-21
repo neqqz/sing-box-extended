@@ -3,12 +3,9 @@ package trusttunnel
 import (
 	"context"
 	"errors"
-	"io"
 	"net"
 	"net/http"
-	"runtime"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/quic-go"
@@ -86,7 +83,6 @@ type Inbound struct {
 	options        option.TrustTunnelInboundOptions
 	listener       *listener.Listener
 	service        *trusttunnel.Service
-	httpServer     *http.Server
 	h2Server       *http2.Server
 	http3Server    *http3.Server
 	httpTLSConfig  tls.ServerConfig
@@ -108,51 +104,9 @@ type Inbound struct {
 	connsMtx    sync.Mutex
 	conns       map[net.Conn]struct{}
 	connsClosed bool
-	// handshakeSem ограничивает число ОДНОВРЕМЕННО выполняемых TLS
-	// handshake'ов. Раньше go h.serveConn(...) запускался без всякого
-	// лимита — при burst'е из сотни+ соединений сразу (типичный триггер:
-	// рестарт сервера или клиента, когда весь пул переподключается разом)
-	// все эти горутины одновременно грызли CPU на RSA/ECDHE, и часть из
-	// них честно не укладывалась в дедлайн просто из-за нехватки CPU-time
-	// на всех разом — сколько дедлайн ни повышай, при настоящей перегрузке
-	// это лечит симптом, а не причину. Семафор превращает "все дерутся за
-	// CPU одновременно и часть проигрывает по таймауту" в "обрабатываем
-	// с полной отдачей CPU каждому, а сверх лимита — мгновенный fail-fast
-	// вместо ожидания в очереди" (см. serveConn) — суммарно burst
-	// прожёвывается быстрее и с кратно меньшим числом реальных отказов.
-	handshakeSem chan struct{}
 }
 
-// DefaultMaxConcurrentHandshakes — сколько TLS handshake'ов обрабатываем
-// одновременно. RSA/ECDHE handshake CPU-bound, поэтому лимит держим
-// в районе числа ядер, а не по числу соединений — иначе просто
-// переносим ту же перегрузку с "конкуренция за CPU" на "конкуренция за
-// семафор" без выигрыша.
-var DefaultMaxConcurrentHandshakes = max(runtime.NumCPU()*4, 16)
-
-// tlsHandshakeTimeout — бюджет на сам TLS handshake после того, как слот
-// уже получен. На мобильной сети хендшейк иногда честно занимает 10-14s
-// из-за ретрансмитов (RTO 1s→2s→4s→8s при потере пары пакетов), а
-// клиентский C.TCPTimeout — 15s. Даём запас сверх него.
-//
-// Это АБСОЛЮТНЫЙ потолок — не сдвигается, что бы ни происходило на
-// соединении. Отдельно от него — tlsHandshakeIdleTimeout ниже, который,
-// наоборот, сбрасывается на каждый принятый байт. Та же пара таймеров, что
-// у quic-go: Config.HandshakeIdleTimeout (сбрасывается на каждый пакет) +
-// handshakeTimeout() = 2×idle (фиксированный backstop, connection.go). Идея:
-// соединение, которое реально ретрансмитит (байты идут, просто редко),
-// не должно умирать по тому же таймеру, что и полностью мёртвый сокет
-// (порт-сканер, ушедший клиент) — но и активность не должна давать
-// хендшейку жить вечно.
 const tlsHandshakeTimeout = 20 * time.Second
-
-// tlsHandshakeIdleTimeout — как quic-go's HandshakeIdleTimeout: если за это
-// время НИ ОДНОГО байта не пришло, дальше ждать нет смысла — досрочно рвём
-// хендшейк, освобождая слот handshakeSem для реального клиента, вместо того
-// чтобы держать его до полных 20s ради заведомо мёртвого соединения. Пока
-// байты идут (даже редко, из-за ретрансмитов), этот таймер не срабатывает —
-// решает только tlsHandshakeTimeout выше.
-const tlsHandshakeIdleTimeout = 5 * time.Second
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrustTunnelInboundOptions) (adapter.Inbound, error) {
 	if options.TLS == nil || !options.TLS.Enabled {
@@ -172,7 +126,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 			return nil, err
 		}
 	}
-	if err := validatePaddings(options.UDPPadding, options.DataPadding, options.PacketPadding); err != nil {
+	if err := validateUDPPadding(options.UDPPadding); err != nil {
 		return nil, err
 	}
 	networkList := options.Network.Build()
@@ -193,7 +147,6 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		}),
 		randomReloader:  randomReloader,
 		randomPrefixLen: options.ClientRandomPrefixLen,
-		handshakeSem:    make(chan struct{}, DefaultMaxConcurrentHandshakes),
 	}
 	udpPaddingMin, udpPaddingMax := paddingRange(options.UDPPadding)
 	service := trusttunnel.NewService(trusttunnel.ServiceOptions{
@@ -258,50 +211,11 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 			return err
 		}
 
-		h.httpServer = &http.Server{
-			Handler:           h.service,
-			BaseContext:       func(net.Listener) context.Context { return h.ctx },
-			ReadHeaderTimeout: 10 * time.Second,
-			IdleTimeout:       trusttunnel.DefaultSessionTimeout*2 + 10*time.Second,
-		}
-		h2DataPaddingMin, h2DataPaddingMax := paddingRange(h.options.DataPadding)
 		h.h2Server = &http2.Server{
-			IdleTimeout:    20 * time.Second,
-			DataPaddingMin: h2DataPaddingMin,
-			DataPaddingMax: h2DataPaddingMax,
-			// Дефолт x/net/http2 — 1 MB на стрим/соединение. При RTT
-			// в несколько сотен мс (типично для маршрута до зарубежного
-			// VPS из РФ) это даёт потолок throughput = window/RTT, что
-			// на практике режет скорость аплоада крупных файлов одним
-			// стримом (например, артефактов в GitHub Actions) до
-			// заметно меньше канала. Поднимаем окно под BDP:
-			// window >= целевая_скорость_байт/с * RTT_сек.
+			IdleTimeout:                  20 * time.Second,
 			MaxUploadBufferPerStream:     8 << 20,  // 8 MB
 			MaxUploadBufferPerConnection: 16 << 20, // 16 MB
-			// ВАЖНО: IdleTimeout ловит только соединение с НУЛЁМ активных
-			// стримов — если у клиента (типично мобильный, за carrier NAT)
-			// сдох путь молча, без FIN/RST, а на сервере в этот момент
-			// числится "активный" стрим, IdleTimeout не сработает никогда:
-			// соединение виснет до TCP-ретрансмиссий ядра на следующей
-			// попытке записи (net.ipv4.tcp_retries2, обычно ~15 минут на
-			// Linux) — жрёт файловый дескриптор и память втрое дольше, чем
-			// нужно, и не даёт клиенту переподключиться на этот же слот
-			// handshakeSem/учёта раньше срока. Не запускаем фоновый H2 PING:
-			// для экономии батареи idle H2-сессия должна быть полностью
-			// без трафика, как обычный VLESS/TCP-транспорт. Клиент
-			// восстанавливает транспорт при InterfaceUpdated(), а зависшую
-			// сессию проверяет реактивно после таймаута реального стрима.
 		}
-		// ВАЖНО: net/http.Server.Serve() определяет ALPN-протокол и решает,
-		// звать ли http2.Server, через жёсткий type assertion c.rwc.(*tls.Conn)
-		// (см. net/http/server.go, conn.serve()). aTLS.NewListener оборачивает
-		// сырое соединение в *aTLS.LazyConn — это НЕ *tls.Conn и не реализует
-		// ConnectionState(), поэтому stdlib ALPN-диспатч на такой обёртке
-		// молча не срабатывает и всё уходит в HTTP/1.1, даже если клиент
-		// согласовал h2 на TLS-уровне. Поэтому здесь TLS-хендшейк и ALPN
-		// разбираются вручную, минуя http.Server для h2-соединений.
-		// SNI для этого пути проверяется в serveConn, поэтому передаём
-		// h.service напрямую, без sniMiddleware.
 		go h.acceptLoop(rawListener, prefixChecker, h.service)
 	}
 
@@ -323,11 +237,6 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		if err != nil {
 			return err
 		}
-		// Timing=nil по умолчанию — оборачивание пропускается, без изменений
-		// в поведении/performance. См. transport/trusttunnel/obfs/jitter.go
-		// про риски для QUIC-пути конкретно (шум в BBR/cubic RTT-замерах quic-go).
-		timingMin, timingMax := timingRange(h.options.Timing)
-		jitteredUDPConn := obfs.NewJitterPacketConn(udpConn, timingMin, timingMax)
 		congestionControlFactory, err := congestion.NewCongestionControl(
 			h.options.CongestionController, h.options.CWND, ntp.TimeFuncFromContext(h.ctx),
 		)
@@ -341,39 +250,14 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 				return ctx
 			},
 		}
-		packetPaddingMin, packetPaddingMax := paddingRange(h.options.PacketPadding)
 		quicConfig := &quic.Config{
 			MaxIdleTimeout:          trusttunnel.DefaultSessionTimeout * 2,
-			KeepAlivePeriod:         trusttunnel.DefaultHealthCheckTimeout,
+			KeepAlivePeriod:         trusttunnel.DefaultKeepAlivePeriod,
 			MaxIncomingStreams:      4096,
 			Allow0RTT:               true,
 			DisablePathMTUDiscovery: h.options.DisablePathMTUDiscovery,
-			ExtraPacketPaddingMin:   packetPaddingMin,
-			ExtraPacketPaddingMax:   packetPaddingMax,
 		}
 		if h.randomReloader != nil {
-			// Проверка ClientHello.Random на QUIC-пути через
-			// ServerClientRandomVerify (он приоритетнее Prefix/Mask, и его можно
-			// делать зависящим от текущего набора — значит, работает горячая
-			// замена). Набор берётся заново на каждый handshake.
-			//
-			// Режим секретов (ротация): свежая проверка на каждое входящее
-			// соединение, с допуском ±1 окно на рассинхрон часов.
-			//
-			// Биндим к key_share так же, как h2-путь (см.
-			// transport/trusttunnel/obfs/prefix.go) — раньше здесь
-			// была небиндящая DeriveRotatingRandomPrefix (см. её
-			// doc-комментарий в common/tls/random_prefix_rotation.go для
-			// разбора самой уязвимости), потому что форк sagernet/quic-go
-			// отдавал в ServerClientRandomVerify только random [32]byte,
-			// без key_share. Теперь наш form github.com/neqqz/quic-go
-			// прокидывает туда же и сырые байты ClientHello (см.
-			// ServerClientRandomVerify в interface.go того форка), так что
-			// можно вытащить key_share тем же кодом, что и h2-путь
-			// (obfs.ExtractKeyShareFromHandshakeMessage — тот же
-			// парсинг, что и extractKeyShareData, только без 5-байтного
-			// TLS record-заголовка: у QUIC его просто нет, ClientHello
-			// приходит как есть в CRYPTO-фрейме).
 			reloader := h.randomReloader
 			length := tls.RandomPrefixLenOrDefault(h.randomPrefixLen)
 			replay := tls.NewReplayCache()
@@ -382,19 +266,14 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 				if len(set.Secrets) > 0 {
 					bind, ok := obfs.ExtractKeyShareFromHandshakeMessage(clientHello)
 					if !ok {
-						// Нет key_share — не откатываемся на голый random,
-						// это и есть закрываемая дыра.
 						return false
 					}
-					// Принимаем совпадение с ЛЮБЫМ секретом из списка
-					// (например, по одному секрету на пользователя).
 					return tls.MatchRotatingRandomPrefixBound(set.Secrets, length, random[:], bind) && !replay.Seen(random[:])
 				}
-				// Статичные префиксы: совпадение с ЛЮБЫМ из списка.
 				return tls.MatchAnyRandomPrefix(set.Prefixes, random[:]) && !replay.Seen(random[:])
 			}
 		}
-		quicListener, err := qtls.ListenEarly(jitteredUDPConn, h.http3TLSConfig, quicConfig)
+		quicListener, err := qtls.ListenEarly(udpConn, h.http3TLSConfig, quicConfig)
 		if err != nil {
 			return err
 		}
@@ -445,18 +324,12 @@ func (h *Inbound) Close() error {
 	return common.Close(
 		h.listener,
 		common.PtrOrNil(h.service),
-		common.PtrOrNil(h.httpServer),
 		common.PtrOrNil(h.http3Server),
 		h.httpTLSConfig,
 		h.http3TLSConfig,
 	)
 }
 
-// acceptLoop принимает TCP-соединения, прошедшие prefix-check, выполняет TLS
-// хендшейк вручную и диспетчеризует по согласованному ALPN: h2 идёт прямиком
-// в http2.Server.ServeConn, всё остальное — в http.Server через одноразовый
-// listener. Это обходит жёсткий type assertion c.rwc.(*tls.Conn) в net/http,
-// который никогда не срабатывает на *aTLS.LazyConn.
 func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixChecker, handler http.Handler) {
 	var delay time.Duration
 	for {
@@ -465,8 +338,6 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixCheck
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			// EMFILE/ENFILE/ECONNABORTED are temporary: back off and retry like
-			// net/http.Server does, instead of leaving the listener dead for good.
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Temporary() { //nolint:staticcheck
 				delay = min(max(delay*2, 5*time.Millisecond), time.Second)
@@ -482,11 +353,7 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixCheck
 			return
 		}
 		delay = 0
-		// Congestion control ставим на сырой *net.TCPConn: после prefix-check
-		// соединение уже обёрнуто (peekedConn), и type assertion не сработал бы.
 		trusttunnel.SetTCPCongestionControl(rawConn, h.options.CongestionController)
-		// Проверка prefix блокирует до tlsPeekTimeout — только в своей горутине,
-		// иначе один медленный клиент задерживает все accept.
 		go func() {
 			conn := rawConn
 			if checker != nil {
@@ -495,134 +362,21 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixCheck
 					return
 				}
 			}
-			// Timing=nil по умолчанию — без обёртки. См. transport/trusttunnel/obfs/jitter.go.
-			timingMin, timingMax := timingRange(h.options.Timing)
-			jc := obfs.NewJitterConn(conn, timingMin, timingMax)
-			if !h.trackConn(jc) {
+			if !h.trackConn(conn) {
 				return
 			}
-			defer h.untrackConn(jc)
-			h.serveConn(jc, handler)
+			defer h.untrackConn(conn)
+			h.serveConn(conn, handler)
 		}()
 	}
 }
 
-// activityConn запоминает время последнего успешного Read — тот же сигнал,
-// на котором в quic-go держится idleTimeoutStartTime() (сбрасывается на
-// каждый принятый пакет, connection.go). Здесь источник активности — не
-// пакеты, а байты TCP, но идея та же: отличить "соединение живое, просто
-// медленное" от "соединение мертво" можно только по факту недавней
-// активности, а не по одному общему таймеру на всё.
-type activityConn struct {
-	net.Conn
-	lastActive atomic.Int64 // unix nanos
-}
-
-func newActivityConn(conn net.Conn) *activityConn {
-	c := &activityConn{Conn: conn}
-	c.lastActive.Store(time.Now().UnixNano())
-	return c
-}
-
-func (c *activityConn) Read(b []byte) (int, error) {
-	n, err := c.Conn.Read(b)
-	if n > 0 {
-		c.lastActive.Store(time.Now().UnixNano())
-	}
-	return n, err
-}
-
-func (c *activityConn) idleFor() time.Duration {
-	return time.Since(time.Unix(0, c.lastActive.Load()))
-}
-
 func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
-	// ВАЖНО: раньше здесь было блокирующее ожидание свободного слота в
-	// handshakeSem (сначала общий ctx на 20s вместе с самим хендшейком,
-	// потом отдельный на 10s только под очередь) — в обоих случаях клиент
-	// синхронно висел, не зная, перегружен сервер или просто сеть плохая.
-	// Тот же класс проблемы в quic-go/server.go (handlePacket) решён иначе:
-	// при переполнении очереди пакет не ждёт — дропается мгновенно
-	// (select { case ch <- p: default: drop }, см. protocol.MaxAcceptQueueSize),
-	// а ретрай — забота клиента и протокола поверх. Переносим тот же
-	// принцип сюда: если слот не свободен ПРЯМО СЕЙЧАС — закрываем
-	// соединение сразу, вместо того чтобы копить клиентов в очереди с
-	// фиксированным таймаутом. Клиентский dialMu-ретрай (до 5 попыток,
-	// бэкофф 400мс-3000мс) видит быстрый отказ почти мгновенно вместо
-	// многосекундного молчания — и, как следствие, любой оставшийся
-	// "context deadline exceeded" ниже теперь однозначно означает именно
-	// медленный TLS handshake (сеть), а не очередь: неоднозначность, из-за
-	// которой пришлось заводить отдельный queueWait, устранена структурно,
-	// а не только в логах.
-	select {
-	case h.handshakeSem <- struct{}{}:
-	default:
-		_ = rawConn.Close()
-		h.logger.Debug("trusttunnel: handshakeSem full, rejecting immediately (server busy, fail-fast — client will retry)")
-		return
-	}
-	// Свежий полный бюджет на сам хендшейк — слот уже наш, ждать было не надо.
 	ctx, cancel := context.WithTimeout(h.ctx, tlsHandshakeTimeout)
 	defer cancel()
-	handshakeStart := time.Now()
-	trackedConn := newActivityConn(rawConn)
-	// idle-watchdog — как quic-go's HandshakeIdleTimeout (см. комментарий у
-	// tlsHandshakeIdleTimeout): рвём хендшейк ДОСРОЧНО только если он
-	// полностью замолчал на tlsHandshakeIdleTimeout, освобождая слот раньше
-	// для реального клиента. Хендшейк, который активно (пусть и медленно —
-	// мобильные ретрансмиты) обменивается байтами, этим таймером не
-	// затрагивается вообще — для него по-прежнему единственный предел
-	// tlsHandshakeTimeout, отсчитываемый от начала и заданный выше.
-	watchdogDone := make(chan struct{})
-	handshakeDone := make(chan struct{})
-	go func() {
-		defer close(watchdogDone)
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-handshakeDone:
-				return
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if trackedConn.idleFor() >= tlsHandshakeIdleTimeout {
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-	semReleased := false
-	releaseSem := func() {
-		if !semReleased {
-			<-h.handshakeSem
-			semReleased = true
-		}
-	}
-	defer releaseSem()
-	tlsConn, err := tls.ServerHandshake(ctx, trackedConn, h.httpTLSConfig)
-	close(handshakeDone)
-	<-watchdogDone
-	// ВАЖНО: слот освобождаем СРАЗУ после самого хендшейка (успешного или
-	// нет), а не через defer на всю serveConn. handshakeSem защищает только
-	// CPU-bound RSA/ECDHE-хендшейк (см. комментарий у поля выше) — а ниже
-	// идёт h2Server.ServeConn/httpServer.Serve, который блокируется на ВСЮ
-	// жизнь соединения (часы, а не миллисекунды). При defer-варианте слот
-	// держался до полного закрытия соединения, и семафор на деле ограничивал
-	// не число одновременных хендшейков, а число одновременно ОТКРЫТЫХ
-	// h2-соединений сервером суммарно по всем клиентам сразу
-	// (DefaultMaxConcurrentHandshakes, обычно 16) — любое (N+1)-е соединение
-	// сверх этого, даже когда хендшейки давно не идут и CPU простаивает,
-	// вставало в очередь на семафор, съедало здесь же те самые 20s и
-	// отваливалось с "TLS handshake failed: context deadline exceeded",
-	// хотя до реального хендшейка дело даже не доходило. Внешне это
-	// выглядело как обрывы http2-пути, коррелирующие не с сетью, а с общим
-	// числом одновременно подключённых клиентов/устройств (типичный
-	// триггер — синхронный реконнект пачки клиентов после сетевого сбоя).
-	releaseSem()
+	tlsConn, err := tls.ServerHandshake(ctx, rawConn, h.httpTLSConfig)
 	if err != nil {
-		h.logger.Debug("trusttunnel: TLS handshake failed after ", time.Since(handshakeStart), ": ", err)
+		h.logger.Debug("trusttunnel: TLS handshake failed: ", err)
 		rawConn.Close()
 		return
 	}
@@ -632,64 +386,14 @@ func (h *Inbound) serveConn(rawConn net.Conn, handler http.Handler) {
 		tlsConn.Close()
 		return
 	}
-	switch tlsConn.ConnectionState().NegotiatedProtocol {
-	case http2.NextProtoTLS:
-		h.h2Server.ServeConn(tlsConn, &http2.ServeConnOpts{
-			Context: h.ctx,
-			Handler: handler,
-		})
-	default:
-		if sErr := h.httpServer.Serve(newSingleConnListener(tlsConn)); sErr != nil && !errors.Is(sErr, http.ErrServerClosed) && !errors.Is(sErr, io.EOF) {
-			h.logger.Debug("trusttunnel: H1 conn: ", sErr)
-		}
+	if tlsConn.ConnectionState().NegotiatedProtocol != http2.NextProtoTLS {
+		tlsConn.Close()
+		return
 	}
-}
-
-// singleConnListener отдаёт ровно одно соединение для http.Server (HTTP/1.1).
-// Serve возвращается, когда http.Server закрыт либо соединение завершилось
-// (closeNotify) — иначе второй Accept блокировался бы навсегда (утечка горутины).
-type singleConnListener struct {
-	conn      net.Conn
-	once      sync.Once
-	closeOnce sync.Once
-	done      chan struct{}
-}
-
-func newSingleConnListener(conn net.Conn) *singleConnListener {
-	return &singleConnListener{conn: conn, done: make(chan struct{})}
-}
-
-func (l *singleConnListener) Accept() (net.Conn, error) {
-	var c net.Conn
-	l.once.Do(func() { c = &notifyConn{Conn: l.conn, onClose: l.Close} })
-	if c == nil {
-		<-l.done
-		return nil, io.EOF
-	}
-	return c, nil
-}
-
-func (l *singleConnListener) Close() error {
-	l.closeOnce.Do(func() {
-		close(l.done)
+	h.h2Server.ServeConn(tlsConn, &http2.ServeConnOpts{
+		Context: h.ctx,
+		Handler: handler,
 	})
-	return nil
-}
-
-func (l *singleConnListener) Addr() net.Addr { return l.conn.LocalAddr() }
-
-// notifyConn сигналит listener'у о закрытии соединения, разблокируя второй Accept.
-type notifyConn struct {
-	net.Conn
-	onClose func() error
-	once    sync.Once
-}
-
-func (c *notifyConn) Close() error {
-	c.once.Do(func() {
-		_ = c.onClose()
-	})
-	return c.Conn.Close()
 }
 func (h *Inbound) UpdateUsers(users []option.TrustTunnelUser) {
 	userMap := make(map[string]string, len(users))
