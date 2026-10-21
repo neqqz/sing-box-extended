@@ -258,11 +258,9 @@ func (t *tcpConn) CloseWrite() error {
 	return nil
 }
 
-// Wire limits: the UDP padding length is a uint16 in the frame header, the
-// h2 DATA pad length is one byte (RFC 9113 §6.1).
+// Wire limits: the UDP padding length is a uint16 in the frame header.
 const (
-	MaxUDPPadding  = 65535
-	MaxDataPadding = 255
+	MaxUDPPadding = 65535
 )
 
 // ValidatePadding rejects ranges that would silently corrupt the stream.

@@ -11,13 +11,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"runtime"
 	"sync"
 	"sync/atomic"
 
 	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/tls"
-	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/logger"
@@ -29,11 +27,6 @@ import (
 	"github.com/sagernet/quic-go/http3"
 	qtls "github.com/sagernet/sing-quic"
 	"golang.org/x/net/http2"
-)
-
-var (
-	tcpUserAgent = runtime.GOOS + " sing-box/" + C.Version
-	udpUserAgent = runtime.GOOS + " " + UDPMagicAddress
 )
 
 type Dialer interface {
@@ -201,12 +194,11 @@ func isFatalTransportError(err error) bool {
 	return true
 }
 
-func (c *Client) newConnectRequest(host, userAgent string) *http.Request {
+func (c *Client) newConnectRequest(host string) *http.Request {
 	return &http.Request{
 		Method: http.MethodConnect,
 		URL:    &url.URL{Scheme: "https", Host: c.serverString},
 		Header: http.Header{
-			"User-Agent":          {userAgent},
 			"Proxy-Authorization": {c.auth},
 		},
 		Host: host,
@@ -219,7 +211,7 @@ func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 			remoteAddr: parseRemoteAddr(host),
 		},
 	}
-	err := c.roundTrip(ctx, c.newConnectRequest(host, tcpUserAgent), &conn.httpConn)
+	err := c.roundTrip(ctx, c.newConnectRequest(host), &conn.httpConn)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -228,14 +220,14 @@ func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
-	conn := &clientPacketConn{
+	conn := &packetConn{
 		httpConn: httpConn{
 			remoteAddr: c.server.UDPAddr(),
 		},
 		paddingMin: c.udpPaddingMin,
 		paddingMax: c.udpPaddingMax,
 	}
-	err := c.roundTrip(ctx, c.newConnectRequest(UDPMagicAddress, udpUserAgent), &conn.httpConn)
+	err := c.roundTrip(ctx, c.newConnectRequest(UDPMagicAddress), &conn.httpConn)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err

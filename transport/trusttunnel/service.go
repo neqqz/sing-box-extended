@@ -143,7 +143,7 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			flusher.Flush()
 		}
 		done := make(chan struct{})
-		conn := &serverPacketConn{
+		conn := &packetConn{
 			httpConn: httpConn{
 				writer:     writer,
 				flusher:    flusher,
@@ -210,22 +210,19 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			},
 		}
 		conn.setup(request.Body, nil)
-		wrapper := &h2ConnWrapper{Conn: conn}
-		s.trackConn(username, wrapper)
+		s.trackConn(username, conn)
 		closeOnCancel(request.Context(), conn, done)
-		if err := s.handler.NewConnection(ctx, wrapper, M.Metadata{
+		if err := s.handler.NewConnection(ctx, conn, M.Metadata{
 			Protocol:    "trusttunnel",
 			Source:      M.ParseSocksaddr(request.RemoteAddr),
 			Destination: M.ParseSocksaddr(request.Host).Unwrap(),
 		}); err != nil {
-			_ = wrapper.Close()
 			_ = conn.Close()
-			s.untrackConn(username, wrapper)
+			s.untrackConn(username, conn)
 			return
 		}
 		<-done
-		s.untrackConn(username, wrapper)
-		wrapper.CloseWrapper()
+		s.untrackConn(username, conn)
 	}
 }
 
@@ -292,42 +289,4 @@ func parseRemoteAddr(addr string) net.Addr {
 	}
 	tcpAddr, _ := net.ResolveTCPAddr("tcp", addr)
 	return tcpAddr
-}
-
-var _ N.WriteCloser = (*h2ConnWrapper)(nil)
-
-type h2ConnWrapper struct {
-	net.Conn
-	access sync.Mutex
-	closed bool
-}
-
-func (w *h2ConnWrapper) Write(p []byte) (n int, err error) {
-	w.access.Lock()
-	defer w.access.Unlock()
-	if w.closed {
-		return 0, net.ErrClosed
-	}
-	return w.Conn.Write(p)
-}
-
-func (w *h2ConnWrapper) NeedAdditionalReadDeadline() bool { return true }
-
-func (w *h2ConnWrapper) Close() error {
-	w.CloseWrapper()
-	return w.Conn.Close()
-}
-
-func (w *h2ConnWrapper) CloseWrite() error {
-	w.CloseWrapper()
-	if cw, ok := w.Conn.(interface{ CloseWrite() error }); ok {
-		return cw.CloseWrite()
-	}
-	return nil
-}
-
-func (w *h2ConnWrapper) CloseWrapper() {
-	w.access.Lock()
-	defer w.access.Unlock()
-	w.closed = true
 }
