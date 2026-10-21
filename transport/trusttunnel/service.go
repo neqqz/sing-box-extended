@@ -44,6 +44,7 @@ type Service struct {
 	conns         map[string]map[io.Closer]struct{}
 	udpPaddingMin int
 	udpPaddingMax int
+	closed        bool
 
 	mu sync.RWMutex
 }
@@ -74,12 +75,13 @@ func (s *Service) UpdateUsers(users map[string]string) {
 	}
 	s.mu.Unlock()
 	for _, conn := range closedConns {
-		conn.Close()
+		_ = conn.Close()
 	}
 }
 
 func (s *Service) Close() error {
 	s.mu.Lock()
+	s.closed = true
 	var closedConns []io.Closer
 	for _, conns := range s.conns {
 		for conn := range conns {
@@ -94,13 +96,17 @@ func (s *Service) Close() error {
 	return nil
 }
 
-func (s *Service) trackConn(username string, conn io.Closer) {
+func (s *Service) trackConn(username string, conn io.Closer) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
 	if s.conns[username] == nil {
 		s.conns[username] = make(map[io.Closer]struct{})
 	}
 	s.conns[username][conn] = struct{}{}
-	s.mu.Unlock()
+	return true
 }
 
 func (s *Service) untrackConn(username string, conn io.Closer) {
@@ -155,7 +161,10 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			paddingMax: s.udpPaddingMax,
 		}
 		conn.setup(request.Body, nil)
-		s.trackConn(username, conn)
+		if !s.trackConn(username, conn) {
+			_ = conn.Close()
+			return
+		}
 		closeOnCancel(request.Context(), conn, done)
 		firstPacket := buf.NewPacket()
 		destination, err := conn.ReadPacket(firstPacket)
@@ -210,7 +219,10 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			},
 		}
 		conn.setup(request.Body, nil)
-		s.trackConn(username, conn)
+		if !s.trackConn(username, conn) {
+			_ = conn.Close()
+			return
+		}
 		closeOnCancel(request.Context(), conn, done)
 		if err := s.handler.NewConnection(ctx, conn, M.Metadata{
 			Protocol:    "trusttunnel",

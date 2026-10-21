@@ -27,7 +27,6 @@
       "username": "user1",
       "password": "password1",
       "network": ["tcp", "udp"],
-      "health_check": true,
       "multiplex": {
         "enabled": true,
         "max_connections": 8,
@@ -48,7 +47,6 @@
       "username": "user1",
       "password": "password1",
       "network": ["tcp", "udp"],
-      "health_check": true,
       "quic": true,
       "congestion_controller": "bbr", // bbr, bbr_standard, bbr2, bbr2_variant, cubic, reno
       "cwnd": 32,

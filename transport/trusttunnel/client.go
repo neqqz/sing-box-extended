@@ -18,7 +18,6 @@ import (
 	"github.com/sagernet/sing-box/common/tls"
 	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
 	"github.com/sagernet/sing/common/bufio"
-	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/common/ntp"
@@ -28,12 +27,6 @@ import (
 	qtls "github.com/sagernet/sing-quic"
 	"golang.org/x/net/http2"
 )
-
-type Dialer interface {
-	Dial(ctx context.Context, host string) (net.Conn, error)
-	ListenPacket(ctx context.Context) (net.PacketConn, error)
-	Close() error
-}
 
 type ClientOptions struct {
 	Dialer                  N.Dialer
@@ -45,7 +38,6 @@ type ClientOptions struct {
 	DisablePathMTUDiscovery bool
 	CongestionControl       string
 	CWND                    int
-	Logger                  logger.Logger
 	MaxConnections          int
 	MinStreams              int
 	MaxStreams              int

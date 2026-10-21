@@ -38,8 +38,8 @@ func (d tcpTimingDialer) DialContext(ctx context.Context, network string, destin
 	if err != nil {
 		return nil, err
 	}
-	if tcpConn, ok := conn.(*net.TCPConn); ok && d.congestionControl != "" {
-		trusttunnel.SetTCPCongestionControl(tcpConn, d.congestionControl)
+	if d.congestionControl != "" {
+		trusttunnel.SetTCPCongestionControl(conn, d.congestionControl)
 	}
 	return obfs.NewJitterConn(conn, d.minMS, d.maxMS, d.packets), nil
 }
@@ -98,7 +98,6 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		DisablePathMTUDiscovery: options.DisablePathMTUDiscovery,
 		CongestionControl:       options.CongestionController,
 		CWND:                    options.CWND,
-		Logger:                  logger,
 		UDPPaddingMin:           udpPaddingMin,
 		UDPPaddingMax:           udpPaddingMax,
 		JitterMinMS:             timingMin,

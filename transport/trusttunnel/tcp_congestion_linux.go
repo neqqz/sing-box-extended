@@ -4,6 +4,7 @@ package trusttunnel
 
 import (
 	"net"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -45,14 +46,14 @@ func linuxCongestionControlName(name string) string {
 // фатальной для соединения: если алгоритм недоступен, просто остаёмся на
 // системном дефолте — как и было до этого фикса, просто без деградации.
 func SetTCPCongestionControl(conn net.Conn, name string) {
-	if name == "" {
+	if name == "" || conn == nil {
 		return
 	}
-	tcpConn, ok := conn.(*net.TCPConn)
+	sc, ok := conn.(syscall.Conn)
 	if !ok {
 		return
 	}
-	rawConn, err := tcpConn.SyscallConn()
+	rawConn, err := sc.SyscallConn()
 	if err != nil {
 		return
 	}
