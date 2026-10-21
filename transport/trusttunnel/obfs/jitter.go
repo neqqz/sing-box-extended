@@ -24,7 +24,7 @@ func NewJitterConn(conn net.Conn, minMS, maxMS, packets int) net.Conn {
 	if minMS > maxMS {
 		minMS, maxMS = maxMS, minMS
 	}
-	if packets <= 0 {
+	if packets == 0 {
 		packets = DefaultJitterPackets
 	}
 	return &jitterConn{
@@ -44,7 +44,7 @@ type jitterConn struct {
 }
 
 func (c *jitterConn) Write(b []byte) (int, error) {
-	if int(c.count.Add(1)) <= c.packets {
+	if c.packets < 0 || int(c.count.Add(1)) <= c.packets {
 		sleepJitter(c.minMS, c.maxMS)
 	}
 	return c.Conn.Write(b)
@@ -70,7 +70,7 @@ func NewJitterPacketConn(conn net.PacketConn, minMS, maxMS, packets int) net.Pac
 	if minMS > maxMS {
 		minMS, maxMS = maxMS, minMS
 	}
-	if packets <= 0 {
+	if packets == 0 {
 		packets = DefaultJitterPackets
 	}
 	return &jitterPacketConn{
@@ -90,7 +90,7 @@ type jitterPacketConn struct {
 }
 
 func (c *jitterPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	if int(c.count.Add(1)) <= c.packets {
+	if c.packets < 0 || int(c.count.Add(1)) <= c.packets {
 		sleepJitter(c.minMS, c.maxMS)
 	}
 	return c.PacketConn.WriteTo(p, addr)
