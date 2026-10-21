@@ -66,4 +66,5 @@ type TrustTunnelOutboundOptions struct {
 	Timing                  *TrustTunnelTimingOptions    `json:"timing,omitempty"`
 	Multiplex               *TrustTunnelMultiplexOptions `json:"multiplex,omitempty"`
 	UDPPadding              *TrustTunnelPaddingOptions   `json:"udp_padding,omitempty"`
+	HealthCheck             bool                         `json:"health_check,omitempty"`
 }

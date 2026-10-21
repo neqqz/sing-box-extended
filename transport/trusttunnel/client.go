@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/tls"
@@ -38,6 +39,7 @@ type ClientOptions struct {
 	DisablePathMTUDiscovery bool
 	CongestionControl       string
 	CWND                    int
+	HealthCheck             bool
 	MaxConnections          int
 	MinStreams              int
 	MaxStreams              int
@@ -49,15 +51,18 @@ type ClientOptions struct {
 }
 
 type Client struct {
-	ctx           context.Context
-	cancel        context.CancelFunc
-	server        M.Socksaddr
-	serverString  string
-	auth          string
-	roundTripper  http.RoundTripper
-	count         atomic.Int64
-	udpPaddingMin int
-	udpPaddingMax int
+	ctx              context.Context
+	cancel           context.CancelFunc
+	server           M.Socksaddr
+	serverString     string
+	auth             string
+	roundTripper     http.RoundTripper
+	startOnce        sync.Once
+	healthCheck      bool
+	healthCheckTimer atomic.Pointer[time.Timer]
+	count            atomic.Int64
+	udpPaddingMin    int
+	udpPaddingMax    int
 }
 
 func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
@@ -68,6 +73,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		server:        options.Server,
 		serverString:  options.Server.String(),
 		auth:          buildAuth(options.Username, options.Password),
+		healthCheck:   options.HealthCheck,
 		udpPaddingMin: options.UDPPaddingMin,
 		udpPaddingMax: options.UDPPaddingMax,
 	}
@@ -128,7 +134,40 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 	return client, nil
 }
 
+func (c *Client) start() {
+	if c.healthCheck {
+		timer := time.NewTimer(DefaultHealthCheckTimeout)
+		c.healthCheckTimer.Store(timer)
+		go c.loopHealthCheck(timer)
+	}
+}
+
+func (c *Client) loopHealthCheck(timer *time.Timer) {
+	for {
+		select {
+		case <-timer.C:
+		case <-c.ctx.Done():
+			timer.Stop()
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.ctx, DefaultHealthCheckTimeout)
+		err := c.HealthCheck(ctx)
+		cancel()
+		if err != nil {
+			_ = c.Close()
+			return
+		}
+	}
+}
+
+func (c *Client) resetHealthCheckTimer() {
+	if timer := c.healthCheckTimer.Load(); timer != nil {
+		timer.Reset(DefaultHealthCheckTimeout)
+	}
+}
+
 func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *httpConn) error {
+	c.startOnce.Do(c.start)
 	pipeReader, pipeWriter := io.Pipe()
 	request.Body = pipeReader
 	remoteAddr := conn.remoteAddr
@@ -155,6 +194,7 @@ func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *htt
 			_ = pipeReader.CloseWithError(err)
 			conn.setup(nil, err)
 		} else {
+			c.resetHealthCheckTimer()
 			conn.setup(response.Body, nil)
 		}
 	}()
@@ -234,6 +274,23 @@ func (c *Client) Close() error {
 	}
 	if t, ok := c.roundTripper.(*http2.Transport); ok {
 		t.CloseIdleConnections()
+	}
+	if timer := c.healthCheckTimer.Swap(nil); timer != nil {
+		timer.Stop()
+	}
+	return nil
+}
+
+func (c *Client) HealthCheck(ctx context.Context) error {
+	defer c.resetHealthCheckTimer()
+	req := c.newConnectRequest(HealthCheckMagicAddress).WithContext(ctx)
+	response, err := c.roundTripper.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", response.StatusCode)
 	}
 	return nil
 }

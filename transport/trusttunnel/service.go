@@ -202,6 +202,12 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		<-done
 		s.untrackConn(username, conn)
 		_ = cachedConn.Close()
+	case HealthCheckMagicAddress:
+		writer.WriteHeader(http.StatusOK)
+		if flusher, isFlusher := writer.(http.Flusher); isFlusher {
+			flusher.Flush()
+		}
+		_ = request.Body.Close()
 	default:
 		writer.WriteHeader(http.StatusOK)
 		flusher, isFlusher := writer.(http.Flusher)

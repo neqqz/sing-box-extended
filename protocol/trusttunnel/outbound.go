@@ -98,6 +98,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		DisablePathMTUDiscovery: options.DisablePathMTUDiscovery,
 		CongestionControl:       options.CongestionController,
 		CWND:                    options.CWND,
+		HealthCheck:             options.HealthCheck,
 		UDPPaddingMin:           udpPaddingMin,
 		UDPPaddingMax:           udpPaddingMax,
 		JitterMinMS:             timingMin,

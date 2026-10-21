@@ -20,9 +20,11 @@ import (
 )
 
 const (
-	UDPMagicAddress        = "_udp2"
-	DefaultSessionTimeout  = 30 * time.Second
-	DefaultKeepAlivePeriod = 10 * time.Second
+	UDPMagicAddress           = "_udp2"
+	HealthCheckMagicAddress   = "_check"
+	DefaultHealthCheckTimeout = 7 * time.Second
+	DefaultSessionTimeout     = 30 * time.Second
+	DefaultKeepAlivePeriod    = 10 * time.Second
 )
 
 func buildAuth(username string, password string) string {
