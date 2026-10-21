@@ -119,7 +119,7 @@ func (u *clientPacketConn) writePacketToServer(buffer *buf.Buffer, source M.Sock
 	if paddingLen > 0 {
 		common.Must1(out.Write(padding))
 	}
-	return u.writeFlush(out.Bytes())
+	return u.writeChunks(out.Bytes())
 }
 
 var (
@@ -231,5 +231,5 @@ func (u *serverPacketConn) writePacketToClient(buffer *buf.Buffer, source M.Sock
 	if paddingLen > 0 {
 		common.Must1(out.Write(padding))
 	}
-	return u.writeFlush(out.Bytes())
+	return u.writeChunks(out.Bytes())
 }

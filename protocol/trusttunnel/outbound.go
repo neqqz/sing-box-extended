@@ -19,6 +19,7 @@ import (
 	"github.com/sagernet/sing-box/transport/trusttunnel"
 	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
 	"github.com/sagernet/sing/common"
+	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
@@ -289,6 +290,9 @@ func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 // протоколов, без ручного пересоздания объекта здесь.
 func (h *Outbound) InterfaceUpdated(ctx context.Context) {
 	h.client.Reset()
+	h.resolveMu.Lock()
+	clear(h.resolveCache)
+	h.resolveMu.Unlock()
 }
 
 func (h *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
@@ -299,13 +303,66 @@ func (h *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	return nil
 }
 
-// resolvingPacketConn резолвит Fqdn-only destination на каждый WriteTo,
+var (
+	_ N.NetPacketConn = (*resolvingPacketConn)(nil)
+	_ N.FrontHeadroom = (*resolvingPacketConn)(nil)
+)
+
+// resolvingPacketConn резолвит Fqdn-only destination на каждый WriteTo/WritePacket,
 // т.к. в этом режиме (используется NAT-стеком tun) destination меняется
 // от вызова к вызову и не зафиксирован один раз при создании соединения.
 type resolvingPacketConn struct {
 	net.PacketConn
 	outbound *Outbound
 	ctx      context.Context
+}
+
+func (c *resolvingPacketConn) FrontHeadroom() int {
+	if fh, ok := c.PacketConn.(N.FrontHeadroom); ok {
+		return fh.FrontHeadroom()
+	}
+	return 0
+}
+
+func (c *resolvingPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
+	if npc, ok := c.PacketConn.(N.NetPacketConn); ok {
+		return npc.ReadPacket(buffer)
+	}
+	destination = M.Socksaddr{}
+	n, addr, err := c.PacketConn.ReadFrom(buffer.FreeBytes())
+	if err != nil {
+		return destination, err
+	}
+	buffer.Truncate(n)
+	return M.SocksaddrFromNet(addr), nil
+}
+
+func (c *resolvingPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
+	if !destination.IsFqdn() {
+		if npc, ok := c.PacketConn.(N.NetPacketConn); ok {
+			return npc.WritePacket(buffer, destination)
+		}
+		defer buffer.Release()
+		_, err := c.PacketConn.WriteTo(buffer.Bytes(), destination.UDPAddr())
+		return err
+	}
+	ctx := c.ctx
+	var cancel context.CancelFunc
+	if ctx == nil || ctx.Err() != nil {
+		ctx, cancel = context.WithTimeout(context.Background(), C.TCPTimeout)
+		defer cancel()
+	}
+	resolved, err := c.outbound.resolveDestination(ctx, destination)
+	if err != nil {
+		buffer.Release()
+		return err
+	}
+	if npc, ok := c.PacketConn.(N.NetPacketConn); ok {
+		return npc.WritePacket(buffer, resolved)
+	}
+	defer buffer.Release()
+	_, err = c.PacketConn.WriteTo(buffer.Bytes(), resolved.UDPAddr())
+	return err
 }
 
 func (c *resolvingPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {

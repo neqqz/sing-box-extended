@@ -11,6 +11,8 @@ import (
 	"net/netip"
 	"sync"
 
+	"github.com/sagernet/quic-go"
+	"github.com/sagernet/quic-go/http3"
 	"github.com/sagernet/sing/common/auth"
 	"github.com/sagernet/sing/common/buf"
 	"github.com/sagernet/sing/common/bufio"
@@ -276,6 +278,10 @@ func (s *Service) badRequest(ctx context.Context, request *http.Request, err err
 func isBenignFirstPacketClose(err error) bool {
 	var streamErr http2.StreamError
 	if errors.As(err, &streamErr) && streamErr.Code == http2.ErrCodeCancel {
+		return true
+	}
+	var quicStreamErr *quic.StreamError
+	if errors.As(err, &quicStreamErr) && (quicStreamErr.ErrorCode == quic.StreamErrorCode(http3.ErrCodeRequestCanceled) || quicStreamErr.ErrorCode == quic.StreamErrorCode(http3.ErrCodeNoError)) {
 		return true
 	}
 	return errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed)

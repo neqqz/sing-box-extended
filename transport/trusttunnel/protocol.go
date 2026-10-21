@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	randv2 "math/rand/v2"
@@ -43,6 +44,12 @@ func parseBasicAuth(auth string) (username, password string, ok bool) {
 }
 
 func parse16BytesIP(b [16]byte) netip.Addr {
+	// Standard IPv4-mapped IPv6: ::ffff:a.b.c.d
+	if b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
+		b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
+		b[8] == 0 && b[9] == 0 && b[10] == 0xff && b[11] == 0xff {
+		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+	}
 	if b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
 		b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
 		b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0 &&
@@ -61,7 +68,10 @@ func buildPaddingIP(addr netip.Addr) (buffer [16]byte) {
 	return buffer
 }
 
-var udpPaddingPool [65536]byte
+var (
+	udpPaddingPool        [65536]byte
+	udpPaddingPoolCounter atomic.Uint32
+)
 
 func init() {
 	_, _ = crand.Read(udpPaddingPool[:])
@@ -88,6 +98,13 @@ func randomUDPPadding(n int) ([]byte, error) {
 		return udpPaddingPool[:], nil
 	}
 	offset := randv2.IntN(len(udpPaddingPool) - n + 1)
+	if udpPaddingPoolCounter.Add(1)&0x3ff == 0 {
+		var fresh [256]byte
+		if _, err := crand.Read(fresh[:]); err == nil {
+			refreshOffset := randv2.IntN(len(udpPaddingPool) - len(fresh) + 1)
+			copy(udpPaddingPool[refreshOffset:], fresh[:])
+		}
+	}
 	return udpPaddingPool[offset : offset+n], nil
 }
 

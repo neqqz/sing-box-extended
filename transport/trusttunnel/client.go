@@ -89,7 +89,7 @@ type Client struct {
 	roundTripper     http.RoundTripper
 	startOnce        sync.Once
 	healthCheck      bool
-	healthCheckTimer *time.Timer
+	healthCheckTimer atomic.Pointer[time.Timer]
 	count            atomic.Int64
 	udpPaddingMin    int
 	udpPaddingMax    int
@@ -190,17 +190,18 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 
 func (c *Client) start() {
 	if c.healthCheck {
-		c.healthCheckTimer = time.NewTimer(obfs.JitterDuration(DefaultHealthCheckTimeout, 0.3))
-		go c.loopHealthCheck()
+		timer := time.NewTimer(obfs.JitterDuration(DefaultHealthCheckTimeout, 0.3))
+		c.healthCheckTimer.Store(timer)
+		go c.loopHealthCheck(timer)
 	}
 }
 
-func (c *Client) loopHealthCheck() {
+func (c *Client) loopHealthCheck(timer *time.Timer) {
 	for {
 		select {
-		case <-c.healthCheckTimer.C:
+		case <-timer.C:
 		case <-c.ctx.Done():
-			c.healthCheckTimer.Stop()
+			timer.Stop()
 			return
 		}
 		ctx, cancel := context.WithTimeout(c.ctx, DefaultHealthCheckTimeout)
@@ -214,10 +215,9 @@ func (c *Client) loopHealthCheck() {
 }
 
 func (c *Client) resetHealthCheckTimer() {
-	if c.healthCheckTimer == nil {
-		return
+	if timer := c.healthCheckTimer.Load(); timer != nil {
+		timer.Reset(obfs.JitterDuration(DefaultHealthCheckTimeout, 0.3))
 	}
-	c.healthCheckTimer.Reset(obfs.JitterDuration(DefaultHealthCheckTimeout, 0.3))
 }
 
 func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *httpConn) error {
@@ -269,6 +269,10 @@ func isFatalTransportError(err error) bool {
 	}
 	var streamErr http2.StreamError
 	if errors.As(err, &streamErr) {
+		return false
+	}
+	var quicStreamErr *quic.StreamError
+	if errors.As(err, &quicStreamErr) {
 		return false
 	}
 	return true
@@ -324,8 +328,8 @@ func (c *Client) Close() error {
 	if t, ok := c.roundTripper.(*http2.Transport); ok {
 		t.CloseIdleConnections()
 	}
-	if c.healthCheckTimer != nil {
-		c.healthCheckTimer.Stop()
+	if timer := c.healthCheckTimer.Swap(nil); timer != nil {
+		timer.Stop()
 	}
 	return nil
 }
@@ -422,14 +426,20 @@ func (c *MultiplexClient) getClient() (*Client, error) {
 		return nil, net.ErrClosed
 	}
 	n := 0
+	var deadClients []*Client
 	for _, t := range c.clients {
 		if t.ctx.Err() == nil {
 			c.clients[n] = t
 			n++
+		} else {
+			deadClients = append(deadClients, t)
 		}
 	}
 	clear(c.clients[n:])
 	c.clients = c.clients[:n]
+	for _, t := range deadClients {
+		_ = t.Close()
+	}
 
 	var transport *Client
 	for _, t := range c.clients {
