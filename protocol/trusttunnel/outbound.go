@@ -210,6 +210,10 @@ type resolvingPacketConn struct {
 	ctx      context.Context
 }
 
+func (c *resolvingPacketConn) Upstream() any {
+	return c.PacketConn
+}
+
 func (c *resolvingPacketConn) FrontHeadroom() int {
 	if fh, ok := c.PacketConn.(N.FrontHeadroom); ok {
 		return fh.FrontHeadroom()

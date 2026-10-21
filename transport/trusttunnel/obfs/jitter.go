@@ -1,10 +1,10 @@
 package obfs
 
 import (
-	"crypto/rand"
-	"math/big"
+	randv2 "math/rand/v2"
 	"net"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	N "github.com/sagernet/sing/common/network"
@@ -52,6 +52,13 @@ func (c *jitterConn) Write(b []byte) (int, error) {
 
 func (c *jitterConn) CloseWrite() error {
 	return N.CloseWrite(c.Conn)
+}
+
+func (c *jitterConn) SyscallConn() (syscall.RawConn, error) {
+	if sc, ok := c.Conn.(syscall.Conn); ok {
+		return sc.SyscallConn()
+	}
+	return nil, syscall.EINVAL
 }
 
 func (c *jitterConn) Upstream() any {
@@ -104,12 +111,7 @@ func sleepJitter(minMS, maxMS int) {
 	span := maxMS - minMS
 	var ms int
 	if span > 0 {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(span+1)))
-		if err == nil {
-			ms = minMS + int(n.Int64())
-		} else {
-			ms = minMS
-		}
+		ms = minMS + randv2.IntN(span+1)
 	} else {
 		ms = minMS
 	}

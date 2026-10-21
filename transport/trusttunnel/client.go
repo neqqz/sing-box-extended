@@ -93,11 +93,11 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 					return nil, err
 				}
 				var conn *quic.Conn
+				pktConn := obfs.NewJitterPacketConn(bufio.NewUnbindPacketConn(udpConn), options.JitterMinMS, options.JitterMaxMS, options.JitterPackets)
 				if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
-					pktConn := obfs.NewJitterPacketConn(bufio.NewUnbindPacketConn(udpConn), options.JitterMinMS, options.JitterMaxMS, options.JitterPackets)
 					conn, err = qd.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), cfg)
 				} else {
-					conn, err = qtls.DialEarly(ctx, udpConn, options.TLSConfig, cfg)
+					conn, err = qtls.DialEarly(ctx, pktConn, options.TLSConfig, cfg)
 				}
 				if err != nil {
 					_ = udpConn.Close()

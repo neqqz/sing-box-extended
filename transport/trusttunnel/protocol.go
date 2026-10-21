@@ -90,12 +90,12 @@ func randomUDPPaddingLength(min, max int) int {
 }
 
 // randomUDPPadding возвращает n байт случайного паддинга без аллокаций в куче.
-func randomUDPPadding(n int) ([]byte, error) {
+func randomUDPPadding(n int) []byte {
 	if n <= 0 {
-		return nil, nil
+		return nil
 	}
 	if n >= len(udpPaddingPool) {
-		return udpPaddingPool[:], nil
+		return udpPaddingPool[:]
 	}
 	offset := randv2.IntN(len(udpPaddingPool) - n + 1)
 	if udpPaddingPoolCounter.Add(1)&0x3ff == 0 {
@@ -105,7 +105,7 @@ func randomUDPPadding(n int) ([]byte, error) {
 			copy(udpPaddingPool[refreshOffset:], fresh[:])
 		}
 	}
-	return udpPaddingPool[offset : offset+n], nil
+	return udpPaddingPool[offset : offset+n]
 }
 
 type httpConn struct {
