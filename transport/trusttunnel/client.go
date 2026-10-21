@@ -32,9 +32,7 @@ import (
 )
 
 var (
-	appName      = "sing-box"
-	appVersion   = C.Version
-	tcpUserAgent = runtime.GOOS + " " + appName + "/" + appVersion
+	tcpUserAgent = runtime.GOOS + " sing-box/" + C.Version
 	udpUserAgent = runtime.GOOS + " " + UDPMagicAddress
 )
 

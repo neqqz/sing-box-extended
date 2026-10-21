@@ -5,8 +5,6 @@ package trusttunnel
 import (
 	"context"
 	"net"
-	"sync"
-	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
@@ -25,12 +23,6 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/service"
-)
-
-// resolveCacheTTL — сколько держим резолв домена без повторного запроса к DNS.
-const (
-	resolveCacheTTL = 30 * time.Second
-	resolveCacheMax = 4096
 )
 
 type tcpTimingDialer struct {
@@ -61,18 +53,11 @@ var (
 	_ adapter.InterfaceUpdateListener = (*Outbound)(nil)
 )
 
-type resolveCacheEntry struct {
-	addr    M.Socksaddr
-	expires time.Time
-}
-
 type Outbound struct {
 	outbound.Adapter
-	logger       logger.ContextLogger
-	dnsRouter    adapter.DNSRouter
-	client       *trusttunnel.MultiplexClient
-	resolveMu    sync.Mutex
-	resolveCache map[string]resolveCacheEntry
+	logger    logger.ContextLogger
+	dnsRouter adapter.DNSRouter
+	client    *trusttunnel.MultiplexClient
 }
 
 func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.TrustTunnelOutboundOptions) (adapter.Outbound, error) {
@@ -145,33 +130,18 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		return nil, err
 	}
 	return &Outbound{
-		Adapter:      outbound.NewAdapterWithDialerOptions(C.TypeTrustTunnel, tag, networkList, options.DialerOptions),
-		logger:       logger,
-		dnsRouter:    service.FromContext[adapter.DNSRouter](ctx),
-		client:       client,
-		resolveCache: make(map[string]resolveCacheEntry),
+		Adapter:   outbound.NewAdapterWithDialerOptions(C.TypeTrustTunnel, tag, networkList, options.DialerOptions),
+		logger:    logger,
+		dnsRouter: service.FromContext[adapter.DNSRouter](ctx),
+		client:    client,
 	}, nil
 }
 
-// resolveDestination резолвит destination.Fqdn в IP через роутер, если Addr
-// ещё не выставлен. Протокол TrustTunnel для UDP адресует только по IP
-// (16-байтовое поле в заголовке, без домена) — в отличие от TCP, где домен
-// уходит как Host в CONNECT и резолвится сервером. Без этого шага пакеты с
-// доменом без резолва (например, после QUIC-сниффинга на голом UDP-потоке
-// tun, до похода в DNS) падали с "only support IP". Результат кэшируется на
-// resolveCacheTTL, см. комментарий там.
+// resolveDestination резолвит destination.Fqdn в IP через роутер, если Addr ещё не выставлен.
 func (h *Outbound) resolveDestination(ctx context.Context, destination M.Socksaddr) (M.Socksaddr, error) {
 	if destination.Addr.IsValid() || !destination.IsFqdn() {
 		return destination, nil
 	}
-	now := time.Now()
-	h.resolveMu.Lock()
-	if entry, ok := h.resolveCache[destination.Fqdn]; ok && now.Before(entry.expires) {
-		h.resolveMu.Unlock()
-		return M.Socksaddr{Addr: entry.addr.Addr, Port: destination.Port}, nil
-	}
-	h.resolveMu.Unlock()
-
 	if h.dnsRouter == nil {
 		return M.Socksaddr{}, E.New("dns router not available to resolve ", destination.Fqdn)
 	}
@@ -182,24 +152,7 @@ func (h *Outbound) resolveDestination(ctx context.Context, destination M.Socksad
 	if len(addresses) == 0 {
 		return M.Socksaddr{}, E.New("no address resolved for ", destination.Fqdn)
 	}
-	resolved := M.Socksaddr{Addr: addresses[0], Port: destination.Port}
-
-	h.resolveMu.Lock()
-	if len(h.resolveCache) >= resolveCacheMax {
-		// shortcut: full sweep of expired entries on overflow, fine at this size; use an LRU if the bound is raised a lot.
-		for k, e := range h.resolveCache {
-			if !now.Before(e.expires) {
-				delete(h.resolveCache, k)
-			}
-		}
-		if len(h.resolveCache) >= resolveCacheMax {
-			clear(h.resolveCache)
-		}
-	}
-	h.resolveCache[destination.Fqdn] = resolveCacheEntry{addr: resolved, expires: now.Add(resolveCacheTTL)}
-	h.resolveMu.Unlock()
-
-	return resolved, nil
+	return M.Socksaddr{Addr: addresses[0], Port: destination.Port}, nil
 }
 
 func (h *Outbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
@@ -232,19 +185,8 @@ func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 	return &resolvingPacketConn{PacketConn: conn, outbound: h, ctx: ctx}, nil
 }
 
-// InterfaceUpdated вызывается роутером при смене дефолтного сетевого
-// интерфейса (Wi-Fi↔мобильная сеть, смена вышки с новым внешним IP и т.п.),
-// как и в hysteria2/hysteria/tuic/ssh outbound. Старое HTTP/2- или
-// QUIC-соединение после такой смены на мобильных сетях почти всегда мертво
-// (carrier NAT молча дропает маппинг, без RST/FIN), а h2/h3 сами узнают об
-// этом не сразу. MultiplexClient.Close() обнуляет пул, следующий
-// Dial()/ListenPacket() сам поднимет свежий транспорт — как и у остальных
-// протоколов, без ручного пересоздания объекта здесь.
 func (h *Outbound) InterfaceUpdated(ctx context.Context) {
 	h.client.Reset()
-	h.resolveMu.Lock()
-	clear(h.resolveCache)
-	h.resolveMu.Unlock()
 }
 
 func (h *Outbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
