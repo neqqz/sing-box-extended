@@ -398,7 +398,11 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		if err != nil {
 			return err
 		}
-		go func() { _ = h.http3Server.ServeListener(quicListener) }()
+		scope.Add(quicListener.Close)
+		go func() {
+			_ = h.http3Server.ServeListener(quicListener)
+			_ = udpConn.Close()
+		}()
 	}
 
 	return nil

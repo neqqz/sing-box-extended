@@ -295,6 +295,8 @@ func parseRemoteAddr(addr string) net.Addr {
 	return tcpAddr
 }
 
+var _ N.WriteCloser = (*h2ConnWrapper)(nil)
+
 type h2ConnWrapper struct {
 	net.Conn
 	access sync.Mutex
@@ -315,6 +317,14 @@ func (w *h2ConnWrapper) NeedAdditionalReadDeadline() bool { return true }
 func (w *h2ConnWrapper) Close() error {
 	w.CloseWrapper()
 	return w.Conn.Close()
+}
+
+func (w *h2ConnWrapper) CloseWrite() error {
+	w.CloseWrapper()
+	if cw, ok := w.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }
 
 func (w *h2ConnWrapper) CloseWrapper() {

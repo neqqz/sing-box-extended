@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	N "github.com/sagernet/sing/common/network"
 	randv2 "math/rand/v2"
 )
 
@@ -225,7 +226,10 @@ func (h *httpConn) SetWriteDeadline(time.Time) error { return os.ErrInvalid }
 
 func (h *httpConn) NeedAdditionalReadDeadline() bool { return true }
 
-var _ net.Conn = (*tcpConn)(nil)
+var (
+	_ net.Conn      = (*tcpConn)(nil)
+	_ N.WriteCloser = (*tcpConn)(nil)
+)
 
 type tcpConn struct{ httpConn }
 
@@ -238,6 +242,18 @@ func (t *tcpConn) Read(b []byte) (n int, err error) {
 
 func (t *tcpConn) Write(b []byte) (int, error) {
 	return t.writeFlush(b)
+}
+
+func (t *tcpConn) CloseWrite() error {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	if t.closed {
+		return net.ErrClosed
+	}
+	if closer, ok := t.writer.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // Wire limits: the UDP padding length is a uint16 in the frame header, the

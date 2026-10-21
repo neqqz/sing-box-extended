@@ -61,6 +61,17 @@ func (c *jitterConn) Write(b []byte) (int, error) {
 	return c.Conn.Write(b)
 }
 
+func (c *jitterConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
+
+func (c *jitterConn) Upstream() any {
+	return c.Conn
+}
+
 // jitterPacketConn — то же самое, что jitterConn, но для net.PacketConn
 // (QUIC-путь ходит через WriteTo на UDP-сокете, а не через Write на
 // потоковом TCP-соединении). ВАЖНО: в отличие от TCP, где ядро само решает

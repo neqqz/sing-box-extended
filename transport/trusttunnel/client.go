@@ -224,7 +224,9 @@ func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *htt
 	c.startOnce.Do(c.start)
 	pipeReader, pipeWriter := io.Pipe()
 	request.Body = pipeReader
-	*conn = httpConn{writer: pipeWriter, created: make(chan struct{})}
+	remoteAddr := conn.remoteAddr
+	localAddr := conn.localAddr
+	*conn = httpConn{writer: pipeWriter, created: make(chan struct{}), remoteAddr: remoteAddr, localAddr: localAddr}
 	c.count.Add(1)
 	conn.closeFn = sync.OnceFunc(func() { c.count.Add(-1) })
 	requestCtx, cancel := context.WithCancel(c.ctx)
@@ -291,7 +293,11 @@ func (c *Client) newConnectRequest(host, userAgent string) *http.Request {
 }
 
 func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
-	conn := &tcpConn{}
+	conn := &tcpConn{
+		httpConn: httpConn{
+			remoteAddr: parseRemoteAddr(host),
+		},
+	}
 	err := c.roundTrip(ctx, c.newConnectRequest(host, tcpUserAgent), &conn.httpConn)
 	if err != nil {
 		_ = conn.Close()
@@ -301,7 +307,13 @@ func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
-	conn := &clientPacketConn{paddingMin: c.udpPaddingMin, paddingMax: c.udpPaddingMax}
+	conn := &clientPacketConn{
+		httpConn: httpConn{
+			remoteAddr: c.server.UDPAddr(),
+		},
+		paddingMin: c.udpPaddingMin,
+		paddingMax: c.udpPaddingMax,
+	}
 	err := c.roundTrip(ctx, c.newConnectRequest(UDPMagicAddress, udpUserAgent), &conn.httpConn)
 	if err != nil {
 		_ = conn.Close()

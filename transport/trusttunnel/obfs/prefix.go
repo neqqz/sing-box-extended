@@ -603,3 +603,14 @@ func (c *peekedConn) Read(b []byte) (int, error) {
 	}
 	return c.Conn.Read(b)
 }
+
+func (c *peekedConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
+
+func (c *peekedConn) Upstream() any {
+	return c.Conn
+}
