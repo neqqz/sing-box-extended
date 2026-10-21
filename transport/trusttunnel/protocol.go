@@ -153,14 +153,17 @@ func (h *httpConn) Close() error {
 	if h.cancelFn != nil {
 		h.cancelFn()
 	}
+	var body io.ReadCloser
 	h.mtx.Lock()
 	h.closed = true
+	body = h.body
+	h.body = nil
 	h.mtx.Unlock()
 	if closer, ok := h.writer.(io.Closer); ok {
 		_ = closer.Close()
 	}
-	if h.body != nil {
-		_ = h.body.Close()
+	if body != nil {
+		_ = body.Close()
 	}
 	if h.closeFn != nil {
 		h.closeFn()

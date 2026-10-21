@@ -43,7 +43,12 @@ func (u *clientPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) 
 	if err != nil {
 		return 0, nil, err
 	}
-	return buffer.Len(), destination.UDPAddr(), nil
+	if destination.Addr.IsValid() {
+		addr = destination.UDPAddr()
+	} else {
+		addr = destination
+	}
+	return buffer.Len(), addr, nil
 }
 
 func (u *clientPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
@@ -151,7 +156,12 @@ func (u *serverPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) 
 	if err != nil {
 		return 0, nil, err
 	}
-	return buffer.Len(), destination.UDPAddr(), nil
+	if destination.Addr.IsValid() {
+		addr = destination.UDPAddr()
+	} else {
+		addr = destination
+	}
+	return buffer.Len(), addr, nil
 }
 
 func (u *serverPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {

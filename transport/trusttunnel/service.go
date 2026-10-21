@@ -186,6 +186,9 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			Destination: destination,
 		}); err != nil {
 			_ = cachedConn.Close()
+			_ = conn.Close()
+			s.untrackConn(username, conn)
+			return
 		}
 		<-done
 		s.untrackConn(username, conn)
@@ -223,6 +226,9 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			Destination: M.ParseSocksaddr(request.Host).Unwrap(),
 		}); err != nil {
 			_ = wrapper.Close()
+			_ = conn.Close()
+			s.untrackConn(username, wrapper)
+			return
 		}
 		<-done
 		s.untrackConn(username, wrapper)
