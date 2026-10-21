@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 
+	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
@@ -111,7 +112,14 @@ func (u *clientPacketConn) writePacketToServer(buffer *buf.Buffer, source M.Sock
 	if err != nil {
 		return err
 	}
-	return u.write3Chunks(hdr, buffer.Bytes(), padding)
+	out := buf.NewSize(len(hdr) + payloadLen + paddingLen)
+	defer out.Release()
+	common.Must1(out.Write(hdr))
+	common.Must1(out.Write(buffer.Bytes()))
+	if paddingLen > 0 {
+		common.Must1(out.Write(padding))
+	}
+	return u.writeFlush(out.Bytes())
 }
 
 var (
@@ -216,5 +224,12 @@ func (u *serverPacketConn) writePacketToClient(buffer *buf.Buffer, source M.Sock
 	if err != nil {
 		return err
 	}
-	return u.write3Chunks(header[:], buffer.Bytes(), padding)
+	out := buf.NewSize(len(header) + payloadLen + paddingLen)
+	defer out.Release()
+	common.Must1(out.Write(header[:]))
+	common.Must1(out.Write(buffer.Bytes()))
+	if paddingLen > 0 {
+		common.Must1(out.Write(padding))
+	}
+	return u.writeFlush(out.Bytes())
 }

@@ -10,7 +10,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptrace"
 	"net/url"
 	"runtime"
 	"sync"
@@ -21,7 +20,6 @@ import (
 	"github.com/sagernet/sing-box/common/tls"
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
-	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -231,32 +229,19 @@ func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *htt
 	conn.closeFn = sync.OnceFunc(func() { c.count.Add(-1) })
 	requestCtx, cancel := context.WithCancel(c.ctx)
 	conn.cancelFn = cancel
-	gotConn := make(chan bool, 1)
-	streamCtx := httptrace.WithClientTrace(requestCtx, &httptrace.ClientTrace{
-		GotConn: func(info httptrace.GotConnInfo) {
-			select {
-			case gotConn <- true:
-			default:
-			}
-		},
-	})
-	var requestErr common.TypedValue[error]
 	go func() {
-		request = request.WithContext(streamCtx)
+		request = request.WithContext(requestCtx)
 		response, err := c.roundTripper.RoundTrip(request)
 		if err != nil {
-			requestErr.Store(err)
-			close(gotConn)
 			_ = pipeWriter.CloseWithError(err)
 			_ = pipeReader.CloseWithError(err)
 			conn.setup(nil, err)
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			if isFatalTransportError(err) {
 				c.cancel()
 			}
 		} else if response.StatusCode != http.StatusOK {
 			_ = response.Body.Close()
 			err = fmt.Errorf("unexpected status code: %d", response.StatusCode)
-			requestErr.Store(err)
 			_ = pipeWriter.CloseWithError(err)
 			_ = pipeReader.CloseWithError(err)
 			conn.setup(nil, err)
@@ -267,10 +252,26 @@ func (c *Client) roundTrip(ctx context.Context, request *http.Request, conn *htt
 	}()
 	select {
 	case <-ctx.Done():
+		_ = conn.Close()
 		return ctx.Err()
-	case <-gotConn:
-		return requestErr.Load()
+	case <-conn.created:
+		if conn.createErr != nil {
+			_ = conn.Close()
+			return conn.createErr
+		}
+		return nil
 	}
+}
+
+func isFatalTransportError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var streamErr http2.StreamError
+	if errors.As(err, &streamErr) {
+		return false
+	}
+	return true
 }
 
 func (c *Client) newConnectRequest(host, userAgent string) *http.Request {

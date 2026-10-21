@@ -163,34 +163,6 @@ func (h *httpConn) writeFlush(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// write3Chunks writes three chunks without variadic slice allocation overhead.
-func (h *httpConn) write3Chunks(c1, c2, c3 []byte) error {
-	h.mtx.Lock()
-	defer h.mtx.Unlock()
-	if h.closed {
-		return net.ErrClosed
-	}
-	if len(c1) > 0 {
-		if _, err := h.writer.Write(c1); err != nil {
-			return err
-		}
-	}
-	if len(c2) > 0 {
-		if _, err := h.writer.Write(c2); err != nil {
-			return err
-		}
-	}
-	if len(c3) > 0 {
-		if _, err := h.writer.Write(c3); err != nil {
-			return err
-		}
-	}
-	if h.flusher != nil {
-		h.flusher.Flush()
-	}
-	return nil
-}
-
 // writeChunks writes chunks to the underlying writer under h.mtx, so it
 // can't race with Close() setting h.closed / closing the writer, and
 // flushes once at the end. Use this (rather than writing to h.writer
