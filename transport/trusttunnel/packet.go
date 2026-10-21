@@ -66,8 +66,16 @@ func (u *packetConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 }
 
 func (u *packetConn) readPacket(buffer *buf.Buffer) (address M.Socksaddr, err error) {
+	u.mtx.Lock()
+	if u.closed || u.body == nil {
+		u.mtx.Unlock()
+		return address, net.ErrClosed
+	}
+	body := u.body
+	u.mtx.Unlock()
+
 	var header [udpHeaderLen]byte
-	_, err = io.ReadFull(u.body, header[:])
+	_, err = io.ReadFull(body, header[:])
 	if err != nil {
 		return
 	}
@@ -78,12 +86,12 @@ func (u *packetConn) readPacket(buffer *buf.Buffer) (address M.Socksaddr, err er
 	address.Addr = parse16BytesIP(ip)
 	address.Port = binary.BigEndian.Uint16(header[20:22])
 
-	_, err = buffer.ReadFullFrom(u.body, payloadLen)
+	_, err = buffer.ReadFullFrom(body, payloadLen)
 	if err != nil {
 		return
 	}
 	if paddingLen > 0 {
-		err = rw.SkipN(u.body, paddingLen)
+		err = rw.SkipN(body, paddingLen)
 	}
 	return
 }

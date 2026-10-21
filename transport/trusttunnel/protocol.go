@@ -140,10 +140,19 @@ func (h *httpConn) setup(body io.ReadCloser, err error) {
 
 func (h *httpConn) waitCreated() error {
 	<-h.created
-	if h.body != nil {
-		return nil
+	h.mtx.Lock()
+	closed := h.closed
+	h.mtx.Unlock()
+	if closed {
+		return net.ErrClosed
 	}
-	return h.createErr
+	if h.createErr != nil {
+		return h.createErr
+	}
+	if h.body == nil {
+		return net.ErrClosed
+	}
+	return nil
 }
 
 func (h *httpConn) Close() error {
@@ -156,9 +165,12 @@ func (h *httpConn) Close() error {
 	}
 	var body io.ReadCloser
 	h.mtx.Lock()
+	if h.closed {
+		h.mtx.Unlock()
+		return nil
+	}
 	h.closed = true
 	body = h.body
-	h.body = nil
 	h.mtx.Unlock()
 	if closer, ok := h.writer.(io.Closer); ok {
 		_ = closer.Close()
@@ -241,7 +253,14 @@ func (t *tcpConn) Read(b []byte) (n int, err error) {
 	if err = t.waitCreated(); err != nil {
 		return 0, err
 	}
-	return t.body.Read(b)
+	t.mtx.Lock()
+	if t.closed || t.body == nil {
+		t.mtx.Unlock()
+		return 0, net.ErrClosed
+	}
+	body := t.body
+	t.mtx.Unlock()
+	return body.Read(b)
 }
 
 func (t *tcpConn) Write(b []byte) (int, error) {

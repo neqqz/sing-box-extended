@@ -38,10 +38,15 @@ func (d tcpTimingDialer) DialContext(ctx context.Context, network string, destin
 	if err != nil {
 		return nil, err
 	}
-	if d.congestionControl != "" {
-		trusttunnel.SetTCPCongestionControl(conn, d.congestionControl)
+	if N.NetworkName(network) == N.NetworkTCP {
+		if d.congestionControl != "" {
+			trusttunnel.SetTCPCongestionControl(conn, d.congestionControl)
+		}
+		if d.maxMS > 0 {
+			return obfs.NewJitterConn(conn, d.minMS, d.maxMS, d.packets), nil
+		}
 	}
-	return obfs.NewJitterConn(conn, d.minMS, d.maxMS, d.packets), nil
+	return conn, nil
 }
 
 func RegisterOutbound(registry *outbound.Registry) {
