@@ -244,7 +244,8 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 			return err
 		}
 		h.http3Server = &http3.Server{
-			Handler: h3Handler,
+			Handler:         h3Handler,
+			EnableDatagrams: true,
 			ConnContext: func(ctx context.Context, conn *quic.Conn) context.Context {
 				conn.SetCongestionControl(congestionControlFactory(conn))
 				return ctx
@@ -256,6 +257,7 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 			MaxIncomingStreams:      4096,
 			Allow0RTT:               true,
 			DisablePathMTUDiscovery: h.options.DisablePathMTUDiscovery,
+			EnableDatagrams:         true,
 		}
 		if h.randomReloader != nil {
 			reloader := h.randomReloader

@@ -2,6 +2,7 @@ package trusttunnel
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/sagernet/quic-go"
@@ -42,6 +45,7 @@ type Service struct {
 	users         map[string]string
 	handler       Handler
 	conns         map[string]map[io.Closer]struct{}
+	replayCache   *authReplayCache
 	udpPaddingMin int
 	udpPaddingMax int
 	closed        bool
@@ -55,6 +59,7 @@ func NewService(options ServiceOptions) *Service {
 		logger:        options.Logger,
 		handler:       options.Handler,
 		conns:         make(map[string]map[io.Closer]struct{}),
+		replayCache:   newAuthReplayCache(),
 		udpPaddingMin: options.UDPPaddingMin,
 		udpPaddingMax: options.UDPPaddingMax,
 	}
@@ -120,7 +125,10 @@ func (s *Service) untrackConn(username string, conn io.Closer) {
 
 func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	authorization := request.Header.Get("Proxy-Authorization")
-	username, loaded := s.verify(authorization)
+	if authorization == "" {
+		authorization = request.Header.Get("Authorization")
+	}
+	username, loaded := s.verify(authorization, request.Host)
 	if !loaded {
 		// 407 прямым текстом палит, что порт держит прокси/CONNECT-сервер —
 		// любой сканер или DPI, стукнувшийся без валидных креды, сразу видит
@@ -148,6 +156,52 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		if isFlusher {
 			flusher.Flush()
 		}
+		if streamer, ok := writer.(http3.HTTPStreamer); ok {
+			str := streamer.HTTPStream()
+			reqCtx, cancel := context.WithCancel(request.Context())
+			conn := &quicPacketConn{
+				stream:     str,
+				ctx:        reqCtx,
+				cancel:     cancel,
+				remoteAddr: parseRemoteAddr(request.RemoteAddr),
+				paddingMin: s.udpPaddingMin,
+				paddingMax: s.udpPaddingMax,
+			}
+			if !s.trackConn(username, conn) {
+				_ = conn.Close()
+				return
+			}
+			firstPacket := buf.NewPacket()
+			destination, err := conn.ReadPacket(firstPacket)
+			if err != nil {
+				firstPacket.Release()
+				s.untrackConn(username, conn)
+				_ = conn.Close()
+				if isBenignFirstPacketClose(err) {
+					s.logger.DebugContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
+				} else {
+					s.logger.ErrorContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
+				}
+				return
+			}
+			destination = destination.Unwrap()
+			cachedConn := bufio.NewCachedPacketConn(conn, firstPacket, destination)
+			if err = s.handler.NewPacketConnection(ctx, cachedConn, M.Metadata{
+				Protocol:    "trusttunnel",
+				Source:      M.ParseSocksaddr(request.RemoteAddr),
+				Destination: destination,
+			}); err != nil {
+				_ = cachedConn.Close()
+				_ = conn.Close()
+				s.untrackConn(username, conn)
+				return
+			}
+			<-reqCtx.Done()
+			s.untrackConn(username, conn)
+			_ = cachedConn.Close()
+			return
+		}
+
 		done := make(chan struct{})
 		conn := &packetConn{
 			httpConn: httpConn{
@@ -248,7 +302,44 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 // не найден: время ответа не должно зависеть от того, существует ли имя.
 const dummyPassword = "trusttunnel-dummy-password"
 
-func (s *Service) verify(authorization string) (username string, loaded bool) {
+func (s *Service) verify(authorization, target string) (username string, loaded bool) {
+	if strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
+		ver, user, ts, nonce, gotSig, ok := parseTokenAuth(authorization)
+		if !ok || ver != TokenVersion {
+			return "", false
+		}
+		now := time.Now().Unix()
+		if ts < now-AuthMaxSkewSec || ts > now+AuthMaxSkewSec {
+			return "", false
+		}
+		s.mu.RLock()
+		recordedPassword, known := s.users[user]
+		s.mu.RUnlock()
+		if !known {
+			recordedPassword = dummyPassword
+		}
+		mac := hmac.New(sha256.New, []byte(recordedPassword))
+		mac.Write([]byte(TokenVersion))
+		mac.Write([]byte{':'})
+		mac.Write([]byte(user))
+		mac.Write([]byte{':'})
+		mac.Write([]byte(strconv.FormatInt(ts, 10)))
+		mac.Write([]byte{':'})
+		mac.Write([]byte(nonce))
+		mac.Write([]byte{':'})
+		mac.Write([]byte(target))
+		wantSig := mac.Sum(nil)
+
+		match := subtle.ConstantTimeCompare(gotSig, wantSig) == 1
+		if !known || !match {
+			return "", false
+		}
+		if !s.replayCache.checkAndAdd(nonce, now, AuthMaxSkewSec*2) {
+			return "", false
+		}
+		return user, true
+	}
+
 	username, password, parsed := parseBasicAuth(authorization)
 	s.mu.RLock()
 	recordedPassword, known := s.users[username]

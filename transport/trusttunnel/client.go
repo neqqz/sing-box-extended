@@ -55,14 +55,83 @@ type Client struct {
 	cancel           context.CancelFunc
 	server           M.Socksaddr
 	serverString     string
-	auth             string
+	username         string
+	password         string
 	roundTripper     http.RoundTripper
+	quicDialer       func(ctx context.Context) (*quic.Conn, io.Closer, error)
+	quicConn         *quic.Conn
+	quicCloser       io.Closer
+	h3ClientConn     *http3.ClientConn
+	h3Transport      *http3.Transport
+	quicMtx          sync.Mutex
+	isQUIC           bool
 	startOnce        sync.Once
 	healthCheck      bool
 	healthCheckTimer atomic.Pointer[time.Timer]
 	count            atomic.Int64
 	udpPaddingMin    int
 	udpPaddingMax    int
+}
+
+type quicRoundTripper struct {
+	client *Client
+}
+
+func (q *quicRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	h3, err := q.client.getQUICClientConn(req.Context())
+	if err != nil {
+		return nil, err
+	}
+	return h3.RoundTrip(req)
+}
+
+func (c *Client) getQUICClientConn(ctx context.Context) (*http3.ClientConn, error) {
+	c.quicMtx.Lock()
+	defer c.quicMtx.Unlock()
+	if c.ctx.Err() != nil {
+		return nil, c.ctx.Err()
+	}
+	if c.h3ClientConn != nil && c.quicConn != nil && c.quicConn.Context().Err() == nil {
+		return c.h3ClientConn, nil
+	}
+	if c.h3ClientConn != nil {
+		_ = c.h3ClientConn.Close()
+		c.h3ClientConn = nil
+	}
+	if c.quicConn != nil {
+		_ = c.quicConn.CloseWithError(0, "")
+		c.quicConn = nil
+	}
+	if c.quicCloser != nil {
+		_ = c.quicCloser.Close()
+		c.quicCloser = nil
+	}
+
+	conn, closer, err := c.quicDialer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	h3Conn := c.h3Transport.NewClientConn(conn)
+	c.quicConn = conn
+	c.quicCloser = closer
+	c.h3ClientConn = h3Conn
+
+	go func() {
+		<-conn.Context().Done()
+		c.quicMtx.Lock()
+		if c.quicConn == conn {
+			_ = closer.Close()
+			c.h3ClientConn = nil
+			c.quicConn = nil
+			c.quicCloser = nil
+		}
+		c.quicMtx.Unlock()
+		if isFatalTransportError(conn.Context().Err()) {
+			c.cancel()
+		}
+	}()
+
+	return h3Conn, nil
 }
 
 func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
@@ -72,10 +141,12 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		cancel:        cancel,
 		server:        options.Server,
 		serverString:  options.Server.String(),
-		auth:          buildAuth(options.Username, options.Password),
+		username:      options.Username,
+		password:      options.Password,
 		healthCheck:   options.HealthCheck,
 		udpPaddingMin: options.UDPPaddingMin,
 		udpPaddingMax: options.UDPPaddingMax,
+		isQUIC:        options.QUIC,
 	}
 	if options.QUIC {
 		congestionControlFactory, err := congestion.NewCongestionControl(options.CongestionControl, options.CWND, ntp.TimeFuncFromContext(ctx))
@@ -90,36 +161,33 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			MaxIdleTimeout:          DefaultSessionTimeout * 2,
 			KeepAlivePeriod:         DefaultKeepAlivePeriod,
 			DisablePathMTUDiscovery: options.DisablePathMTUDiscovery,
+			EnableDatagrams:         true,
 		}
-		client.roundTripper = &http3.Transport{
-			QUICConfig: quicConfig,
-			Dial: func(ctx context.Context, addr string, tlsCfg *stdtls.Config, cfg *quic.Config) (*quic.Conn, error) {
-				udpConn, err := options.Dialer.DialContext(ctx, N.NetworkUDP, client.server)
-				if err != nil {
-					return nil, err
-				}
-				var conn *quic.Conn
-				if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
-					pktConn := obfs.NewJitterPacketConn(bufio.NewUnbindPacketConn(udpConn), options.JitterMinMS, options.JitterMaxMS, options.JitterPackets)
-					conn, err = qd.DialEarly(ctx, pktConn, udpConn.RemoteAddr(), cfg)
-				} else {
-					jConn := obfs.NewJitterConn(udpConn, options.JitterMinMS, options.JitterMaxMS, options.JitterPackets)
-					conn, err = qtls.DialEarly(ctx, jConn, options.TLSConfig, cfg)
-				}
-				if err != nil {
-					_ = udpConn.Close()
-					return nil, err
-				}
-				conn.SetCongestionControl(congestionControlFactory(conn))
-				// quic.Dial* never closes a PacketConn it did not create, so the socket
-				// would leak for every connection that ends (idle, network change).
-				go func() {
-					<-conn.Context().Done()
-					_ = udpConn.Close()
-				}()
-				return conn, nil
-			},
+		client.quicDialer = func(dialCtx context.Context) (*quic.Conn, io.Closer, error) {
+			udpConn, err := options.Dialer.DialContext(dialCtx, N.NetworkUDP, client.server)
+			if err != nil {
+				return nil, nil, err
+			}
+			var conn *quic.Conn
+			if qd, ok := options.TLSConfig.(tls.QUICDialer); ok {
+				pktConn := obfs.NewJitterPacketConn(bufio.NewUnbindPacketConn(udpConn), options.JitterMinMS, options.JitterMaxMS, options.JitterPackets)
+				conn, err = qd.DialEarly(dialCtx, pktConn, udpConn.RemoteAddr(), quicConfig)
+			} else {
+				jConn := obfs.NewJitterConn(udpConn, options.JitterMinMS, options.JitterMaxMS, options.JitterPackets)
+				conn, err = qtls.DialEarly(dialCtx, jConn, options.TLSConfig, quicConfig)
+			}
+			if err != nil {
+				_ = udpConn.Close()
+				return nil, nil, err
+			}
+			conn.SetCongestionControl(congestionControlFactory(conn))
+			return conn, udpConn, nil
 		}
+		client.h3Transport = &http3.Transport{
+			EnableDatagrams: true,
+			QUICConfig:      quicConfig,
+		}
+		client.roundTripper = &quicRoundTripper{client: client}
 	} else {
 		if len(options.TLSConfig.NextProtos()) == 0 {
 			options.TLSConfig.SetNextProtos([]string{http2.NextProtoTLS})
@@ -232,7 +300,7 @@ func (c *Client) newConnectRequest(host string) *http.Request {
 		Method: http.MethodConnect,
 		URL:    &url.URL{Scheme: "https", Host: c.serverString},
 		Header: http.Header{
-			"Proxy-Authorization": {c.auth},
+			"Proxy-Authorization": {buildTokenAuth(c.username, c.password, host)},
 		},
 		Host: host,
 	}
@@ -253,6 +321,45 @@ func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
+	if c.isQUIC {
+		h3, err := c.getQUICClientConn(ctx)
+		if err != nil {
+			return nil, err
+		}
+		str, err := h3.OpenRequestStream(ctx)
+		if err != nil {
+			return nil, err
+		}
+		req := c.newConnectRequest(UDPMagicAddress).WithContext(ctx)
+		err = str.SendRequestHeader(req)
+		if err != nil {
+			_ = str.Close()
+			return nil, err
+		}
+		rsp, err := str.ReadResponse()
+		if err != nil {
+			_ = str.Close()
+			return nil, err
+		}
+		if rsp.StatusCode != http.StatusOK {
+			_ = str.Close()
+			return nil, fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
+		}
+		c.resetHealthCheckTimer()
+		pktCtx, pktCancel := context.WithCancel(c.ctx)
+		c.count.Add(1)
+		conn := &quicPacketConn{
+			stream:     str,
+			ctx:        pktCtx,
+			cancel:     pktCancel,
+			remoteAddr: c.server.UDPAddr(),
+			paddingMin: c.udpPaddingMin,
+			paddingMax: c.udpPaddingMax,
+			closeFn:    sync.OnceFunc(func() { c.count.Add(-1) }),
+		}
+		return conn, nil
+	}
+
 	conn := &packetConn{
 		httpConn: httpConn{
 			remoteAddr: c.server.UDPAddr(),
@@ -270,6 +377,23 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 
 func (c *Client) Close() error {
 	c.cancel()
+	c.quicMtx.Lock()
+	if c.h3ClientConn != nil {
+		_ = c.h3ClientConn.Close()
+		c.h3ClientConn = nil
+	}
+	if c.quicConn != nil {
+		_ = c.quicConn.CloseWithError(0, "")
+		c.quicConn = nil
+	}
+	if c.quicCloser != nil {
+		_ = c.quicCloser.Close()
+		c.quicCloser = nil
+	}
+	if c.h3Transport != nil {
+		_ = c.h3Transport.Close()
+	}
+	c.quicMtx.Unlock()
 	if closer, ok := c.roundTripper.(io.Closer); ok {
 		_ = closer.Close()
 	}

@@ -2,14 +2,18 @@ package trusttunnel
 
 import (
 	"context"
+	"crypto/hmac"
 	crand "crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,7 +29,96 @@ const (
 	DefaultHealthCheckTimeout = 7 * time.Second
 	DefaultSessionTimeout     = 30 * time.Second
 	DefaultKeepAlivePeriod    = 10 * time.Second
+
+	AuthBearerPrefix = "Bearer "
+	AuthBasicPrefix  = "Basic "
+	TokenVersion     = "tt1"
+	AuthMaxSkewSec   = 90
 )
+
+func buildTokenAuth(username, password, target string) string {
+	now := time.Now().Unix()
+	var nonce [8]byte
+	_, _ = crand.Read(nonce[:])
+	nonceHex := hex.EncodeToString(nonce[:])
+
+	mac := hmac.New(sha256.New, []byte(password))
+	mac.Write([]byte(TokenVersion))
+	mac.Write([]byte{':'})
+	mac.Write([]byte(username))
+	mac.Write([]byte{':'})
+	mac.Write([]byte(strconv.FormatInt(now, 10)))
+	mac.Write([]byte{':'})
+	mac.Write([]byte(nonceHex))
+	mac.Write([]byte{':'})
+	mac.Write([]byte(target))
+	sig := mac.Sum(nil)
+
+	raw := fmt.Sprintf("%s.%s.%d.%s.%x", TokenVersion, username, now, nonceHex, sig)
+	return AuthBearerPrefix + base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func parseTokenAuth(auth string) (version, username string, timestamp int64, nonceHex string, sig []byte, ok bool) {
+	if len(auth) < len(AuthBearerPrefix) || !strings.EqualFold(auth[:len(AuthBearerPrefix)], AuthBearerPrefix) {
+		return "", "", 0, "", nil, false
+	}
+	tokenStr := strings.TrimSpace(auth[len(AuthBearerPrefix):])
+	raw, err := base64.RawURLEncoding.DecodeString(tokenStr)
+	if err != nil {
+		return "", "", 0, "", nil, false
+	}
+	parts := strings.Split(string(raw), ".")
+	if len(parts) != 5 {
+		return "", "", 0, "", nil, false
+	}
+	version = parts[0]
+	if version != TokenVersion {
+		return "", "", 0, "", nil, false
+	}
+	username = parts[1]
+	ts, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return "", "", 0, "", nil, false
+	}
+	timestamp = ts
+	nonceHex = parts[3]
+	if len(nonceHex) != 16 {
+		return "", "", 0, "", nil, false
+	}
+	s, err := hex.DecodeString(parts[4])
+	if err != nil || len(s) != sha256.Size {
+		return "", "", 0, "", nil, false
+	}
+	sig = s
+	ok = true
+	return
+}
+
+type authReplayCache struct {
+	mu   sync.Mutex
+	seen map[string]int64
+}
+
+func newAuthReplayCache() *authReplayCache {
+	return &authReplayCache{seen: make(map[string]int64)}
+}
+
+func (c *authReplayCache) checkAndAdd(nonce string, now int64, ttl int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if exp, ok := c.seen[nonce]; ok && now < exp {
+		return false
+	}
+	if len(c.seen) > 10000 {
+		for k, exp := range c.seen {
+			if now >= exp {
+				delete(c.seen, k)
+			}
+		}
+	}
+	c.seen[nonce] = now + ttl
+	return true
+}
 
 func buildAuth(username string, password string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
