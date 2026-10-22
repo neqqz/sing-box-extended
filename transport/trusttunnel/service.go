@@ -5,12 +5,12 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -171,12 +171,12 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 				_ = conn.Close()
 				return
 			}
+			defer s.untrackConn(username, conn)
+			defer conn.Close()
 			firstPacket := buf.NewPacket()
 			destination, err := conn.ReadPacket(firstPacket)
 			if err != nil {
 				firstPacket.Release()
-				s.untrackConn(username, conn)
-				_ = conn.Close()
 				if isBenignFirstPacketClose(err) {
 					s.logger.DebugContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
 				} else {
@@ -186,19 +186,15 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			}
 			destination = destination.Unwrap()
 			cachedConn := bufio.NewCachedPacketConn(conn, firstPacket, destination)
+			defer cachedConn.Close()
 			if err = s.handler.NewPacketConnection(ctx, cachedConn, M.Metadata{
 				Protocol:    "trusttunnel",
 				Source:      M.ParseSocksaddr(request.RemoteAddr),
 				Destination: destination,
 			}); err != nil {
-				_ = cachedConn.Close()
-				_ = conn.Close()
-				s.untrackConn(username, conn)
 				return
 			}
 			<-reqCtx.Done()
-			s.untrackConn(username, conn)
-			_ = cachedConn.Close()
 			return
 		}
 
@@ -303,8 +299,8 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 const dummyPassword = "trusttunnel-dummy-password"
 
 func (s *Service) verify(authorization, target string) (username string, loaded bool) {
-	ver, user, ts, nonce, gotSig, ok := parseTokenAuth(authorization)
-	if !ok || ver != TokenVersion {
+	user, ts, nonce, gotSig, ok := parseTokenAuth(authorization)
+	if !ok {
 		return "", false
 	}
 	now := time.Now().Unix()
@@ -317,15 +313,17 @@ func (s *Service) verify(authorization, target string) (username string, loaded 
 	if !known {
 		recordedPassword = dummyPassword
 	}
+	userBytes := []byte(user)
+	userLen := len(userBytes)
+	var prefix [tokenHeaderLen]byte
+	prefix[0] = TokenVersion
+	binary.BigEndian.PutUint64(prefix[1:9], uint64(ts))
+	copy(prefix[9:17], nonce[:])
+	binary.BigEndian.PutUint16(prefix[17:19], uint16(userLen))
+
 	mac := hmac.New(sha256.New, []byte(recordedPassword))
-	mac.Write([]byte(TokenVersion))
-	mac.Write([]byte{':'})
-	mac.Write([]byte(user))
-	mac.Write([]byte{':'})
-	mac.Write([]byte(strconv.FormatInt(ts, 10)))
-	mac.Write([]byte{':'})
-	mac.Write([]byte(nonce))
-	mac.Write([]byte{':'})
+	mac.Write(prefix[:])
+	mac.Write(userBytes)
 	mac.Write([]byte(target))
 	wantSig := mac.Sum(nil)
 

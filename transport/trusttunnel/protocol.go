@@ -6,14 +6,12 @@ import (
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
-	"fmt"
+	"encoding/binary"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,78 +29,66 @@ const (
 	DefaultKeepAlivePeriod    = 10 * time.Second
 
 	AuthBearerPrefix = "Bearer "
-	TokenVersion     = "tt1"
+	TokenVersion     = byte(1)
 	AuthMaxSkewSec   = 90
+	tokenHeaderLen   = 1 + 8 + 8 + 2
 )
 
 func buildTokenAuth(username, password, target string) string {
-	now := time.Now().Unix()
-	var nonce [8]byte
-	_, _ = crand.Read(nonce[:])
-	nonceHex := hex.EncodeToString(nonce[:])
+	now := uint64(time.Now().Unix())
+	userBytes := []byte(username)
+	userLen := len(userBytes)
+	totalLen := tokenHeaderLen + userLen + sha256.Size
+	buf := make([]byte, totalLen)
+
+	buf[0] = TokenVersion
+	binary.BigEndian.PutUint64(buf[1:9], now)
+	_, _ = crand.Read(buf[9:17])
+	binary.BigEndian.PutUint16(buf[17:19], uint16(userLen))
+	copy(buf[19:19+userLen], userBytes)
 
 	mac := hmac.New(sha256.New, []byte(password))
-	mac.Write([]byte(TokenVersion))
-	mac.Write([]byte{':'})
-	mac.Write([]byte(username))
-	mac.Write([]byte{':'})
-	mac.Write([]byte(strconv.FormatInt(now, 10)))
-	mac.Write([]byte{':'})
-	mac.Write([]byte(nonceHex))
-	mac.Write([]byte{':'})
+	mac.Write(buf[:19+userLen])
 	mac.Write([]byte(target))
-	sig := mac.Sum(nil)
+	mac.Sum(buf[:19+userLen])
 
-	raw := fmt.Sprintf("%s.%s.%d.%s.%x", TokenVersion, username, now, nonceHex, sig)
-	return AuthBearerPrefix + base64.RawURLEncoding.EncodeToString([]byte(raw))
+	return AuthBearerPrefix + base64.RawURLEncoding.EncodeToString(buf)
 }
 
-func parseTokenAuth(auth string) (version, username string, timestamp int64, nonceHex string, sig []byte, ok bool) {
+func parseTokenAuth(auth string) (user string, timestamp int64, nonce [8]byte, sig []byte, ok bool) {
 	if len(auth) < len(AuthBearerPrefix) || !strings.EqualFold(auth[:len(AuthBearerPrefix)], AuthBearerPrefix) {
-		return "", "", 0, "", nil, false
+		return "", 0, [8]byte{}, nil, false
 	}
 	tokenStr := strings.TrimSpace(auth[len(AuthBearerPrefix):])
-	raw, err := base64.RawURLEncoding.DecodeString(tokenStr)
-	if err != nil {
-		return "", "", 0, "", nil, false
+	buf, err := base64.RawURLEncoding.DecodeString(tokenStr)
+	if err != nil || len(buf) < tokenHeaderLen+sha256.Size {
+		return "", 0, [8]byte{}, nil, false
 	}
-	parts := strings.Split(string(raw), ".")
-	if len(parts) != 5 {
-		return "", "", 0, "", nil, false
+	if buf[0] != TokenVersion {
+		return "", 0, [8]byte{}, nil, false
 	}
-	version = parts[0]
-	if version != TokenVersion {
-		return "", "", 0, "", nil, false
+	ts := int64(binary.BigEndian.Uint64(buf[1:9]))
+	copy(nonce[:], buf[9:17])
+	userLen := int(binary.BigEndian.Uint16(buf[17:19]))
+	if len(buf) != tokenHeaderLen+userLen+sha256.Size {
+		return "", 0, [8]byte{}, nil, false
 	}
-	username = parts[1]
-	ts, err := strconv.ParseInt(parts[2], 10, 64)
-	if err != nil {
-		return "", "", 0, "", nil, false
-	}
-	timestamp = ts
-	nonceHex = parts[3]
-	if len(nonceHex) != 16 {
-		return "", "", 0, "", nil, false
-	}
-	s, err := hex.DecodeString(parts[4])
-	if err != nil || len(s) != sha256.Size {
-		return "", "", 0, "", nil, false
-	}
-	sig = s
+	user = string(buf[19 : 19+userLen])
+	sig = buf[19+userLen:]
 	ok = true
 	return
 }
 
 type authReplayCache struct {
 	mu   sync.Mutex
-	seen map[string]int64
+	seen map[[8]byte]int64
 }
 
 func newAuthReplayCache() *authReplayCache {
-	return &authReplayCache{seen: make(map[string]int64)}
+	return &authReplayCache{seen: make(map[[8]byte]int64)}
 }
 
-func (c *authReplayCache) checkAndAdd(nonce string, now int64, ttl int64) bool {
+func (c *authReplayCache) checkAndAdd(nonce [8]byte, now int64, ttl int64) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if exp, ok := c.seen[nonce]; ok && now < exp {
