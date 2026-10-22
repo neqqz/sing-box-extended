@@ -31,7 +31,6 @@ const (
 	DefaultKeepAlivePeriod    = 10 * time.Second
 
 	AuthBearerPrefix = "Bearer "
-	AuthBasicPrefix  = "Basic "
 	TokenVersion     = "tt1"
 	AuthMaxSkewSec   = 90
 )
@@ -118,24 +117,6 @@ func (c *authReplayCache) checkAndAdd(nonce string, now int64, ttl int64) bool {
 	}
 	c.seen[nonce] = now + ttl
 	return true
-}
-
-func buildAuth(username string, password string) string {
-	return "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
-}
-
-func parseBasicAuth(auth string) (username, password string, ok bool) {
-	const prefix = "Basic "
-	if len(auth) < len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) {
-		return "", "", false
-	}
-	c, err := base64.StdEncoding.DecodeString(auth[len(prefix):])
-	if err != nil {
-		return "", "", false
-	}
-	cs := string(c)
-	username, password, ok = strings.Cut(cs, ":")
-	return
 }
 
 func parse16BytesIP(b [16]byte) netip.Addr {

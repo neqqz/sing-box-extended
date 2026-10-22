@@ -303,61 +303,40 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 const dummyPassword = "trusttunnel-dummy-password"
 
 func (s *Service) verify(authorization, target string) (username string, loaded bool) {
-	if strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
-		ver, user, ts, nonce, gotSig, ok := parseTokenAuth(authorization)
-		if !ok || ver != TokenVersion {
-			return "", false
-		}
-		now := time.Now().Unix()
-		if ts < now-AuthMaxSkewSec || ts > now+AuthMaxSkewSec {
-			return "", false
-		}
-		s.mu.RLock()
-		recordedPassword, known := s.users[user]
-		s.mu.RUnlock()
-		if !known {
-			recordedPassword = dummyPassword
-		}
-		mac := hmac.New(sha256.New, []byte(recordedPassword))
-		mac.Write([]byte(TokenVersion))
-		mac.Write([]byte{':'})
-		mac.Write([]byte(user))
-		mac.Write([]byte{':'})
-		mac.Write([]byte(strconv.FormatInt(ts, 10)))
-		mac.Write([]byte{':'})
-		mac.Write([]byte(nonce))
-		mac.Write([]byte{':'})
-		mac.Write([]byte(target))
-		wantSig := mac.Sum(nil)
-
-		match := subtle.ConstantTimeCompare(gotSig, wantSig) == 1
-		if !known || !match {
-			return "", false
-		}
-		if !s.replayCache.checkAndAdd(nonce, now, AuthMaxSkewSec*2) {
-			return "", false
-		}
-		return user, true
+	ver, user, ts, nonce, gotSig, ok := parseTokenAuth(authorization)
+	if !ok || ver != TokenVersion {
+		return "", false
 	}
-
-	username, password, parsed := parseBasicAuth(authorization)
+	now := time.Now().Unix()
+	if ts < now-AuthMaxSkewSec || ts > now+AuthMaxSkewSec {
+		return "", false
+	}
 	s.mu.RLock()
-	recordedPassword, known := s.users[username]
+	recordedPassword, known := s.users[user]
 	s.mu.RUnlock()
 	if !known {
 		recordedPassword = dummyPassword
 	}
-	// Сравниваем хэши одинаковой длины в постоянном времени: прямое
-	// password != recorded выходило на первом отличающемся байте (и сразу
-	// при разной длине), а ранний return для неизвестного имени позволял
-	// перебирать имена по времени ответа.
-	got := sha256.Sum256([]byte(password))
-	want := sha256.Sum256([]byte(recordedPassword))
-	match := subtle.ConstantTimeCompare(got[:], want[:]) == 1
-	if !parsed || !known || !match {
+	mac := hmac.New(sha256.New, []byte(recordedPassword))
+	mac.Write([]byte(TokenVersion))
+	mac.Write([]byte{':'})
+	mac.Write([]byte(user))
+	mac.Write([]byte{':'})
+	mac.Write([]byte(strconv.FormatInt(ts, 10)))
+	mac.Write([]byte{':'})
+	mac.Write([]byte(nonce))
+	mac.Write([]byte{':'})
+	mac.Write([]byte(target))
+	wantSig := mac.Sum(nil)
+
+	match := subtle.ConstantTimeCompare(gotSig, wantSig) == 1
+	if !known || !match {
 		return "", false
 	}
-	return username, true
+	if !s.replayCache.checkAndAdd(nonce, now, AuthMaxSkewSec*2) {
+		return "", false
+	}
+	return user, true
 }
 
 // badRequest logs at debug level: every scanner that reaches the HTTP layer
