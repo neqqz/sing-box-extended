@@ -68,7 +68,7 @@ func parseTokenAuth(auth string) (user string, timestamp int64, nonce [8]byte, s
 	if buf[0] != TokenVersion {
 		return "", 0, [8]byte{}, nil, false
 	}
-	ts := int64(binary.BigEndian.Uint64(buf[1:9]))
+	timestamp = int64(binary.BigEndian.Uint64(buf[1:9]))
 	copy(nonce[:], buf[9:17])
 	userLen := int(binary.BigEndian.Uint16(buf[17:19]))
 	if len(buf) != tokenHeaderLen+userLen+sha256.Size {

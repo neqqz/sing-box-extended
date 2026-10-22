@@ -95,7 +95,7 @@ func (c *Client) getQUICClientConn(ctx context.Context) (*http3.ClientConn, erro
 		return c.h3ClientConn, nil
 	}
 	if c.h3ClientConn != nil {
-		_ = c.h3ClientConn.Close()
+		_ = c.h3ClientConn.CloseWithError(0, "")
 		c.h3ClientConn = nil
 	}
 	if c.quicConn != nil {
@@ -379,7 +379,7 @@ func (c *Client) Close() error {
 	c.cancel()
 	c.quicMtx.Lock()
 	if c.h3ClientConn != nil {
-		_ = c.h3ClientConn.Close()
+		_ = c.h3ClientConn.CloseWithError(0, "")
 		c.h3ClientConn = nil
 	}
 	if c.quicConn != nil {

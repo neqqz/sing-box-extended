@@ -11,8 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"strings"
 	"sync"
+	"time"
 
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/http3"

@@ -137,7 +137,7 @@ func (u *quicPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr
 	paddingLen := randomUDPPaddingLength(u.paddingMin, u.paddingMax)
 	destIP := buildPaddingIP(destination.Addr)
 
-	if paddingLen == 0 && buffer.Headroom() >= udpHeaderLen {
+	if paddingLen == 0 && buffer.Start() >= udpHeaderLen {
 		header := buffer.ExtendHeader(udpHeaderLen)
 		binary.BigEndian.PutUint16(header[0:2], uint16(payloadLen))
 		binary.BigEndian.PutUint16(header[2:4], 0)
@@ -272,7 +272,7 @@ func (u *packetConn) writePacket(buffer *buf.Buffer, destination M.Socksaddr) er
 	paddingLen := randomUDPPaddingLength(u.paddingMin, u.paddingMax)
 	destIP := buildPaddingIP(destination.Addr)
 
-	if paddingLen == 0 && buffer.Headroom() >= udpHeaderLen {
+	if paddingLen == 0 && buffer.Start() >= udpHeaderLen {
 		header := buffer.ExtendHeader(udpHeaderLen)
 		binary.BigEndian.PutUint16(header[0:2], uint16(payloadLen))
 		binary.BigEndian.PutUint16(header[2:4], 0)
