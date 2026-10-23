@@ -1,5 +1,3 @@
-//go:build with_utls
-
 package trusttunnel
 
 import (
@@ -351,13 +349,13 @@ func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 	}
 	err := c.roundTrip(ctx, c.newConnectRequest(host), &conn.httpConn)
 	if err != nil {
-		_ = conn.Close()
 		return nil, err
 	}
 	return conn, nil
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
+	c.startOnce.Do(c.start)
 	if c.isQUIC {
 		h3, err := c.getQUICClientConn(ctx)
 		if err != nil {
@@ -406,7 +404,6 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 	}
 	err := c.roundTrip(ctx, c.newConnectRequest(UDPMagicAddress), &conn.httpConn)
 	if err != nil {
-		_ = conn.Close()
 		return nil, err
 	}
 	return conn, nil

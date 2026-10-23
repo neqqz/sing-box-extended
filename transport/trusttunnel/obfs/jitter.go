@@ -111,6 +111,13 @@ func (c *jitterPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	return c.PacketConn.WriteTo(p, addr)
 }
 
+func (c *jitterPacketConn) SyscallConn() (syscall.RawConn, error) {
+	if sc, ok := c.PacketConn.(syscall.Conn); ok {
+		return sc.SyscallConn()
+	}
+	return nil, syscall.EINVAL
+}
+
 func (c *jitterPacketConn) Upstream() any {
 	return c.PacketConn
 }

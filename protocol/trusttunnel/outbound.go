@@ -1,5 +1,3 @@
-//go:build with_utls
-
 package trusttunnel
 
 import (

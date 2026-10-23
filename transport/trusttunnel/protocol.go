@@ -9,13 +9,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	N "github.com/sagernet/sing/common/network"
@@ -42,6 +42,10 @@ func buildTokenAuth(username, password, target string) string {
 func buildTokenAuthAt(username, password, target string, now uint64) string {
 	userBytes := []byte(username)
 	userLen := len(userBytes)
+	if userLen > math.MaxUint16 {
+		userBytes = userBytes[:math.MaxUint16]
+		userLen = math.MaxUint16
+	}
 	totalLen := tokenHeaderLen + userLen + sha256.Size
 	buf := make([]byte, totalLen)
 
@@ -54,7 +58,7 @@ func buildTokenAuthAt(username, password, target string, now uint64) string {
 	mac := hmac.New(sha256.New, []byte(password))
 	mac.Write(buf[:19+userLen])
 	mac.Write([]byte(target))
-	mac.Sum(buf[:19+userLen])
+	buf = mac.Sum(buf[:19+userLen])
 
 	return AuthBearerPrefix + base64.RawURLEncoding.EncodeToString(buf)
 }
@@ -65,7 +69,19 @@ func parseTokenAuth(auth string) (user string, timestamp int64, nonce [8]byte, s
 	}
 	tokenStr := strings.TrimSpace(auth[len(AuthBearerPrefix):])
 	buf, err := base64.RawURLEncoding.DecodeString(tokenStr)
-	if err != nil || len(buf) < tokenHeaderLen+sha256.Size {
+	if err != nil {
+		buf, err = base64.URLEncoding.DecodeString(tokenStr)
+		if err != nil {
+			buf, err = base64.RawStdEncoding.DecodeString(tokenStr)
+			if err != nil {
+				buf, err = base64.StdEncoding.DecodeString(tokenStr)
+				if err != nil {
+					return "", 0, [8]byte{}, nil, false
+				}
+			}
+		}
+	}
+	if len(buf) < tokenHeaderLen+sha256.Size {
 		return "", 0, [8]byte{}, nil, false
 	}
 	if buf[0] != TokenVersion {
@@ -115,9 +131,9 @@ func (c *authReplayCache) checkAndAdd(nonce [8]byte, now int64, ttl int64) bool 
 				delete(shard.seen, k)
 			}
 		}
-		if len(shard.seen) >= 2000 {
-			shard.seen = make(map[[8]byte]int64)
-		}
+	}
+	if len(shard.seen) >= 2000 {
+		clear(shard.seen)
 	}
 	shard.seen[nonce] = now + ttl
 	return true
@@ -125,9 +141,7 @@ func (c *authReplayCache) checkAndAdd(nonce [8]byte, now int64, ttl int64) bool 
 
 func parse16BytesIP(b [16]byte) netip.Addr {
 	addr := netip.AddrFrom16(b).Unmap()
-	if !addr.Is4() && b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
-		b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
-		b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0 &&
+	if !addr.Is4() && binary.BigEndian.Uint64(b[0:8]) == 0 && binary.BigEndian.Uint32(b[8:12]) == 0 &&
 		!(b[12] == 0 && b[13] == 0 && b[14] == 0 && (b[15] == 0 || b[15] == 1)) {
 		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
 	}
@@ -139,8 +153,7 @@ func buildPaddingIP(addr netip.Addr) (buffer [16]byte) {
 }
 
 var (
-	udpPaddingPool        [65536]byte
-	udpPaddingPoolCounter atomic.Uint32
+	udpPaddingPool [65536]byte
 )
 
 func init() {
@@ -160,6 +173,7 @@ func randomUDPPaddingLength(min, max int) int {
 }
 
 // randomUDPPadding возвращает n байт случайного паддинга без аллокаций в куче.
+// Полностью потокобезопасен и свободен от гонок данных.
 func randomUDPPadding(n int) []byte {
 	if n <= 0 {
 		return nil
@@ -168,13 +182,6 @@ func randomUDPPadding(n int) []byte {
 		return udpPaddingPool[:]
 	}
 	offset := randv2.IntN(len(udpPaddingPool) - n + 1)
-	if udpPaddingPoolCounter.Add(1)&0x3ff == 0 {
-		var fresh [256]byte
-		if _, err := crand.Read(fresh[:]); err == nil {
-			refreshOffset := randv2.IntN(len(udpPaddingPool) - len(fresh) + 1)
-			copy(udpPaddingPool[refreshOffset:], fresh[:])
-		}
-	}
 	return udpPaddingPool[offset : offset+n]
 }
 

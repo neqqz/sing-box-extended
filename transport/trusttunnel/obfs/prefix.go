@@ -307,6 +307,9 @@ func readFullClientHello(conn net.Conn) (wire, logical []byte, ok bool) {
 
 		// Build synthetic single-record view for existing parsers.
 		msg := hs[:need]
+		if wireBuf.Len() == 5+len(msg) {
+			return wireBuf.Bytes(), wireBuf.Bytes(), true
+		}
 		logical = make([]byte, 5+len(msg))
 		logical[0] = 0x16
 		logical[1] = 0x03
@@ -561,11 +564,17 @@ func (l *PrefixChecker) isSelfLoop(target string) bool {
 	if err != nil || l.ownPort == "" || port != l.ownPort {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), selfLoopLookupTimeout)
-	defer cancel()
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return false
+	var ips []net.IPAddr
+	if parsedIP := net.ParseIP(host); parsedIP != nil {
+		ips = []net.IPAddr{{IP: parsedIP}}
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), selfLoopLookupTimeout)
+		defer cancel()
+		var err error
+		ips, err = net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return false
+		}
 	}
 	localAddrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -576,8 +585,14 @@ func (l *PrefixChecker) isSelfLoop(target string) bool {
 			return true
 		}
 		for _, localAddr := range localAddrs {
-			ipNet, ok := localAddr.(*net.IPNet)
-			if ok && ipNet.IP.Equal(ip.IP) {
+			var localIP net.IP
+			switch a := localAddr.(type) {
+			case *net.IPNet:
+				localIP = a.IP
+			case *net.IPAddr:
+				localIP = a.IP
+			}
+			if localIP != nil && localIP.Equal(ip.IP) {
 				return true
 			}
 		}

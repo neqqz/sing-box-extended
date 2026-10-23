@@ -81,10 +81,11 @@ func (s *Service) now() time.Time {
 
 func (s *Service) UpdateUsers(users map[string]string) {
 	s.mu.Lock()
+	oldUsers := s.users
 	s.users = users
 	var closedConns []io.Closer
 	for user, conns := range s.conns {
-		if _, exists := users[user]; !exists {
+		if pass, exists := users[user]; !exists || pass != oldUsers[user] {
 			for conn := range conns {
 				closedConns = append(closedConns, conn)
 			}
@@ -166,7 +167,13 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	ctx := request.Context()
 	ctx = auth.ContextWithUser(ctx, username)
-	switch request.Host {
+	targetHost := request.Host
+	if h, _, err := net.SplitHostPort(targetHost); err == nil {
+		if h == UDPMagicAddress || h == HealthCheckMagicAddress {
+			targetHost = h
+		}
+	}
+	switch targetHost {
 	case UDPMagicAddress:
 		// UDPMagicAddress требует авторизации - уже проверена выше
 		writer.WriteHeader(http.StatusOK)
@@ -182,6 +189,7 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 				ctx:        reqCtx,
 				cancel:     cancel,
 				remoteAddr: parseRemoteAddr(request.RemoteAddr),
+				localAddr:  parseLocalAddr(request),
 				paddingMin: s.udpPaddingMin,
 				paddingMax: s.udpPaddingMax,
 			}
@@ -224,6 +232,7 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 				created:    make(chan struct{}),
 				done:       done,
 				remoteAddr: parseRemoteAddr(request.RemoteAddr),
+				localAddr:  parseLocalAddr(request),
 			},
 			paddingMin: s.udpPaddingMin,
 			paddingMax: s.udpPaddingMax,
@@ -290,6 +299,7 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 				created:    make(chan struct{}),
 				done:       done,
 				remoteAddr: parseRemoteAddr(request.RemoteAddr),
+				localAddr:  parseLocalAddr(request),
 			},
 		}
 		conn.setup(request.Body, nil)
@@ -343,7 +353,8 @@ func (s *Service) verify(authorization, target string) (username string, loaded 
 	mac.Write(prefix[:])
 	mac.Write(userBytes)
 	mac.Write([]byte(target))
-	wantSig := mac.Sum(nil)
+	var wantSigBuf [sha256.Size]byte
+	wantSig := mac.Sum(wantSigBuf[:0])
 
 	match := subtle.ConstantTimeCompare(gotSig, wantSig) == 1
 	if !known || !match {
@@ -395,4 +406,11 @@ func parseRemoteAddr(addr string) net.Addr {
 	}
 	tcpAddr, _ := net.ResolveTCPAddr("tcp", addr)
 	return tcpAddr
+}
+
+func parseLocalAddr(r *http.Request) net.Addr {
+	if la, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		return la
+	}
+	return nil
 }

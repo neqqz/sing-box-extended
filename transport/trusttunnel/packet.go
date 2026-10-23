@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -99,6 +100,9 @@ func (u *quicPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr
 		if len(b) < udpHeaderLen+payloadLen {
 			continue
 		}
+		if buffer.FreeLen() < payloadLen {
+			return destination, io.ErrShortBuffer
+		}
 		var ip [16]byte
 		copy(ip[:], b[4:20])
 		destination.Addr = parse16BytesIP(ip)
@@ -167,11 +171,17 @@ func (u *quicPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr
 		var tooLarge *quic.DatagramTooLargeError
 		if errors.As(err, &tooLarge) {
 			binary.BigEndian.PutUint16(header[2:4], 0)
-			outNoPad := buf.NewSize(udpHeaderLen + payloadLen)
-			defer outNoPad.Release()
-			common.Must1(outNoPad.Write(header[:]))
-			common.Must1(outNoPad.Write(buffer.Bytes()))
-			err = u.stream.SendDatagram(outNoPad.Bytes())
+			if buffer.Start() >= udpHeaderLen {
+				h := buffer.ExtendHeader(udpHeaderLen)
+				copy(h, header[:])
+				err = u.stream.SendDatagram(buffer.Bytes())
+			} else {
+				outNoPad := buf.NewSize(udpHeaderLen + payloadLen)
+				defer outNoPad.Release()
+				common.Must1(outNoPad.Write(header[:]))
+				common.Must1(outNoPad.Write(buffer.Bytes()))
+				err = u.stream.SendDatagram(outNoPad.Bytes())
+			}
 		}
 	}
 	return err
@@ -187,6 +197,7 @@ func (u *quicPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 
 type packetConn struct {
 	httpConn
+	readMtx    sync.Mutex
 	paddingMin int
 	paddingMax int
 }
@@ -230,6 +241,9 @@ func (u *packetConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 }
 
 func (u *packetConn) readPacket(buffer *buf.Buffer) (address M.Socksaddr, err error) {
+	u.readMtx.Lock()
+	defer u.readMtx.Unlock()
+
 	u.mtx.Lock()
 	if u.closed || u.body == nil {
 		u.mtx.Unlock()
@@ -249,6 +263,11 @@ func (u *packetConn) readPacket(buffer *buf.Buffer) (address M.Socksaddr, err er
 	copy(ip[:], header[4:20])
 	address.Addr = parse16BytesIP(ip)
 	address.Port = binary.BigEndian.Uint16(header[20:22])
+
+	if buffer.FreeLen() < payloadLen {
+		_ = rw.SkipN(body, payloadLen+paddingLen)
+		return address, io.ErrShortBuffer
+	}
 
 	_, err = buffer.ReadFullFrom(body, payloadLen)
 	if err != nil {

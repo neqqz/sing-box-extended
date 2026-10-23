@@ -369,6 +369,7 @@ func (h *Inbound) Close() error {
 
 func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixChecker, handler http.Handler) {
 	var delay time.Duration
+	timingMin, timingMax, timingPackets := timingRange(h.options.Timing)
 	for {
 		rawConn, err := rawListener.Accept()
 		if err != nil {
@@ -391,7 +392,6 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixCheck
 		}
 		delay = 0
 		trusttunnel.SetTCPCongestionControl(rawConn, h.options.CongestionController)
-		timingMin, timingMax, timingPackets := timingRange(h.options.Timing)
 		go func() {
 			conn := rawConn
 			if checker != nil {
