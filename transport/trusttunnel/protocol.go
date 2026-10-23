@@ -81,8 +81,9 @@ func parseTokenAuth(auth string) (user string, timestamp int64, nonce [8]byte, s
 }
 
 type authReplayCache struct {
-	mu   sync.Mutex
-	seen map[[8]byte]int64
+	mu        sync.Mutex
+	seen      map[[8]byte]int64
+	lastEvict int64
 }
 
 func newAuthReplayCache() *authReplayCache {
@@ -95,11 +96,15 @@ func (c *authReplayCache) checkAndAdd(nonce [8]byte, now int64, ttl int64) bool 
 	if exp, ok := c.seen[nonce]; ok && now < exp {
 		return false
 	}
-	if len(c.seen) > 10000 {
+	if len(c.seen) >= 10000 && now > c.lastEvict {
+		c.lastEvict = now + 10
 		for k, exp := range c.seen {
 			if now >= exp {
 				delete(c.seen, k)
 			}
+		}
+		if len(c.seen) >= 20000 {
+			c.seen = make(map[[8]byte]int64)
 		}
 	}
 	c.seen[nonce] = now + ttl
@@ -107,28 +112,18 @@ func (c *authReplayCache) checkAndAdd(nonce [8]byte, now int64, ttl int64) bool 
 }
 
 func parse16BytesIP(b [16]byte) netip.Addr {
-	// Standard IPv4-mapped IPv6: ::ffff:a.b.c.d
-	if b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
-		b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
-		b[8] == 0 && b[9] == 0 && b[10] == 0xff && b[11] == 0xff {
-		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
-	}
-	if b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
+	addr := netip.AddrFrom16(b).Unmap()
+	if !addr.Is4() && b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
 		b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
 		b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0 &&
 		!(b[12] == 0 && b[13] == 0 && b[14] == 0 && (b[15] == 0 || b[15] == 1)) {
 		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
 	}
-	return netip.AddrFrom16(b)
+	return addr
 }
 
 func buildPaddingIP(addr netip.Addr) (buffer [16]byte) {
-	if addr.Is6() {
-		return addr.As16()
-	}
-	ipv4 := addr.As4()
-	copy(buffer[12:16], ipv4[:])
-	return buffer
+	return addr.As16()
 }
 
 var (
