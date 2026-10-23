@@ -156,3 +156,47 @@ func TestUDPPadding(t *testing.T) {
 		t.Fatalf("expected nil for 0 padding")
 	}
 }
+
+func BenchmarkTokenAuthBuild(b *testing.B) {
+	username := "user"
+	password := "pass"
+	target := "example.com:443"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = buildTokenAuth(username, password, target)
+	}
+}
+
+func BenchmarkTokenAuthParse(b *testing.B) {
+	token := buildTokenAuth("user", "pass", "example.com:443")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _, _, _ = parseTokenAuth(token)
+	}
+}
+
+func BenchmarkIPPacking(b *testing.B) {
+	addr := netip.MustParseAddr("1.2.3.4")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		packed := buildPaddingIP(addr)
+		_ = parse16BytesIP(packed)
+	}
+}
+
+func BenchmarkAuthReplayCache(b *testing.B) {
+	c := newAuthReplayCache()
+	now := time.Now().Unix()
+	var nonce [8]byte
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		nonce[0] = byte(i)
+		nonce[1] = byte(i >> 8)
+		nonce[2] = byte(i >> 16)
+		c.checkAndAdd(nonce, now, 60)
+	}
+}

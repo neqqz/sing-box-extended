@@ -44,8 +44,12 @@ type jitterConn struct {
 }
 
 func (c *jitterConn) Write(b []byte) (int, error) {
-	if c.packets < 0 || int(c.count.Add(1)) <= c.packets {
+	if c.packets < 0 {
 		sleepJitter(c.minMS, c.maxMS)
+	} else if c.count.Load() <= int64(c.packets) {
+		if int(c.count.Add(1)) <= c.packets {
+			sleepJitter(c.minMS, c.maxMS)
+		}
 	}
 	return c.Conn.Write(b)
 }
@@ -97,8 +101,12 @@ type jitterPacketConn struct {
 }
 
 func (c *jitterPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
-	if c.packets < 0 || int(c.count.Add(1)) <= c.packets {
+	if c.packets < 0 {
 		sleepJitter(c.minMS, c.maxMS)
+	} else if c.count.Load() <= int64(c.packets) {
+		if int(c.count.Add(1)) <= c.packets {
+			sleepJitter(c.minMS, c.maxMS)
+		}
 	}
 	return c.PacketConn.WriteTo(p, addr)
 }
