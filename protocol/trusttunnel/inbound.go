@@ -5,6 +5,9 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +38,29 @@ func RegisterInbound(registry *inbound.Registry) {
 	inbound.Register[option.TrustTunnelInboundOptions](registry, C.TypeTrustTunnel, NewInbound)
 }
 
+func createFallbackHandler(server string) http.Handler {
+	if server == "" {
+		return nil
+	}
+	target := server
+	if !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
+		target = "http://" + target
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return nil
+	}
+	return &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(u)
+			r.Out.Host = u.Host
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			http.NotFound(w, r)
+		},
+	}
+}
+
 // checkSNI возвращает true, если sni разрешён (или проверка выключена).
 func checkSNI(allowed []string, sni string) bool {
 	if len(allowed) == 0 {
@@ -47,16 +73,17 @@ func checkSNI(allowed []string, sni string) bool {
 // Используется только для QUIC/H3 — там r.TLS заполняет сам quic-go/http3,
 // надёжно. Для TCP SNI проверяется раньше, в serveConn (см. ниже).
 type sniMiddleware struct {
-	next       http.Handler
-	allowedSNI []string
-	logger     logger.ContextLogger
+	next            http.Handler
+	fallbackHandler http.Handler
+	allowedSNI      []string
+	logger          logger.ContextLogger
 }
 
-func newSNIMiddleware(next http.Handler, allowed []string, log logger.ContextLogger) http.Handler {
+func newSNIMiddleware(next http.Handler, fallback http.Handler, allowed []string, log logger.ContextLogger) http.Handler {
 	if len(allowed) == 0 {
 		return next
 	}
-	return &sniMiddleware{next: next, allowedSNI: allowed, logger: log}
+	return &sniMiddleware{next: next, fallbackHandler: fallback, allowedSNI: allowed, logger: log}
 }
 
 func (m *sniMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -66,10 +93,11 @@ func (m *sniMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !checkSNI(m.allowedSNI, sni) {
 		m.logger.Debug("trusttunnel: rejected SNI: ", sni)
-		// Тот же 404 без тела, что и service на провал авторизации (TCP-путь
-		// при том же условии просто закрывает соединение): 403 с текстом
-		// "Forbidden" отличал бы этот порт от обычного веб-сервера.
-		w.WriteHeader(http.StatusNotFound)
+		if m.fallbackHandler != nil {
+			m.fallbackHandler.ServeHTTP(w, r)
+			return
+		}
+		http.NotFound(w, r)
 		return
 	}
 	m.next.ServeHTTP(w, r)
@@ -83,6 +111,7 @@ type Inbound struct {
 	options        option.TrustTunnelInboundOptions
 	listener       *listener.Listener
 	service        *trusttunnel.Service
+	fallbackHandler http.Handler
 	h2Server       *http2.Server
 	http3Server    *http3.Server
 	httpTLSConfig  tls.ServerConfig
@@ -149,13 +178,16 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		randomPrefixLen: options.ClientRandomPrefixLen,
 	}
 	udpPaddingMin, udpPaddingMax := paddingRange(options.UDPPadding)
+	fallbackHandler := createFallbackHandler(options.FallbackServer)
+	h.fallbackHandler = fallbackHandler
 	service := trusttunnel.NewService(trusttunnel.ServiceOptions{
-		Ctx:           ctx,
-		Logger:        logger,
-		Handler:       (*inboundHandler)(h),
-		UDPPaddingMin: udpPaddingMin,
-		UDPPaddingMax: udpPaddingMax,
-		TimeFunc:      ntp.TimeFuncFromContext(ctx),
+		Ctx:             ctx,
+		Logger:          logger,
+		Handler:         (*inboundHandler)(h),
+		FallbackHandler: fallbackHandler,
+		UDPPaddingMin:   udpPaddingMin,
+		UDPPaddingMax:   udpPaddingMax,
+		TimeFunc:        ntp.TimeFuncFromContext(ctx),
 	})
 	userMap := make(map[string]string, len(options.Users))
 	for _, u := range options.Users {
@@ -183,7 +215,7 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	// источник данных (tlsConn.ConnectionState()), в отличие от r.TLS в
 	// net/http. sniMiddleware держим только для QUIC/H3: там r.TLS заполняет
 	// сам quic-go/http3, и это надёжно.
-	h3Handler := newSNIMiddleware(h.service, h.options.AllowedSNI, h.logger)
+	h3Handler := newSNIMiddleware(h.service, h.fallbackHandler, h.options.AllowedSNI, h.logger)
 
 	// ── TCP / HTTP2 ────────────────────────────────────────────────────
 	if common.Contains(h.network, N.NetworkTCP) {

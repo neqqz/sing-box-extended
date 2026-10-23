@@ -32,39 +32,42 @@ type Handler interface {
 }
 
 type ServiceOptions struct {
-	Ctx           context.Context
-	Logger        logger.ContextLogger
-	Handler       Handler
-	UDPPaddingMin int
-	UDPPaddingMax int
-	TimeFunc      func() time.Time
+	Ctx             context.Context
+	Logger          logger.ContextLogger
+	Handler         Handler
+	FallbackHandler http.Handler
+	UDPPaddingMin   int
+	UDPPaddingMax   int
+	TimeFunc        func() time.Time
 }
 
 type Service struct {
-	ctx           context.Context
-	logger        logger.ContextLogger
-	users         map[string]string
-	handler       Handler
-	conns         map[string]map[io.Closer]struct{}
-	replayCache   *authReplayCache
-	udpPaddingMin int
-	udpPaddingMax int
-	timeFunc      func() time.Time
-	closed        bool
+	ctx             context.Context
+	logger          logger.ContextLogger
+	users           map[string]string
+	handler         Handler
+	conns           map[string]map[io.Closer]struct{}
+	replayCache     *authReplayCache
+	fallbackHandler http.Handler
+	udpPaddingMin   int
+	udpPaddingMax   int
+	timeFunc        func() time.Time
+	closed          bool
 
 	mu sync.RWMutex
 }
 
 func NewService(options ServiceOptions) *Service {
 	s := &Service{
-		ctx:           options.Ctx,
-		logger:        options.Logger,
-		handler:       options.Handler,
-		conns:         make(map[string]map[io.Closer]struct{}),
-		replayCache:   newAuthReplayCache(),
-		udpPaddingMin: options.UDPPaddingMin,
-		udpPaddingMax: options.UDPPaddingMax,
-		timeFunc:      options.TimeFunc,
+		ctx:             options.Ctx,
+		logger:          options.Logger,
+		handler:         options.Handler,
+		conns:           make(map[string]map[io.Closer]struct{}),
+		replayCache:     newAuthReplayCache(),
+		fallbackHandler: options.FallbackHandler,
+		udpPaddingMin:   options.UDPPaddingMin,
+		udpPaddingMax:   options.UDPPaddingMax,
+		timeFunc:        options.TimeFunc,
 	}
 	return s
 }
@@ -140,19 +143,24 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	username, loaded := s.verify(authorization, request.Host)
 	if !loaded {
+		if s.fallbackHandler != nil {
+			s.fallbackHandler.ServeHTTP(writer, request)
+			return
+		}
 		// 407 прямым текстом палит, что порт держит прокси/CONNECT-сервер —
-		// любой сканер или DPI, стукнувшийся без валидных креды, сразу видит
-		// сигнатуру. 404 неотличим от обычного веб-сервера, у которого просто
-		// нет такого пути — камуфляж уровня SNI/random-prefix, только для
-		// самого HTTP-ответа.
-		writer.WriteHeader(http.StatusNotFound)
+		// любой сканер или DPI, стукнувшийся без валидных кредов, сразу видит
+		// сигнатуру. Стандартный 404 неотличим от обычного веб-сервера.
+		http.NotFound(writer, request)
 		s.badRequest(request.Context(), request, E.New("authorization failed"))
 		return
 	}
 
 	if request.Method != http.MethodConnect {
-		// 405 палит, что именно. Используем 404 для скрытия user enumeration
-		writer.WriteHeader(http.StatusNotFound)
+		if s.fallbackHandler != nil {
+			s.fallbackHandler.ServeHTTP(writer, request)
+			return
+		}
+		http.NotFound(writer, request)
 		s.badRequest(request.Context(), request, E.New("unexpected HTTP method ", request.Method))
 		return
 	}
@@ -350,7 +358,9 @@ func (s *Service) verify(authorization, target string) (username string, loaded 
 // badRequest logs at debug level: every scanner that reaches the HTTP layer
 // ends up here, so ERROR would let anyone fill the log.
 func (s *Service) badRequest(ctx context.Context, request *http.Request, err error) {
-	s.logger.DebugContext(ctx, E.Cause(err, "process connection from ", request.RemoteAddr))
+	if s.logger != nil {
+		s.logger.DebugContext(ctx, E.Cause(err, "process connection from ", request.RemoteAddr))
+	}
 }
 
 // isBenignFirstPacketClose сообщает, является ли err штатной, инициированной

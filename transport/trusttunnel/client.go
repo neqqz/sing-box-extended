@@ -11,12 +11,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-box/common/congestion"
 	"github.com/sagernet/sing-box/common/tls"
+	"github.com/sagernet/sing-box/common/xray/utils"
 	"github.com/sagernet/sing-box/transport/trusttunnel/obfs"
 	"github.com/sagernet/sing/common/bufio"
 	M "github.com/sagernet/sing/common/metadata"
@@ -49,6 +51,7 @@ type ClientOptions struct {
 	JitterMaxMS             int
 	JitterPackets           int
 	TimeFunc                func() time.Time
+	UserAgent               string
 }
 
 type Client struct {
@@ -58,6 +61,7 @@ type Client struct {
 	serverString     string
 	username         string
 	password         string
+	userAgent        string
 	timeFunc         func() time.Time
 	roundTripper     http.RoundTripper
 	quicDialer       func(ctx context.Context) (*quic.Conn, io.Closer, error)
@@ -142,6 +146,12 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 	if timeFunc == nil {
 		timeFunc = ntp.TimeFuncFromContext(ctx)
 	}
+	ua := options.UserAgent
+	if ua == "" {
+		ua = utils.ChromeUA
+	} else if strings.EqualFold(ua, "none") {
+		ua = ""
+	}
 	client := &Client{
 		ctx:           ctx,
 		cancel:        cancel,
@@ -149,6 +159,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		serverString:  options.Server.String(),
 		username:      options.Username,
 		password:      options.Password,
+		userAgent:     ua,
 		timeFunc:      timeFunc,
 		healthCheck:   options.HealthCheck,
 		udpPaddingMin: options.UDPPaddingMin,
@@ -161,8 +172,10 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			cancel()
 			return nil, err
 		}
-		if len(options.TLSConfig.NextProtos()) == 0 {
-			options.TLSConfig.SetNextProtos([]string{"h3"})
+		if options.TLSConfig != nil {
+			if len(options.TLSConfig.NextProtos()) == 0 {
+				options.TLSConfig.SetNextProtos([]string{"h3"})
+			}
 		}
 		quicConfig := &quic.Config{
 			MaxIdleTimeout:          DefaultSessionTimeout * 2,
@@ -196,15 +209,19 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		}
 		client.roundTripper = &quicRoundTripper{client: client}
 	} else {
-		if len(options.TLSConfig.NextProtos()) == 0 {
-			options.TLSConfig.SetNextProtos([]string{http2.NextProtoTLS})
-		}
-		tlsDialer := tls.NewDialer(options.Dialer, options.TLSConfig)
-		client.roundTripper = &http2.Transport{
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *stdtls.Config) (net.Conn, error) {
+		var dialTLSContext func(ctx context.Context, network, addr string, _ *stdtls.Config) (net.Conn, error)
+		if options.TLSConfig != nil {
+			if len(options.TLSConfig.NextProtos()) == 0 {
+				options.TLSConfig.SetNextProtos([]string{http2.NextProtoTLS})
+			}
+			tlsDialer := tls.NewDialer(options.Dialer, options.TLSConfig)
+			dialTLSContext = func(ctx context.Context, network, addr string, _ *stdtls.Config) (net.Conn, error) {
 				return tlsDialer.DialContext(ctx, network, client.server)
-			},
-			AllowHTTP: true,
+			}
+		}
+		client.roundTripper = &http2.Transport{
+			DialTLSContext: dialTLSContext,
+			AllowHTTP:      true,
 		}
 	}
 	return client, nil
@@ -310,13 +327,19 @@ func (c *Client) now() time.Time {
 }
 
 func (c *Client) newConnectRequest(host string) *http.Request {
+	header := http.Header{
+		"Proxy-Authorization": {buildTokenAuthAt(c.username, c.password, host, uint64(c.now().Unix()))},
+	}
+	if c.userAgent != "" {
+		header.Set("User-Agent", c.userAgent)
+	} else {
+		header["User-Agent"] = []string{""}
+	}
 	return &http.Request{
 		Method: http.MethodConnect,
 		URL:    &url.URL{Scheme: "https", Host: c.serverString},
-		Header: http.Header{
-			"Proxy-Authorization": {buildTokenAuthAt(c.username, c.password, host, uint64(c.now().Unix()))},
-		},
-		Host: host,
+		Header: header,
+		Host:   host,
 	}
 }
 
