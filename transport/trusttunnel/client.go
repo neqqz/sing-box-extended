@@ -48,6 +48,7 @@ type ClientOptions struct {
 	JitterMinMS             int
 	JitterMaxMS             int
 	JitterPackets           int
+	TimeFunc                func() time.Time
 }
 
 type Client struct {
@@ -57,6 +58,7 @@ type Client struct {
 	serverString     string
 	username         string
 	password         string
+	timeFunc         func() time.Time
 	roundTripper     http.RoundTripper
 	quicDialer       func(ctx context.Context) (*quic.Conn, io.Closer, error)
 	quicConn         *quic.Conn
@@ -136,6 +138,10 @@ func (c *Client) getQUICClientConn(ctx context.Context) (*http3.ClientConn, erro
 
 func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	timeFunc := options.TimeFunc
+	if timeFunc == nil {
+		timeFunc = ntp.TimeFuncFromContext(ctx)
+	}
 	client := &Client{
 		ctx:           ctx,
 		cancel:        cancel,
@@ -143,6 +149,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		serverString:  options.Server.String(),
 		username:      options.Username,
 		password:      options.Password,
+		timeFunc:      timeFunc,
 		healthCheck:   options.HealthCheck,
 		udpPaddingMin: options.UDPPaddingMin,
 		udpPaddingMax: options.UDPPaddingMax,
@@ -295,12 +302,19 @@ func isFatalTransportError(err error) bool {
 	return true
 }
 
+func (c *Client) now() time.Time {
+	if c.timeFunc != nil {
+		return c.timeFunc()
+	}
+	return time.Now()
+}
+
 func (c *Client) newConnectRequest(host string) *http.Request {
 	return &http.Request{
 		Method: http.MethodConnect,
 		URL:    &url.URL{Scheme: "https", Host: c.serverString},
 		Header: http.Header{
-			"Proxy-Authorization": {buildTokenAuth(c.username, c.password, host)},
+			"Proxy-Authorization": {buildTokenAuthAt(c.username, c.password, host, uint64(c.now().Unix()))},
 		},
 		Host: host,
 	}

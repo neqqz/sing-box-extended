@@ -36,7 +36,10 @@ const (
 )
 
 func buildTokenAuth(username, password, target string) string {
-	now := uint64(time.Now().Unix())
+	return buildTokenAuthAt(username, password, target, uint64(time.Now().Unix()))
+}
+
+func buildTokenAuthAt(username, password, target string, now uint64) string {
 	userBytes := []byte(username)
 	userLen := len(userBytes)
 	totalLen := tokenHeaderLen + userLen + sha256.Size
@@ -81,33 +84,42 @@ func parseTokenAuth(auth string) (user string, timestamp int64, nonce [8]byte, s
 }
 
 type authReplayCache struct {
+	shards [16]authReplayCacheShard
+}
+
+type authReplayCacheShard struct {
 	mu        sync.Mutex
 	seen      map[[8]byte]int64
 	lastEvict int64
 }
 
 func newAuthReplayCache() *authReplayCache {
-	return &authReplayCache{seen: make(map[[8]byte]int64)}
+	c := &authReplayCache{}
+	for i := range c.shards {
+		c.shards[i].seen = make(map[[8]byte]int64)
+	}
+	return c
 }
 
 func (c *authReplayCache) checkAndAdd(nonce [8]byte, now int64, ttl int64) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if exp, ok := c.seen[nonce]; ok && now < exp {
+	shard := &c.shards[nonce[0]&0x0f]
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	if exp, ok := shard.seen[nonce]; ok && now < exp {
 		return false
 	}
-	if len(c.seen) >= 10000 && now > c.lastEvict {
-		c.lastEvict = now + 10
-		for k, exp := range c.seen {
+	if len(shard.seen) >= 1000 && now > shard.lastEvict {
+		shard.lastEvict = now + 10
+		for k, exp := range shard.seen {
 			if now >= exp {
-				delete(c.seen, k)
+				delete(shard.seen, k)
 			}
 		}
-		if len(c.seen) >= 20000 {
-			c.seen = make(map[[8]byte]int64)
+		if len(shard.seen) >= 2000 {
+			shard.seen = make(map[[8]byte]int64)
 		}
 	}
-	c.seen[nonce] = now + ttl
+	shard.seen[nonce] = now + ttl
 	return true
 }
 

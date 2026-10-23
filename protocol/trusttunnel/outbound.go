@@ -22,6 +22,7 @@ import (
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
+	"github.com/sagernet/sing/common/ntp"
 	"github.com/sagernet/sing/service"
 )
 
@@ -109,6 +110,7 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		JitterMinMS:             timingMin,
 		JitterMaxMS:             timingMax,
 		JitterPackets:           timingPackets,
+		TimeFunc:                ntp.TimeFuncFromContext(ctx),
 	}
 	// Раньше без multiplex.enabled создавался голый *Client — у него нет
 	// самовосстановления: Close() убивает его насовсем, и любую сетевую

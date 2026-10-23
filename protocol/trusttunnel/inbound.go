@@ -155,6 +155,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		Handler:       (*inboundHandler)(h),
 		UDPPaddingMin: udpPaddingMin,
 		UDPPaddingMax: udpPaddingMax,
+		TimeFunc:      ntp.TimeFuncFromContext(ctx),
 	})
 	userMap := make(map[string]string, len(options.Users))
 	for _, u := range options.Users {

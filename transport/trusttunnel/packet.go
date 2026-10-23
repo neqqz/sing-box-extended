@@ -287,13 +287,9 @@ func (u *packetConn) writePacket(buffer *buf.Buffer, destination M.Socksaddr) er
 	copy(header[4:20], destIP[:])
 	binary.BigEndian.PutUint16(header[20:22], destination.Port)
 
-	padding := randomUDPPadding(paddingLen)
-	out := buf.NewSize(udpHeaderLen + payloadLen + paddingLen)
-	defer out.Release()
-	common.Must1(out.Write(header[:]))
-	common.Must1(out.Write(buffer.Bytes()))
 	if paddingLen > 0 {
-		common.Must1(out.Write(padding))
+		padding := randomUDPPadding(paddingLen)
+		return u.writeChunks(header[:], buffer.Bytes(), padding)
 	}
-	return u.writeChunks(out.Bytes())
+	return u.writeChunks(header[:], buffer.Bytes())
 }

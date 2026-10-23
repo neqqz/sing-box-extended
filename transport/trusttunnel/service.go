@@ -37,6 +37,7 @@ type ServiceOptions struct {
 	Handler       Handler
 	UDPPaddingMin int
 	UDPPaddingMax int
+	TimeFunc      func() time.Time
 }
 
 type Service struct {
@@ -48,6 +49,7 @@ type Service struct {
 	replayCache   *authReplayCache
 	udpPaddingMin int
 	udpPaddingMax int
+	timeFunc      func() time.Time
 	closed        bool
 
 	mu sync.RWMutex
@@ -62,8 +64,16 @@ func NewService(options ServiceOptions) *Service {
 		replayCache:   newAuthReplayCache(),
 		udpPaddingMin: options.UDPPaddingMin,
 		udpPaddingMax: options.UDPPaddingMax,
+		timeFunc:      options.TimeFunc,
 	}
 	return s
+}
+
+func (s *Service) now() time.Time {
+	if s.timeFunc != nil {
+		return s.timeFunc()
+	}
+	return time.Now()
 }
 
 func (s *Service) UpdateUsers(users map[string]string) {
@@ -303,7 +313,7 @@ func (s *Service) verify(authorization, target string) (username string, loaded 
 	if !ok {
 		return "", false
 	}
-	now := time.Now().Unix()
+	now := s.now().Unix()
 	if ts < now-AuthMaxSkewSec || ts > now+AuthMaxSkewSec {
 		return "", false
 	}

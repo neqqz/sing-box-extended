@@ -78,6 +78,18 @@ func TestServiceVerify(t *testing.T) {
 	if ok {
 		t.Fatalf("expected target mismatch to fail verify")
 	}
+
+	// 6. Custom TimeFunc support for NTP/drifted clock
+	simulatedTime := time.Date(2027, 1, 1, 12, 0, 0, 0, time.UTC)
+	sWithTime := NewService(ServiceOptions{
+		TimeFunc: func() time.Time { return simulatedTime },
+	})
+	sWithTime.UpdateUsers(map[string]string{"alice": "alicepass"})
+	driftedToken := buildTokenAuthAt("alice", "alicepass", target, uint64(simulatedTime.Unix()))
+	user, ok = sWithTime.verify(driftedToken, target)
+	if !ok || user != "alice" {
+		t.Fatalf("expected successful verify with custom TimeFunc, got user=%s ok=%v", user, ok)
+	}
 }
 
 func TestAuthReplayCache(t *testing.T) {
@@ -199,4 +211,22 @@ func BenchmarkAuthReplayCache(b *testing.B) {
 		nonce[2] = byte(i >> 16)
 		c.checkAndAdd(nonce, now, 60)
 	}
+}
+
+func BenchmarkAuthReplayCacheParallel(b *testing.B) {
+	c := newAuthReplayCache()
+	now := time.Now().Unix()
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		var nonce [8]byte
+		i := 0
+		for pb.Next() {
+			i++
+			nonce[0] = byte(i)
+			nonce[1] = byte(i >> 8)
+			nonce[2] = byte(i >> 16)
+			c.checkAndAdd(nonce, now, 60)
+		}
+	})
 }
