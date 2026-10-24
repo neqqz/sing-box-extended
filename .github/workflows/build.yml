@@ -45,7 +45,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           check-latest: true
       - name: Check input version
         if: github.event_name == 'workflow_dispatch'
@@ -602,7 +602,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           check-latest: true
       - name: Setup Android NDK
         id: setup-ndk
