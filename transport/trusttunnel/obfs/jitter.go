@@ -44,6 +44,9 @@ type jitterConn struct {
 }
 
 func (c *jitterConn) Write(b []byte) (int, error) {
+	if len(b) == 0 {
+		return c.Conn.Write(b)
+	}
 	if c.packets < 0 {
 		sleepJitter(c.minMS, c.maxMS)
 	} else if c.count.Load() <= int64(c.packets) {

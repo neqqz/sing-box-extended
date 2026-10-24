@@ -128,11 +128,11 @@ func (c *Client) getQUICClientConn(ctx context.Context) (*http3.ClientConn, erro
 			c.h3ClientConn = nil
 			c.quicConn = nil
 			c.quicCloser = nil
+			if isFatalTransportError(context.Cause(conn.Context())) {
+				c.cancel()
+			}
 		}
 		c.quicMtx.Unlock()
-		if isFatalTransportError(conn.Context().Err()) {
-			c.cancel()
-		}
 	}()
 
 	return h3Conn, nil
@@ -334,17 +334,18 @@ func (c *Client) newConnectRequest(host string) *http.Request {
 		header["User-Agent"] = []string{""}
 	}
 	return &http.Request{
-		Method: http.MethodConnect,
-		URL:    &url.URL{Scheme: "https", Host: c.serverString},
-		Header: header,
-		Host:   host,
+		Method:        http.MethodConnect,
+		URL:           &url.URL{Scheme: "https", Host: c.serverString},
+		Header:        header,
+		Host:          host,
+		ContentLength: -1,
 	}
 }
 
 func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 	conn := &tcpConn{
 		httpConn: httpConn{
-			remoteAddr: parseRemoteAddr(host),
+			remoteAddr: M.ParseSocksaddr(host).TCPAddr(),
 		},
 	}
 	err := c.roundTrip(ctx, c.newConnectRequest(host), &conn.httpConn)
@@ -365,23 +366,27 @@ func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 		if err != nil {
 			return nil, err
 		}
-		req := c.newConnectRequest(UDPMagicAddress).WithContext(ctx)
+		pktCtx, pktCancel := context.WithCancel(c.ctx)
+		req := c.newConnectRequest(UDPMagicAddress).WithContext(pktCtx)
 		err = str.SendRequestHeader(req)
 		if err != nil {
+			pktCancel()
 			_ = str.Close()
 			return nil, err
 		}
 		rsp, err := str.ReadResponse()
 		if err != nil {
+			pktCancel()
 			_ = str.Close()
 			return nil, err
 		}
+		_ = rsp.Body.Close()
 		if rsp.StatusCode != http.StatusOK {
+			pktCancel()
 			_ = str.Close()
 			return nil, fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
 		}
 		c.resetHealthCheckTimer()
-		pktCtx, pktCancel := context.WithCancel(c.ctx)
 		c.count.Add(1)
 		conn := &quicPacketConn{
 			stream:     str,
@@ -426,11 +431,9 @@ func (c *Client) Close() error {
 	}
 	if c.h3Transport != nil {
 		_ = c.h3Transport.Close()
+		c.h3Transport = nil
 	}
 	c.quicMtx.Unlock()
-	if closer, ok := c.roundTripper.(io.Closer); ok {
-		_ = closer.Close()
-	}
 	if t, ok := c.roundTripper.(*http2.Transport); ok {
 		t.CloseIdleConnections()
 	}
@@ -505,24 +508,26 @@ func (c *MultiplexClient) ListenPacket(ctx context.Context) (net.PacketConn, err
 
 func (c *MultiplexClient) Reset() {
 	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	for _, t := range c.clients {
+	clients := c.clients
+	c.clients = nil
+	c.mutex.Unlock()
+	for _, t := range clients {
 		_ = t.Close()
 	}
-	c.clients = nil
 }
 
 func (c *MultiplexClient) Close() error {
 	c.mutex.Lock()
-	defer c.mutex.Unlock()
 	c.closed = true
+	clients := c.clients
+	c.clients = nil
+	c.mutex.Unlock()
 	var errs []error
-	for _, t := range c.clients {
+	for _, t := range clients {
 		if err := t.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	c.clients = nil
 	return errors.Join(errs...)
 }
 
@@ -565,10 +570,18 @@ func (c *MultiplexClient) getClient() (*Client, error) {
 		if len(c.clients) >= c.maxConnections || numStreams < c.minStreams {
 			return transport, nil
 		}
-	} else if c.maxStreams > 0 && numStreams < c.maxStreams {
+	} else if c.maxStreams > 0 {
+		if numStreams < c.maxStreams {
+			return transport, nil
+		}
+	} else {
 		return transport, nil
 	}
-	return c.newClientLocked()
+	newTransport, err := c.newClientLocked()
+	if err != nil && transport != nil {
+		return transport, nil
+	}
+	return newTransport, err
 }
 
 func (c *MultiplexClient) newClientLocked() (*Client, error) {

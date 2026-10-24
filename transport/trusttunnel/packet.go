@@ -96,17 +96,16 @@ func (u *quicPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr
 		}
 		payloadLen := int(binary.BigEndian.Uint16(b[0:2]))
 		paddingLen := int(binary.BigEndian.Uint16(b[2:4]))
-		_ = paddingLen
-		if len(b) < udpHeaderLen+payloadLen {
+		if len(b) < udpHeaderLen+payloadLen+paddingLen {
 			continue
-		}
-		if buffer.FreeLen() < payloadLen {
-			return destination, io.ErrShortBuffer
 		}
 		var ip [16]byte
 		copy(ip[:], b[4:20])
 		destination.Addr = parse16BytesIP(ip)
 		destination.Port = binary.BigEndian.Uint16(b[20:22])
+		if buffer.FreeLen() < payloadLen {
+			return destination, io.ErrShortBuffer
+		}
 		common.Must1(buffer.Write(b[udpHeaderLen : udpHeaderLen+payloadLen]))
 		return destination, nil
 	}
@@ -148,6 +147,24 @@ func (u *quicPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr
 		copy(header[4:20], destIP[:])
 		binary.BigEndian.PutUint16(header[20:22], destination.Port)
 		return u.stream.SendDatagram(buffer.Bytes())
+	}
+	if paddingLen > 0 && buffer.Start() >= udpHeaderLen && buffer.FreeLen() >= paddingLen {
+		header := buffer.ExtendHeader(udpHeaderLen)
+		binary.BigEndian.PutUint16(header[0:2], uint16(payloadLen))
+		binary.BigEndian.PutUint16(header[2:4], uint16(paddingLen))
+		copy(header[4:20], destIP[:])
+		binary.BigEndian.PutUint16(header[20:22], destination.Port)
+		common.Must1(buffer.Write(randomUDPPadding(paddingLen)))
+		err := u.stream.SendDatagram(buffer.Bytes())
+		if err != nil {
+			var tooLarge *quic.DatagramTooLargeError
+			if errors.As(err, &tooLarge) {
+				binary.BigEndian.PutUint16(header[2:4], 0)
+				buffer.Truncate(udpHeaderLen + payloadLen)
+				return u.stream.SendDatagram(buffer.Bytes())
+			}
+		}
+		return err
 	}
 
 	var header [udpHeaderLen]byte
@@ -265,7 +282,9 @@ func (u *packetConn) readPacket(buffer *buf.Buffer) (address M.Socksaddr, err er
 	address.Port = binary.BigEndian.Uint16(header[20:22])
 
 	if buffer.FreeLen() < payloadLen {
-		_ = rw.SkipN(body, payloadLen+paddingLen)
+		if skipErr := rw.SkipN(body, payloadLen+paddingLen); skipErr != nil {
+			return address, skipErr
+		}
 		return address, io.ErrShortBuffer
 	}
 

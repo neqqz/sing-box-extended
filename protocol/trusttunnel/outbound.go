@@ -145,7 +145,10 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 
 // resolveDestination резолвит destination.Fqdn в IP через роутер, если Addr ещё не выставлен.
 func (h *Outbound) resolveDestination(ctx context.Context, destination M.Socksaddr) (M.Socksaddr, error) {
-	if destination.Addr.IsValid() || !destination.IsFqdn() {
+	if destination.IsIP() {
+		return destination, nil
+	}
+	if !destination.IsDomain() {
 		return destination, nil
 	}
 	if h.dnsRouter == nil {
@@ -188,7 +191,8 @@ func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (n
 	if err != nil {
 		return nil, err
 	}
-	return &resolvingPacketConn{PacketConn: conn, outbound: h, ctx: ctx}, nil
+	npc, _ := conn.(N.NetPacketConn)
+	return &resolvingPacketConn{PacketConn: conn, npc: npc, outbound: h, ctx: ctx}, nil
 }
 
 func (h *Outbound) InterfaceUpdated(ctx context.Context) {
@@ -213,6 +217,7 @@ var (
 // от вызова к вызову и не зафиксирован один раз при создании соединения.
 type resolvingPacketConn struct {
 	net.PacketConn
+	npc      N.NetPacketConn
 	outbound *Outbound
 	ctx      context.Context
 }
@@ -229,8 +234,8 @@ func (c *resolvingPacketConn) FrontHeadroom() int {
 }
 
 func (c *resolvingPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
-	if npc, ok := c.PacketConn.(N.NetPacketConn); ok {
-		return npc.ReadPacket(buffer)
+	if c.npc != nil {
+		return c.npc.ReadPacket(buffer)
 	}
 	destination = M.Socksaddr{}
 	n, addr, err := c.PacketConn.ReadFrom(buffer.FreeBytes())
@@ -242,9 +247,9 @@ func (c *resolvingPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Sock
 }
 
 func (c *resolvingPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	if !destination.IsFqdn() {
-		if npc, ok := c.PacketConn.(N.NetPacketConn); ok {
-			return npc.WritePacket(buffer, destination)
+	if destination.IsIP() {
+		if c.npc != nil {
+			return c.npc.WritePacket(buffer, destination)
 		}
 		defer buffer.Release()
 		_, err := c.PacketConn.WriteTo(buffer.Bytes(), destination.UDPAddr())
@@ -261,8 +266,8 @@ func (c *resolvingPacketConn) WritePacket(buffer *buf.Buffer, destination M.Sock
 		buffer.Release()
 		return err
 	}
-	if npc, ok := c.PacketConn.(N.NetPacketConn); ok {
-		return npc.WritePacket(buffer, resolved)
+	if c.npc != nil {
+		return c.npc.WritePacket(buffer, resolved)
 	}
 	defer buffer.Release()
 	_, err = c.PacketConn.WriteTo(buffer.Bytes(), resolved.UDPAddr())
@@ -271,7 +276,7 @@ func (c *resolvingPacketConn) WritePacket(buffer *buf.Buffer, destination M.Sock
 
 func (c *resolvingPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	destination := M.SocksaddrFromNet(addr)
-	if !destination.IsFqdn() {
+	if destination.IsIP() {
 		return c.PacketConn.WriteTo(p, addr)
 	}
 	ctx := c.ctx

@@ -118,7 +118,8 @@ func newAuthReplayCache() *authReplayCache {
 }
 
 func (c *authReplayCache) checkAndAdd(nonce [8]byte, now int64, ttl int64) bool {
-	shard := &c.shards[nonce[0]&0x0f]
+	shardIndex := binary.BigEndian.Uint64(nonce[:]) % uint64(len(c.shards))
+	shard := &c.shards[shardIndex]
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 	if exp, ok := shard.seen[nonce]; ok && now < exp {

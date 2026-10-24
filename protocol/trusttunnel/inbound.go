@@ -3,6 +3,7 @@ package trusttunnel
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -26,6 +27,7 @@ import (
 	"github.com/sagernet/sing-quic"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/auth"
+	E "github.com/sagernet/sing/common/exceptions"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -130,9 +132,10 @@ type Inbound struct {
 	// conns — принятые TCP-соединения, прошедшие prefix-check: Close обязан их
 	// закрыть, иначе h2Server.ServeConn (блокируется на всю жизнь соединения)
 	// и записи в ResponseWriter переживают остановку inbound.
-	connsMtx    sync.Mutex
-	conns       map[net.Conn]struct{}
-	connsClosed bool
+	connsMtx     sync.Mutex
+	conns        map[net.Conn]struct{}
+	connsClosed  bool
+	quicListener io.Closer
 }
 
 const tlsHandshakeTimeout = 20 * time.Second
@@ -202,6 +205,10 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	if stage != adapter.StartStateStart {
 		return nil
 	}
+	h.connsMtx.Lock()
+	h.connsClosed = false
+	h.conns = make(map[net.Conn]struct{})
+	h.connsMtx.Unlock()
 	scope.Add(h.Close)
 
 	// Горячая замена client_random_prefix / client_random_prefix_secret из файлов.
@@ -314,6 +321,7 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		if err != nil {
 			return err
 		}
+		h.quicListener = quicListener
 		scope.Add(quicListener.Close)
 		go func() {
 			_ = h.http3Server.ServeListener(quicListener)
@@ -360,6 +368,7 @@ func (h *Inbound) Close() error {
 	}
 	return common.Close(
 		h.listener,
+		h.quicListener,
 		common.PtrOrNil(h.service),
 		common.PtrOrNil(h.http3Server),
 		h.httpTLSConfig,
@@ -373,11 +382,11 @@ func (h *Inbound) acceptLoop(rawListener net.Listener, checker *obfs.PrefixCheck
 	for {
 		rawConn, err := rawListener.Accept()
 		if err != nil {
-			if errors.Is(err, net.ErrClosed) {
+			if E.IsClosed(err) {
 				return
 			}
 			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Temporary() { //nolint:staticcheck
+			if errors.As(err, &netErr) && (netErr.Temporary() || netErr.Timeout()) { //nolint:staticcheck
 				delay = min(max(delay*2, 5*time.Millisecond), time.Second)
 				h.logger.Warn("trusttunnel: accept: ", err, "; retrying in ", delay)
 				select {
@@ -442,9 +451,14 @@ func (h *Inbound) UpdateUsers(users []option.TrustTunnelUser) {
 	h.service.UpdateUsers(userMap)
 }
 
+func (h *Inbound) Options() option.TrustTunnelInboundOptions {
+	return h.options
+}
+
 type inboundHandler Inbound
 
 func (h *inboundHandler) NewConnection(ctx context.Context, conn net.Conn, metadata M.Metadata) error {
+	ctx = log.ContextWithNewID(ctx)
 	var inboundCtx adapter.InboundContext
 	inboundCtx.Inbound = h.Tag()
 	inboundCtx.InboundType = h.Type()
@@ -463,6 +477,7 @@ func (h *inboundHandler) NewConnection(ctx context.Context, conn net.Conn, metad
 }
 
 func (h *inboundHandler) NewPacketConnection(ctx context.Context, conn N.PacketConn, metadata M.Metadata) error {
+	ctx = log.ContextWithNewID(ctx)
 	var inboundCtx adapter.InboundContext
 	inboundCtx.Inbound = h.Tag()
 	inboundCtx.InboundType = h.Type()

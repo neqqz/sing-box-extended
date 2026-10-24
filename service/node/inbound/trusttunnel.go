@@ -25,10 +25,15 @@ func NewTrustTunnelManager() *TrustTunnelManager {
 func (m *TrustTunnelManager) AddUserManager(inbound adapter.Inbound) error {
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
-	m.inbounds[inbound.Tag()] = &TrustTunnelUserManager{
-		inbound:  inbound.(*trusttunnel.Inbound),
+	inb := inbound.(*trusttunnel.Inbound)
+	userMgr := &TrustTunnelUserManager{
+		inbound:  inb,
 		usersMap: make(map[string]option.TrustTunnelUser),
 	}
+	for _, u := range inb.Options().Users {
+		userMgr.usersMap[u.Name] = u
+	}
+	m.inbounds[inbound.Tag()] = userMgr
 	return nil
 }
 

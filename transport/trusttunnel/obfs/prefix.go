@@ -163,7 +163,14 @@ func (l *PrefixChecker) Check(conn net.Conn) (net.Conn, bool) {
 		conn.Close()
 		return nil, false
 	}
+	var released bool
+	defer func() {
+		if !released {
+			release()
+		}
+	}()
 	peeked, result := l.checkRandom(conn)
+	released = true
 	release()
 	switch result {
 	case peekMatched:
@@ -271,7 +278,7 @@ func readFullClientHello(conn net.Conn) (wire, logical []byte, ok bool) {
 			return wireBuf.Bytes(), nil, false
 		}
 		recordLen := int(header[3])<<8 | int(header[4])
-		if recordLen <= 0 || wireBuf.Len()+recordLen > maxClientHelloCapture+5 {
+		if recordLen <= 0 || hsBuf.Len()+recordLen > maxClientHelloCapture {
 			return wireBuf.Bytes(), nil, false
 		}
 		payload := make([]byte, recordLen)
@@ -292,7 +299,7 @@ func readFullClientHello(conn net.Conn) (wire, logical []byte, ok bool) {
 		hsMsgLen := int(hs[1])<<16 | int(hs[2])<<8 | int(hs[3])
 		// Total handshake message size including its 4-byte header.
 		need := 4 + hsMsgLen
-		if need > maxClientHelloCapture {
+		if need < 38 || need > maxClientHelloCapture {
 			return wireBuf.Bytes(), nil, false
 		}
 		if hsBuf.Len() < need {
@@ -490,6 +497,7 @@ func (l *PrefixChecker) relayToFallback(conn net.Conn, peeked []byte) {
 		} else {
 			_ = upstream.Close()
 		}
+		_ = upstream.SetReadDeadline(time.Now().Add(2 * time.Second))
 	}()
 	go func() {
 		defer wg.Done()
@@ -499,6 +507,7 @@ func (l *PrefixChecker) relayToFallback(conn net.Conn, peeked []byte) {
 		} else {
 			_ = conn.Close()
 		}
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	}()
 	wg.Wait()
 }
@@ -517,6 +526,21 @@ func publicOnly(_, address string, _ syscall.RawConn) error {
 	ip = ip.Unmap()
 	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 		return errors.New("non-public fallback target")
+	}
+	if ip.Is4() {
+		a4 := ip.As4()
+		// 0.0.0.0/8 is treated as loopback by Linux kernel
+		if a4[0] == 0 {
+			return errors.New("non-public fallback target")
+		}
+		// 100.64.0.0/10 (RFC 6598 CGNAT / Cloud metadata)
+		if a4[0] == 100 && (a4[1]&0xc0) == 64 {
+			return errors.New("non-public fallback target")
+		}
+		// 198.18.0.0/15 (RFC 2544 Benchmark / FakeIP)
+		if a4[0] == 198 && (a4[1]&0xfe) == 18 {
+			return errors.New("non-public fallback target")
+		}
 	}
 	return nil
 }
@@ -624,6 +648,13 @@ func (c *peekedConn) CloseWrite() error {
 		return cw.CloseWrite()
 	}
 	return nil
+}
+
+func (c *peekedConn) SyscallConn() (syscall.RawConn, error) {
+	if sc, ok := c.Conn.(syscall.Conn); ok {
+		return sc.SyscallConn()
+	}
+	return nil, syscall.EINVAL
 }
 
 func (c *peekedConn) Upstream() any {
