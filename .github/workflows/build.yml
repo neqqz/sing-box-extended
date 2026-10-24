@@ -124,7 +124,7 @@ jobs:
         if: ${{ ! matrix.legacy_win7 }}
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           check-latest: true
       - name: Cache Go for Windows 7
         if: matrix.legacy_win7
@@ -487,7 +487,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           check-latest: true
           
       - name: Setup Node
@@ -726,7 +726,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.9'
+          go-version: '1.26.10'
           check-latest: true
 
       # NaiveProxy outbound for the Linux desktop daemon. This mirrors the
