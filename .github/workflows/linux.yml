@@ -27,7 +27,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: 1.26.9
           check-latest: true
@@ -71,7 +71,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: 1.26.9
           check-latest: true
@@ -96,7 +96,7 @@ jobs:
       - name: Cache Chromium toolchain
         if: matrix.naive
         id: cache-chromium-toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/cronet-go/naiveproxy/src/third_party/llvm-build/
@@ -214,7 +214,7 @@ jobs:
       - name: Cleanup
         run: rm dist/sing-box
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.os }}_${{ matrix.arch }}${{ matrix.goarm && format('v{0}', matrix.goarm) }}${{ matrix.legacy_go && '-legacy' || '' }}
           path: "dist"
@@ -235,7 +235,7 @@ jobs:
           git tag v${{ needs.calculate_version.outputs.version }} -f
           echo "VERSION=${{ needs.calculate_version.outputs.version }}" >> "$GITHUB_ENV"
       - name: Download builds
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
