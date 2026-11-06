@@ -136,6 +136,7 @@ type Inbound struct {
 	conns        map[net.Conn]struct{}
 	connsClosed  bool
 	quicListener io.Closer
+	replayCache  *tls.ReplayCache
 }
 
 const tlsHandshakeTimeout = 20 * time.Second
@@ -161,6 +162,9 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 	if err := validateUDPPadding(options.UDPPadding); err != nil {
 		return nil, err
 	}
+	if err := validateTiming(options.Timing); err != nil {
+		return nil, err
+	}
 	networkList := options.Network.Build()
 	if len(networkList) == 0 {
 		networkList = []string{N.NetworkTCP}
@@ -179,6 +183,7 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
 		}),
 		randomReloader:  randomReloader,
 		randomPrefixLen: options.ClientRandomPrefixLen,
+		replayCache:     tls.NewReplayCache(),
 	}
 	udpPaddingMin, udpPaddingMax := paddingRange(options.UDPPadding)
 	fallbackHandler := createFallbackHandler(options.FallbackServer)
@@ -246,13 +251,14 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 		if h.randomReloader != nil {
 			randomProvider = h.randomReloader
 		}
-		prefixChecker := obfs.NewPrefixChecker(rawListener.Addr(), randomProvider, h.options.ClientRandomPrefixLen, h.options.FallbackServer, int(h.options.FallbackSNIPort), h.logger)
+		prefixChecker := obfs.NewPrefixChecker(rawListener.Addr(), randomProvider, h.options.ClientRandomPrefixLen, h.options.FallbackServer, int(h.options.FallbackSNIPort), h.logger, h.replayCache)
 		if err = h.httpTLSConfig.Start(); err != nil {
 			return err
 		}
 
 		h.h2Server = &http2.Server{
 			IdleTimeout:                  20 * time.Second,
+			MaxConcurrentStreams:         4096,
 			MaxUploadBufferPerStream:     8 << 20,  // 8 MB
 			MaxUploadBufferPerConnection: 16 << 20, // 16 MB
 		}
@@ -295,14 +301,16 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 			MaxIdleTimeout:          trusttunnel.DefaultSessionTimeout * 2,
 			KeepAlivePeriod:         trusttunnel.DefaultKeepAlivePeriod,
 			MaxIncomingStreams:      4096,
-			Allow0RTT:               true,
+			// 0-RTT permits replaying requests before the TLS handshake is authenticated.
+			// TrustTunnel carries authenticated stream setup, so keep replay protection
+			// at the handshake boundary instead of accepting early data.
+			Allow0RTT:               false,
 			DisablePathMTUDiscovery: h.options.DisablePathMTUDiscovery,
 			EnableDatagrams:         true,
 		}
 		if h.randomReloader != nil {
 			reloader := h.randomReloader
 			length := tls.RandomPrefixLenOrDefault(h.randomPrefixLen)
-			replay := tls.NewReplayCache()
 			quicConfig.ServerClientRandomVerify = func(random [32]byte, clientHello []byte) bool {
 				set := reloader.Current()
 				if len(set.Secrets) > 0 {
@@ -310,9 +318,9 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 					if !ok {
 						return false
 					}
-					return tls.MatchRotatingRandomPrefixBound(set.Secrets, length, random[:], bind) && !replay.Seen(random[:])
+					return tls.MatchRotatingRandomPrefixBound(set.Secrets, length, random[:], bind) && !h.replayCache.Seen(random[:])
 				}
-				return tls.MatchAnyRandomPrefix(set.Prefixes, random[:]) && !replay.Seen(random[:])
+				return tls.MatchAnyRandomPrefix(set.Prefixes, random[:]) && !h.replayCache.Seen(random[:])
 			}
 		}
 		timingMin, timingMax, timingPackets := timingRange(h.options.Timing)

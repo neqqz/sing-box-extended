@@ -71,6 +71,9 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 	if err := validateUDPPadding(options.UDPPadding); err != nil {
 		return nil, err
 	}
+	if err := validateTiming(options.Timing); err != nil {
+		return nil, err
+	}
 	outboundDialer, err := dialer.New(ctx, options.DialerOptions, options.ServerIsDomain())
 	if err != nil {
 		return nil, err

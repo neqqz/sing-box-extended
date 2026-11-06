@@ -37,6 +37,8 @@ import (
 	"golang.org/x/net/http2"
 )
 
+const maxRequestBodySize = 64 << 20
+
 func RegisterService(registry *boxService.Registry) {
 	boxService.Register[option.OCMServiceOptions](registry, C.TypeOCM, NewService)
 }
@@ -377,7 +379,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		username, ok = s.userManager.Authenticate(clientToken)
 		if !ok {
-			s.logger.Warn("authentication failed for request from ", r.RemoteAddr, ": unknown key: ", clientToken)
+			s.logger.Warn("authentication failed for request from ", r.RemoteAddr, ": unknown key")
 			writeJSONError(w, r, http.StatusUnauthorized, "authentication_error", "invalid api key")
 			return
 		}
@@ -386,6 +388,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") && strings.HasPrefix(path, "/v1/responses") {
 		s.handleWebSocket(w, r, proxyPath, username)
 		return
+	}
+
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	}
 
 	var requestModel string

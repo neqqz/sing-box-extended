@@ -4,9 +4,11 @@ import (
 	"archive/zip"
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -83,16 +85,25 @@ func (s *Server) downloadExternalUI() error {
 	return err
 }
 
+const (
+	maxExternalUIArchiveSize       = 256 << 20
+	maxExternalUIEntrySize         = 64 << 20
+	maxExternalUIExtractedSize     = 512 << 20
+)
+
 func (s *Server) downloadZIP(body io.Reader, output string) error {
 	tempFile, err := filemanager.CreateTemp(s.ctx, "external-ui.zip")
 	if err != nil {
 		return err
 	}
 	defer filemanager.Remove(s.ctx, tempFile.Name())
-	_, err = io.Copy(tempFile, body)
+	written, err := io.Copy(tempFile, io.LimitReader(body, maxExternalUIArchiveSize+1))
 	tempFile.Close()
 	if err != nil {
 		return err
+	}
+	if written > maxExternalUIArchiveSize {
+		return fmt.Errorf("external ui archive is too large")
 	}
 	reader, err := zip.OpenReader(tempFile.Name())
 	if err != nil {
@@ -100,29 +111,67 @@ func (s *Server) downloadZIP(body io.Reader, output string) error {
 	}
 	defer reader.Close()
 	trimDir := zipIsInSingleDirectory(reader.File)
+	var extractedSize uint64
 	for _, file := range reader.File {
 		if file.FileInfo().IsDir() {
 			continue
 		}
-		pathElements := strings.Split(file.Name, "/")
-		if trimDir {
-			pathElements = pathElements[1:]
+		pathElements, ok := safeZIPPath(file.Name, trimDir)
+		if !ok {
+			return fmt.Errorf("unsafe path in external ui archive: %q", file.Name)
 		}
-		saveDirectory := output
-		if len(pathElements) > 1 {
-			saveDirectory = filepath.Join(saveDirectory, filepath.Join(pathElements[:len(pathElements)-1]...))
+		if file.FileInfo().Mode()&os.ModeSymlink != 0 || file.UncompressedSize64 > maxExternalUIEntrySize {
+			return fmt.Errorf("unsafe entry in external ui archive: %q", file.Name)
 		}
+		if extractedSize > maxExternalUIExtractedSize-file.UncompressedSize64 {
+			return fmt.Errorf("external ui contents are too large")
+		}
+		extractedSize += file.UncompressedSize64
+		savePath := filepath.Join(append([]string{output}, pathElements...)...)
+		cleanOutput := filepath.Clean(output)
+		cleanPath := filepath.Clean(savePath)
+		if cleanPath != cleanOutput && !strings.HasPrefix(cleanPath, cleanOutput+string(filepath.Separator)) {
+			return fmt.Errorf("path escapes external ui directory: %q", file.Name)
+		}
+		saveDirectory := filepath.Dir(savePath)
 		err = filemanager.MkdirAll(s.ctx, saveDirectory, 0o755)
 		if err != nil {
 			return err
 		}
-		savePath := filepath.Join(saveDirectory, pathElements[len(pathElements)-1])
 		err = downloadZIPEntry(s.ctx, file, savePath)
 		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func safeZIPPath(name string, trimDir bool) ([]string, bool) {
+	if name == "" || strings.Contains(name, "\\") {
+		return nil, false
+	}
+	// ZIP paths use '/', while filepath.IsLocal applies the platform's
+	// absolute-path and traversal rules (including Windows drive paths).
+	localName := filepath.FromSlash(name)
+	if !filepath.IsLocal(localName) {
+		return nil, false
+	}
+	parts := strings.Split(name, "/")
+	if trimDir {
+		if len(parts) < 2 {
+			return nil, false
+		}
+		parts = parts[1:]
+	}
+	if len(parts) == 0 {
+		return nil, false
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil, false
+		}
+	}
+	return parts, true
 }
 
 func downloadZIPEntry(ctx context.Context, zipFile *zip.File, savePath string) error {
