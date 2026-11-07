@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	boxService "github.com/sagernet/sing-box/adapter/service"
@@ -84,7 +85,12 @@ func (s *Service) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	}
 	httpServer := &http.Server{
 		//nolint:staticcheck
-		Handler: h2c.NewHandler(newHTTPHandler(s.logger, grpcServer, s.options, s.dashboard), new(http2.Server)),
+		Handler:           h2c.NewHandler(newHTTPHandler(s.logger, grpcServer, s.options, s.dashboard), new(http2.Server)),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    http.DefaultMaxHeaderBytes,
 		BaseContext: func(net.Listener) context.Context {
 			return ctx
 		},

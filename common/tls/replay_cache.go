@@ -41,8 +41,10 @@ func (c *ReplayCache) Seen(random []byte) bool {
 			}
 		}
 		if len(c.seen) >= replayCacheMax {
-			// shortcut: при переполнении живыми записями сбрасываем всё, кэш — best-effort.
-			c.seen = make(map[[32]byte]time.Time)
+			// Do not clear live entries: that would make previously captured
+			// ClientHello values acceptable again. Reject new admissions until
+			// an entry expires and space becomes available.
+			return true
 		}
 	}
 	c.seen[key] = now.Add(replayCacheTTL)

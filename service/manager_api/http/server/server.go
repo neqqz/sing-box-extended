@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	boxService "github.com/sagernet/sing-box/adapter/service"
@@ -101,7 +102,12 @@ func (s *APIServer) Start(stage adapter.StartStage, scope *adapter.Scope) error 
 		tcpListener = aTLS.NewListener(tcpListener, s.tlsConfig)
 	}
 	s.httpServer = &http.Server{
-		Handler: chiRouter,
+		Handler:           chiRouter,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    http.DefaultMaxHeaderBytes,
 	}
 	scope.Add(s.httpServer.Close)
 	go func() {
@@ -116,6 +122,7 @@ func (s *APIServer) Start(stage adapter.StartStage, scope *adapter.Scope) error 
 func (s *APIServer) Route(r chi.Router) {
 	r.Route("/manager/v1", func(r chi.Router) {
 		r.Use(newCORSMiddleware(s.options.CORS))
+		r.Use(limitManagerAPIBody)
 		r.Use(func(handler http.Handler) http.Handler {
 			return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				s.logger.Debug(request.Method, " ", request.RequestURI, " ", sHTTP.SourceAddress(request))
@@ -179,6 +186,15 @@ func (s *APIServer) Route(r chi.Router) {
 	})
 }
 
+const managerAPIMaxBodyBytes = 1 << 20
+
+func limitManagerAPIBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, managerAPIMaxBodyBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // updateTrafficLimiterUsed overwrites the running raw_used counter
 // of a traffic limiter. Used by the admin panel "reset traffic" button
 // (which posts {"used": 0}); also fine for any operator who needs to
@@ -236,7 +252,7 @@ func newCORSMiddleware(cfg *option.ManagerAPICORSOptions) func(http.Handler) htt
 	)
 	var (
 		originSet      map[string]struct{}
-		allowAnyOrigin = true
+		allowAnyOrigin bool
 		exposedHeaders string
 		maxAge         = "600"
 	)
@@ -253,7 +269,9 @@ func newCORSMiddleware(cfg *option.ManagerAPICORSOptions) func(http.Handler) htt
 			}
 			filtered = append(filtered, o)
 		}
-		if len(filtered) > 0 && !hasWildcard {
+		if hasWildcard {
+			allowAnyOrigin = true
+		} else if len(filtered) > 0 {
 			originSet = make(map[string]struct{}, len(filtered))
 			for _, o := range filtered {
 				originSet[o] = struct{}{}
@@ -286,11 +304,7 @@ func newCORSMiddleware(cfg *option.ManagerAPICORSOptions) func(http.Handler) htt
 				h.Set("Access-Control-Allow-Origin", emitOrigin)
 			}
 			h.Set("Access-Control-Allow-Methods", allowedMethods)
-			if reqHeaders := r.Header.Get("Access-Control-Request-Headers"); reqHeaders != "" {
-				h.Set("Access-Control-Allow-Headers", reqHeaders)
-			} else {
-				h.Set("Access-Control-Allow-Headers", fallbackHeaders)
-			}
+			h.Set("Access-Control-Allow-Headers", fallbackHeaders)
 			if exposedHeaders != "" {
 				h.Set("Access-Control-Expose-Headers", exposedHeaders)
 			}
@@ -349,10 +363,19 @@ func listHandler[T any](fn func(map[string][]string) ([]T, error)) http.HandlerF
 	}
 }
 
+const maxManagerAPIListLimit = 1000
+
 func applyDefaultLimit(filters map[string][]string) {
-	if _, ok := filters["limit"]; !ok {
-		filters["limit"] = []string{"100"}
+	limit := 100
+	if values := filters["limit"]; len(values) == 1 {
+		if parsed, err := strconv.Atoi(values[0]); err == nil && parsed > 0 {
+			limit = parsed
+		}
 	}
+	if limit > maxManagerAPIListLimit {
+		limit = maxManagerAPIListLimit
+	}
+	filters["limit"] = []string{strconv.Itoa(limit)}
 }
 
 func countHandler(fn func(map[string][]string) (int, error)) http.HandlerFunc {

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
@@ -59,8 +60,13 @@ func startDebugHTTPServer(options option.DebugOptions) (*http.Server, error) {
 		})
 	})
 	server := &http.Server{
-		Addr:    options.Listen,
-		Handler: r,
+		Addr:              options.Listen,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    http.DefaultMaxHeaderBytes,
 	}
 	listener, err := net.Listen("tcp", options.Listen)
 	if err != nil {
