@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"time"
 
 	C "github.com/sagernet/sing-box/constant"
 	"github.com/sagernet/sing-box/log"
@@ -35,11 +34,6 @@ func init() {
 	commandTools.AddCommand(commandFetch)
 }
 
-const (
-	fetchTimeout    = 5 * time.Minute
-	maxFetchResponse = 256 << 20
-)
-
 var (
 	httpClient  *http.Client
 	http3Client *http.Client
@@ -52,7 +46,6 @@ func fetch(args []string) error {
 	}
 	defer instance.Close()
 	httpClient = &http.Client{
-		Timeout: fetchTimeout,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				dialer, err := createDialer(instance, commandToolsFlagOutbound)
@@ -114,14 +107,7 @@ func fetchHTTP(httpClient *http.Client, parsedURL *url.URL) error {
 		return err
 	}
 	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return E.New("fetch failed: ", response.Status)
-	}
-	reader := io.LimitReader(response.Body, maxFetchResponse+1)
-	written, err := bufio.Copy(os.Stdout, reader)
-	if written > maxFetchResponse {
-		return E.New("fetch response exceeds maximum size")
-	}
+	_, err = bufio.Copy(os.Stdout, response.Body)
 	if errors.Is(err, io.EOF) {
 		return nil
 	}

@@ -21,7 +21,6 @@ const (
 	webSocketSubprotocol  = "grpc-websockets"
 	webSocketReadLimit    = 1 << 22
 	webSocketPingInterval = 30 * time.Second
-	webSocketHeaderLimit  = 64 << 10
 )
 
 func isWebSocketGRPCRequest(request *http.Request) bool {
@@ -86,9 +85,6 @@ func (b *webBridge) serveWebSocket(writer http.ResponseWriter, request *http.Req
 }
 
 func parseWebSocketHeader(content []byte) (http.Header, error) {
-	if len(content) > webSocketHeaderLimit {
-		return nil, E.New("websocket request metadata too large")
-	}
 	reader := textproto.NewReader(bufio.NewReader(io.MultiReader(bytes.NewReader(content), strings.NewReader("\r\n"))))
 	mimeHeader, err := reader.ReadMIMEHeader()
 	if err != nil {
@@ -160,20 +156,19 @@ func (w *webSocketResponseWriter) WriteHeader(statusCode int) {
 		w.flushedHeader[canonicalKey] = values
 		headerFrame[canonicalKey] = values
 	}
-	_ = w.writeHeaderFrame(headerFrame)
+	w.writeHeaderFrame(headerFrame)
 }
 
 func (w *webSocketResponseWriter) Flush() {
 }
 
-func (w *webSocketResponseWriter) writeHeaderFrame(header http.Header) error {
+func (w *webSocketResponseWriter) writeHeaderFrame(header http.Header) {
 	var headerBuffer bytes.Buffer
 	header.Write(&headerBuffer)
 	frame := make([]byte, 0, 5+headerBuffer.Len())
 	frame = append(frame, webMetadataFrameHeader(headerBuffer.Len())...)
 	frame = append(frame, headerBuffer.Bytes()...)
-	_, err := w.conn.Write(w.ctx, websocket.MessageBinary, frame)
-	return err
+	w.conn.Write(w.ctx, websocket.MessageBinary, frame)
 }
 
 func (w *webSocketResponseWriter) writeTrailerFrame() {
@@ -193,7 +188,7 @@ func (w *webSocketResponseWriter) writeTrailerFrame() {
 		}
 		trailerHeader[lowerKey] = values
 	}
-	_ = w.writeHeaderFrame(trailerHeader)
+	w.writeHeaderFrame(trailerHeader)
 }
 
 type webSocketBodyReader struct {

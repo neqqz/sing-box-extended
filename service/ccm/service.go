@@ -37,7 +37,6 @@ import (
 )
 
 const (
-	maxRequestBodySize     = 64 << 20
 	contextWindowStandard   = 200000
 	contextWindowPremium    = 1000000
 	premiumContextThreshold = 200000
@@ -330,14 +329,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		username, ok = s.userManager.Authenticate(clientToken)
 		if !ok {
-			s.logger.Warn("authentication failed for request from ", r.RemoteAddr, ": unknown key")
+			s.logger.Warn("authentication failed for request from ", r.RemoteAddr, ": unknown key: ", clientToken)
 			writeJSONError(w, r, http.StatusUnauthorized, "authentication_error", "invalid api key")
 			return
 		}
-	}
-
-	if r.Body != nil {
-		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 	}
 
 	var requestModel string

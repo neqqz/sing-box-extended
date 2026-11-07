@@ -22,10 +22,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 )
 
-const (
-	DefaultConfigURL       = "https://mensura.cdn-apple.com/api/v1/gm/config"
-	maxNetworkConfigBytes = 1 << 20
-)
+const DefaultConfigURL = "https://mensura.cdn-apple.com/api/v1/gm/config"
 
 type Config struct {
 	Version      int    `json:"version"`
@@ -872,15 +869,7 @@ func fetchConfig(ctx context.Context, client *http.Client, configURL string) (*C
 		return nil, err
 	}
 	var config Config
-	limitedBody := io.LimitReader(resp.Body, maxNetworkConfigBytes+1)
-	configBytes, err := io.ReadAll(limitedBody)
-	if err != nil {
-		return nil, E.Cause(err, "read config")
-	}
-	if len(configBytes) > maxNetworkConfigBytes {
-		return nil, E.New("network quality config too large")
-	}
-	if err = json.Unmarshal(configBytes, &config); err != nil {
+	if err = json.NewDecoder(resp.Body).Decode(&config); err != nil {
 		return nil, E.Cause(err, "decode config")
 	}
 	return &config, nil
