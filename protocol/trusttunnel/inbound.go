@@ -258,7 +258,6 @@ func (h *Inbound) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 
 		h.h2Server = &http2.Server{
 			IdleTimeout:                  20 * time.Second,
-			MaxConcurrentStreams:         4096,
 			MaxUploadBufferPerStream:     8 << 20,  // 8 MB
 			MaxUploadBufferPerConnection: 16 << 20, // 16 MB
 		}
