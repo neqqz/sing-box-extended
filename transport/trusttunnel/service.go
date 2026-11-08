@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
-	"time"
 
 	"github.com/sagernet/quic-go"
 	"github.com/sagernet/quic-go/http3"
