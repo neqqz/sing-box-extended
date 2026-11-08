@@ -48,7 +48,6 @@ type ClientOptions struct {
 	JitterMinMS             int
 	JitterMaxMS             int
 	JitterPackets           int
-	TimeFunc                func() time.Time
 	UserAgent               string
 }
 
@@ -60,7 +59,6 @@ type Client struct {
 	username         string
 	password         string
 	userAgent        string
-	timeFunc         func() time.Time
 	roundTripper     http.RoundTripper
 	quicDialer       func(ctx context.Context) (*quic.Conn, io.Closer, error)
 	quicConn         *quic.Conn
@@ -140,10 +138,6 @@ func (c *Client) getQUICClientConn(ctx context.Context) (*http3.ClientConn, erro
 
 func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	timeFunc := options.TimeFunc
-	if timeFunc == nil {
-		timeFunc = ntp.TimeFuncFromContext(ctx)
-	}
 	ua := options.UserAgent
 	if ua == "" {
 		ua = utils.ChromeUA
@@ -158,7 +152,6 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 		username:      options.Username,
 		password:      options.Password,
 		userAgent:     ua,
-		timeFunc:      timeFunc,
 		healthCheck:   options.HealthCheck,
 		udpPaddingMin: options.UDPPaddingMin,
 		udpPaddingMax: options.UDPPaddingMax,
@@ -315,13 +308,6 @@ func isFatalTransportError(err error) bool {
 		return false
 	}
 	return true
-}
-
-func (c *Client) now() time.Time {
-	if c.timeFunc != nil {
-		return c.timeFunc()
-	}
-	return time.Now()
 }
 
 func (c *Client) newConnectRequest(host string) *http.Request {

@@ -108,7 +108,6 @@ func NewOutbound(ctx context.Context, router adapter.Router, logger log.ContextL
 		JitterMinMS:             timingMin,
 		JitterMaxMS:             timingMax,
 		JitterPackets:           timingPackets,
-		TimeFunc:                ntp.TimeFuncFromContext(ctx),
 		UserAgent:               options.UserAgent,
 	}
 	// Раньше без multiplex.enabled создавался голый *Client — у него нет
