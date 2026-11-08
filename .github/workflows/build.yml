@@ -800,7 +800,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: 22
+          node-version: 26.7.0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
@@ -851,7 +851,7 @@ jobs:
 
       - name: Install desktop deps
         working-directory: clients/desktop
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       # electron-builder fpm needs bsdtar for pacman packages on Linux
       - name: Install Linux packaging tools
