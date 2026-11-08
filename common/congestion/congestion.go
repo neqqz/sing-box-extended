@@ -1,6 +1,7 @@
 package congestion
 
 import (
+	"strings"
 	"time"
 
 	"github.com/sagernet/quic-go"
@@ -17,10 +18,18 @@ func NewCongestionControl(name string, cwnd int, timeFunc func() time.Time) (fun
 	if cwnd == 0 {
 		cwnd = 32
 	}
-	switch name {
-	case "", "bbr":
+	switch strings.ToLower(name) {
+	case "", "bbr", "bbr2", "bbr3", "bbr_standard":
 		return func(conn *quic.Conn) congestion.CongestionControl {
 			return congestion_meta2.NewBbrSenderWithProfile(conn.InitialPacketSize(), congestion_meta2.ProfileStandard)
+		}, nil
+	case "bbr_aggressive":
+		return func(conn *quic.Conn) congestion.CongestionControl {
+			return congestion_meta2.NewBbrSenderWithProfile(conn.InitialPacketSize(), congestion_meta2.ProfileAggressive)
+		}, nil
+	case "bbr_conservative":
+		return func(conn *quic.Conn) congestion.CongestionControl {
+			return congestion_meta2.NewBbrSenderWithProfile(conn.InitialPacketSize(), congestion_meta2.ProfileConservative)
 		}, nil
 	case "cubic":
 		return func(conn *quic.Conn) congestion.CongestionControl {
