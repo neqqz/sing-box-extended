@@ -2,9 +2,7 @@ package trusttunnel
 
 import (
 	"context"
-	crand "crypto/rand"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -22,11 +20,16 @@ import (
 const (
 	UDPMagicAddress           = "_udp2"
 	HealthCheckMagicAddress   = "_check"
+	ICMPMagicAddress          = "_icmp"
 	DefaultHealthCheckTimeout = 7 * time.Second
 	DefaultSessionTimeout     = 30 * time.Second
 	DefaultKeepAlivePeriod    = 10 * time.Second
 
-	AuthBasicPrefix = "Basic "
+	AuthBasicPrefix         = "Basic "
+	ProxyAuthRealm          = "Authorization Required"
+	ProxyAuthenticateHeader = "Basic realm=\"Authorization Required\""
+
+	MaxUDPPadding = 255
 )
 
 func buildAuth(username, password string) string {
@@ -35,33 +38,35 @@ func buildAuth(username, password string) string {
 }
 
 func parseAuth(auth string) (string, bool) {
-	credentials, ok := strings.CutPrefix(auth, AuthBasicPrefix)
-	return credentials, ok
-}
-
-func parse16BytesIP(b [16]byte) netip.Addr {
-	addr := netip.AddrFrom16(b).Unmap()
-	if !addr.Is4() && binary.BigEndian.Uint64(b[0:8]) == 0 && binary.BigEndian.Uint32(b[8:12]) == 0 &&
-		!(b[12] == 0 && b[13] == 0 && b[14] == 0 && (b[15] == 0 || b[15] == 1)) {
-		return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+	if len(auth) < len(AuthBasicPrefix) || !strings.EqualFold(auth[:len(AuthBasicPrefix)], AuthBasicPrefix) {
+		return "", false
 	}
-	return addr
+	return strings.TrimSpace(auth[len(AuthBasicPrefix):]), true
 }
 
-func buildPaddingIP(addr netip.Addr) (buffer [16]byte) {
-	return addr.As16()
+func parse16BytesIP(rawIP [16]byte) netip.Addr {
+	allZeroPrefix := true
+	for i := 0; i < 12; i++ {
+		if rawIP[i] != 0 {
+			allZeroPrefix = false
+			break
+		}
+	}
+	if allZeroPrefix {
+		return netip.AddrFrom4(*(*[4]byte)(rawIP[12:16]))
+	}
+	return netip.AddrFrom16(rawIP)
 }
 
-var (
-	udpPaddingPool [65536]byte
-)
-
-func init() {
-	_, _ = crand.Read(udpPaddingPool[:])
+func buildPaddingIP(addr netip.Addr) (paddedIP [16]byte) {
+	if addr.Is4() {
+		copy(paddedIP[12:], addr.AsSlice())
+	} else if addr.Is6() {
+		copy(paddedIP[:], addr.AsSlice())
+	}
+	return
 }
 
-// randomUDPPaddingLength возвращает случайную длину паддинга в [min, max]
-// (в байтах).
 func randomUDPPaddingLength(min, max int) int {
 	if max <= 0 || min < 0 || max < min {
 		return 0
@@ -72,17 +77,14 @@ func randomUDPPaddingLength(min, max int) int {
 	return min + randv2.IntN(max-min+1)
 }
 
-// randomUDPPadding возвращает n байт случайного паддинга без аллокаций в куче.
-// Полностью потокобезопасен и свободен от гонок данных.
-func randomUDPPadding(n int) []byte {
-	if n <= 0 {
-		return nil
+const asciiLetters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+func randomASCII(n int) []byte {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = asciiLetters[randv2.IntN(len(asciiLetters))]
 	}
-	if n >= len(udpPaddingPool) {
-		return udpPaddingPool[:]
-	}
-	offset := randv2.IntN(len(udpPaddingPool) - n + 1)
-	return udpPaddingPool[offset : offset+n]
+	return b
 }
 
 type httpConn struct {
@@ -253,11 +255,6 @@ func (t *tcpConn) CloseWrite() error {
 	}
 	return nil
 }
-
-// Wire limits: the UDP padding length is a uint16 in the frame header.
-const (
-	MaxUDPPadding = 65535
-)
 
 // ValidatePadding rejects ranges that would silently corrupt the stream.
 func ValidatePadding(name string, min, max, limit int) error {

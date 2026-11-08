@@ -136,10 +136,8 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			s.fallbackHandler.ServeHTTP(writer, request)
 			return
 		}
-		// 407 прямым текстом палит, что порт держит прокси/CONNECT-сервер —
-		// любой сканер или DPI, стукнувшийся без валидных кредов, сразу видит
-		// сигнатуру. Стандартный 404 неотличим от обычного веб-сервера.
-		http.NotFound(writer, request)
+		writer.Header().Set("Proxy-Authenticate", ProxyAuthenticateHeader)
+		writer.WriteHeader(http.StatusProxyAuthRequired)
 		s.badRequest(request.Context(), request, E.New("authorization failed"))
 		return
 	}
@@ -157,63 +155,19 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	ctx = auth.ContextWithUser(ctx, username)
 	targetHost := request.Host
 	if h, _, err := net.SplitHostPort(targetHost); err == nil {
-		if h == UDPMagicAddress || h == HealthCheckMagicAddress {
+		if h == UDPMagicAddress || h == HealthCheckMagicAddress || h == ICMPMagicAddress {
 			targetHost = h
 		}
 	}
 	switch targetHost {
 	case UDPMagicAddress:
-		// UDPMagicAddress требует авторизации - уже проверена выше
 		writer.WriteHeader(http.StatusOK)
 		flusher, isFlusher := writer.(http.Flusher)
 		if isFlusher {
 			flusher.Flush()
 		}
-		if streamer, ok := writer.(http3.HTTPStreamer); ok {
-			str := streamer.HTTPStream()
-			reqCtx, cancel := context.WithCancel(request.Context())
-			conn := &quicPacketConn{
-				stream:     str,
-				ctx:        reqCtx,
-				cancel:     cancel,
-				remoteAddr: parseRemoteAddr(request.RemoteAddr),
-				localAddr:  parseLocalAddr(request),
-				paddingMin: s.udpPaddingMin,
-				paddingMax: s.udpPaddingMax,
-			}
-			if !s.trackConn(username, conn) {
-				_ = conn.Close()
-				return
-			}
-			defer s.untrackConn(username, conn)
-			defer conn.Close()
-			firstPacket := buf.NewPacket()
-			destination, err := conn.ReadPacket(firstPacket)
-			if err != nil {
-				firstPacket.Release()
-				if isBenignFirstPacketClose(err) {
-					s.logger.DebugContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
-				} else {
-					s.logger.ErrorContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
-				}
-				return
-			}
-			destination = destination.Unwrap()
-			cachedConn := bufio.NewCachedPacketConn(conn, firstPacket, destination)
-			defer cachedConn.Close()
-			if err = s.handler.NewPacketConnection(ctx, cachedConn, M.Metadata{
-				Protocol:    "trusttunnel",
-				Source:      M.ParseSocksaddr(request.RemoteAddr),
-				Destination: destination,
-			}); err != nil {
-				return
-			}
-			<-reqCtx.Done()
-			return
-		}
-
 		done := make(chan struct{})
-		conn := &packetConn{
+		conn := &serverPacketConn{
 			httpConn: httpConn{
 				writer:     writer,
 				flusher:    flusher,
@@ -222,8 +176,6 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 				remoteAddr: parseRemoteAddr(request.RemoteAddr),
 				localAddr:  parseLocalAddr(request),
 			},
-			paddingMin: s.udpPaddingMin,
-			paddingMax: s.udpPaddingMax,
 		}
 		conn.setup(request.Body, nil)
 		if !s.trackConn(username, conn) {
@@ -237,14 +189,6 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			firstPacket.Release()
 			s.untrackConn(username, conn)
 			_ = conn.Close()
-			// RST_STREAM(CANCEL) от клиента на потоке, который ещё не передал
-			// ни одного пакета (мы здесь читаем самый первый) — штатная отмена
-			// на стороне клиента (см. тот же диагноз в client.go у dialMu), а
-			// не признак обрыва туннеля. На ERROR это забивало лог ложным
-			// сигналом "туннель падает" при полностью рабочем сервере: клиент
-			// просто передумал открывать UDP-поток раньше, чем сервер успел
-			// прочитать из него хоть байт. Другие ошибки (сброс TCP, битые
-			// данные, реальный таймаут) остаются ERROR без изменений.
 			if isBenignFirstPacketClose(err) {
 				s.logger.DebugContext(ctx, E.Cause(err, "read first packet from ", request.RemoteAddr))
 			} else {
@@ -272,6 +216,9 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		if flusher, isFlusher := writer.(http.Flusher); isFlusher {
 			flusher.Flush()
 		}
+		_ = request.Body.Close()
+	case ICMPMagicAddress:
+		writer.WriteHeader(http.StatusNotImplemented)
 		_ = request.Body.Close()
 	default:
 		writer.WriteHeader(http.StatusOK)

@@ -1,19 +1,12 @@
 package trusttunnel
 
 import (
-	"context"
 	"encoding/binary"
-	"errors"
 	"io"
 	"math"
 	"net"
-	"os"
 	"sync"
-	"sync/atomic"
-	"time"
 
-	"github.com/sagernet/quic-go"
-	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/buf"
 	E "github.com/sagernet/sing/common/exceptions"
 	M "github.com/sagernet/sing/common/metadata"
@@ -21,217 +14,34 @@ import (
 	"github.com/sagernet/sing/common/rw"
 )
 
-const udpHeaderLen = 22
-
 var (
-	_ N.NetPacketConn = (*packetConn)(nil)
-	_ N.FrontHeadroom = (*packetConn)(nil)
-	_ N.NetPacketConn = (*quicPacketConn)(nil)
-	_ N.FrontHeadroom = (*quicPacketConn)(nil)
+	_ N.NetPacketConn = (*clientPacketConn)(nil)
+	_ N.FrontHeadroom = (*clientPacketConn)(nil)
+	_ N.NetPacketConn = (*serverPacketConn)(nil)
+	_ N.FrontHeadroom = (*serverPacketConn)(nil)
 )
 
-type datagramStream interface {
-	SendDatagram([]byte) error
-	ReceiveDatagram(context.Context) ([]byte, error)
-	Close() error
-}
-
-type quicPacketConn struct {
-	stream     datagramStream
-	ctx        context.Context
-	cancel     context.CancelFunc
-	remoteAddr net.Addr
-	localAddr  net.Addr
-	paddingMin int
-	paddingMax int
-	closed     atomic.Bool
-	closeFn    func()
-}
-
-func (u *quicPacketConn) FrontHeadroom() int {
-	return udpHeaderLen
-}
-
-func (u *quicPacketConn) RemoteAddr() net.Addr {
-	if u.remoteAddr != nil {
-		return u.remoteAddr
-	}
-	return &net.UDPAddr{}
-}
-
-func (u *quicPacketConn) LocalAddr() net.Addr {
-	if u.localAddr != nil {
-		return u.localAddr
-	}
-	return &net.UDPAddr{}
-}
-
-func (u *quicPacketConn) SetDeadline(time.Time) error      { return os.ErrInvalid }
-func (u *quicPacketConn) SetReadDeadline(time.Time) error  { return os.ErrInvalid }
-func (u *quicPacketConn) SetWriteDeadline(time.Time) error { return os.ErrInvalid }
-func (u *quicPacketConn) NeedAdditionalReadDeadline() bool { return true }
-
-func (u *quicPacketConn) Close() error {
-	if u.closed.CompareAndSwap(false, true) {
-		u.cancel()
-		_ = u.stream.Close()
-		if u.closeFn != nil {
-			u.closeFn()
-		}
-	}
-	return nil
-}
-
-func (u *quicPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
-	if u.closed.Load() {
-		return destination, net.ErrClosed
-	}
-	for {
-		b, err := u.stream.ReceiveDatagram(u.ctx)
-		if err != nil {
-			return destination, err
-		}
-		if len(b) < udpHeaderLen {
-			continue
-		}
-		payloadLen := int(binary.BigEndian.Uint16(b[0:2]))
-		paddingLen := int(binary.BigEndian.Uint16(b[2:4]))
-		if len(b) < udpHeaderLen+payloadLen+paddingLen {
-			continue
-		}
-		var ip [16]byte
-		copy(ip[:], b[4:20])
-		destination.Addr = parse16BytesIP(ip)
-		destination.Port = binary.BigEndian.Uint16(b[20:22])
-		if buffer.FreeLen() < payloadLen {
-			return destination, io.ErrShortBuffer
-		}
-		common.Must1(buffer.Write(b[udpHeaderLen : udpHeaderLen+payloadLen]))
-		return destination, nil
-	}
-}
-
-func (u *quicPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	buffer := buf.With(p)
-	destination, err := u.ReadPacket(buffer)
-	if err != nil {
-		return 0, nil, err
-	}
-	if destination.Addr.IsValid() {
-		addr = destination.UDPAddr()
-	} else {
-		addr = destination
-	}
-	return buffer.Len(), addr, nil
-}
-
-func (u *quicPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	defer buffer.Release()
-	if u.closed.Load() {
-		return net.ErrClosed
-	}
-	if !destination.IsIP() {
-		return E.New("only support IP")
-	}
-	payloadLen := buffer.Len()
-	if payloadLen > math.MaxUint16 {
-		return E.New("payload too large")
-	}
-	paddingLen := randomUDPPaddingLength(u.paddingMin, u.paddingMax)
-	destIP := buildPaddingIP(destination.Addr)
-
-	if paddingLen == 0 && buffer.Start() >= udpHeaderLen {
-		header := buffer.ExtendHeader(udpHeaderLen)
-		binary.BigEndian.PutUint16(header[0:2], uint16(payloadLen))
-		binary.BigEndian.PutUint16(header[2:4], 0)
-		copy(header[4:20], destIP[:])
-		binary.BigEndian.PutUint16(header[20:22], destination.Port)
-		return u.stream.SendDatagram(buffer.Bytes())
-	}
-	if paddingLen > 0 && buffer.Start() >= udpHeaderLen && buffer.FreeLen() >= paddingLen {
-		header := buffer.ExtendHeader(udpHeaderLen)
-		binary.BigEndian.PutUint16(header[0:2], uint16(payloadLen))
-		binary.BigEndian.PutUint16(header[2:4], uint16(paddingLen))
-		copy(header[4:20], destIP[:])
-		binary.BigEndian.PutUint16(header[20:22], destination.Port)
-		common.Must1(buffer.Write(randomUDPPadding(paddingLen)))
-		err := u.stream.SendDatagram(buffer.Bytes())
-		if err != nil {
-			var tooLarge *quic.DatagramTooLargeError
-			if errors.As(err, &tooLarge) {
-				binary.BigEndian.PutUint16(header[2:4], 0)
-				buffer.Truncate(udpHeaderLen + payloadLen)
-				return u.stream.SendDatagram(buffer.Bytes())
-			}
-		}
-		return err
-	}
-
-	var header [udpHeaderLen]byte
-	binary.BigEndian.PutUint16(header[0:2], uint16(payloadLen))
-	binary.BigEndian.PutUint16(header[2:4], uint16(paddingLen))
-	copy(header[4:20], destIP[:])
-	binary.BigEndian.PutUint16(header[20:22], destination.Port)
-
-	totalLen := udpHeaderLen + payloadLen + paddingLen
-	out := buf.NewSize(totalLen)
-	defer out.Release()
-
-	common.Must1(out.Write(header[:]))
-	common.Must1(out.Write(buffer.Bytes()))
-	if paddingLen > 0 {
-		common.Must1(out.Write(randomUDPPadding(paddingLen)))
-	}
-
-	err := u.stream.SendDatagram(out.Bytes())
-	if err != nil && paddingLen > 0 {
-		var tooLarge *quic.DatagramTooLargeError
-		if errors.As(err, &tooLarge) {
-			binary.BigEndian.PutUint16(header[2:4], 0)
-			if buffer.Start() >= udpHeaderLen {
-				h := buffer.ExtendHeader(udpHeaderLen)
-				copy(h, header[:])
-				err = u.stream.SendDatagram(buffer.Bytes())
-			} else {
-				outNoPad := buf.NewSize(udpHeaderLen + payloadLen)
-				defer outNoPad.Release()
-				common.Must1(outNoPad.Write(header[:]))
-				common.Must1(outNoPad.Write(buffer.Bytes()))
-				err = u.stream.SendDatagram(outNoPad.Bytes())
-			}
-		}
-	}
-	return err
-}
-
-func (u *quicPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	err = u.WritePacket(buf.As(p), M.SocksaddrFromNet(addr))
-	if err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
-type packetConn struct {
+type clientPacketConn struct {
 	httpConn
 	readMtx    sync.Mutex
 	paddingMin int
 	paddingMax int
+	appName    string
 }
 
-func (u *packetConn) FrontHeadroom() int {
-	return udpHeaderLen
+func (u *clientPacketConn) FrontHeadroom() int {
+	return 41 + u.paddingMax
 }
 
-func (u *packetConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
+func (u *clientPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
 	err = u.waitCreated()
 	if err != nil {
 		return M.Socksaddr{}, err
 	}
-	return u.readPacket(buffer)
+	return u.readPacketFromServer(buffer)
 }
 
-func (u *packetConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+func (u *clientPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	buffer := buf.With(p)
 	destination, err := u.ReadPacket(buffer)
 	if err != nil {
@@ -245,11 +55,11 @@ func (u *packetConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	return buffer.Len(), addr, nil
 }
 
-func (u *packetConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
-	return u.writePacket(buffer, destination)
+func (u *clientPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
+	return u.writePacketToServer(buffer, destination)
 }
 
-func (u *packetConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+func (u *clientPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	err = u.WritePacket(buf.As(p), M.SocksaddrFromNet(addr))
 	if err != nil {
 		return 0, err
@@ -257,48 +67,50 @@ func (u *packetConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	return len(p), nil
 }
 
-func (u *packetConn) readPacket(buffer *buf.Buffer) (address M.Socksaddr, err error) {
+func (u *clientPacketConn) readPacketFromServer(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
 	u.readMtx.Lock()
 	defer u.readMtx.Unlock()
 
 	u.mtx.Lock()
 	if u.closed || u.body == nil {
 		u.mtx.Unlock()
-		return address, net.ErrClosed
+		return destination, net.ErrClosed
 	}
 	body := u.body
 	u.mtx.Unlock()
 
-	var header [udpHeaderLen]byte
+	var header [40]byte
 	_, err = io.ReadFull(body, header[:])
 	if err != nil {
 		return
 	}
-	payloadLen := int(binary.BigEndian.Uint16(header[0:2]))
-	paddingLen := int(binary.BigEndian.Uint16(header[2:4]))
-	var ip [16]byte
-	copy(ip[:], header[4:20])
-	address.Addr = parse16BytesIP(ip)
-	address.Port = binary.BigEndian.Uint16(header[20:22])
+	length := binary.BigEndian.Uint32(header[0:4])
+	if length < 36 {
+		return destination, E.New("invalid trusttunnel packet length: ", length)
+	}
+
+	var srcIP [16]byte
+	copy(srcIP[:], header[4:20])
+	destination.Addr = parse16BytesIP(srcIP)
+	destination.Port = binary.BigEndian.Uint16(header[20:22])
+
+	payloadLen := int(length) - 36
+	if payloadLen < 0 || payloadLen > math.MaxUint16 {
+		return destination, E.New("invalid trusttunnel payload length: ", payloadLen)
+	}
 
 	if buffer.FreeLen() < payloadLen {
-		if skipErr := rw.SkipN(body, payloadLen+paddingLen); skipErr != nil {
-			return address, skipErr
+		if skipErr := rw.SkipN(body, payloadLen); skipErr != nil {
+			return destination, skipErr
 		}
-		return address, io.ErrShortBuffer
+		return destination, io.ErrShortBuffer
 	}
 
 	_, err = buffer.ReadFullFrom(body, payloadLen)
-	if err != nil {
-		return
-	}
-	if paddingLen > 0 {
-		err = rw.SkipN(body, paddingLen)
-	}
 	return
 }
 
-func (u *packetConn) writePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
+func (u *clientPacketConn) writePacketToServer(buffer *buf.Buffer, destination M.Socksaddr) error {
 	defer buffer.Release()
 	if !destination.IsIP() {
 		return E.New("only support IP")
@@ -307,27 +119,178 @@ func (u *packetConn) writePacket(buffer *buf.Buffer, destination M.Socksaddr) er
 	if payloadLen > math.MaxUint16 {
 		return E.New("payload too large")
 	}
-	paddingLen := randomUDPPaddingLength(u.paddingMin, u.paddingMax)
+
+	var appBytes []byte
+	if u.paddingMax > 0 {
+		padLen := randomUDPPaddingLength(u.paddingMin, u.paddingMax)
+		if padLen > 255 {
+			padLen = 255
+		}
+		if padLen > 0 {
+			appBytes = randomASCII(padLen)
+		}
+	} else if u.appName != "" {
+		if len(u.appName) <= 255 {
+			appBytes = []byte(u.appName)
+		} else {
+			appBytes = []byte(u.appName[:255])
+		}
+	}
+	appLen := len(appBytes)
+
+	headerLen := 41 + appLen
+	lengthField := uint32(37 + appLen + payloadLen)
 	destIP := buildPaddingIP(destination.Addr)
 
-	if paddingLen == 0 && buffer.Start() >= udpHeaderLen {
-		header := buffer.ExtendHeader(udpHeaderLen)
-		binary.BigEndian.PutUint16(header[0:2], uint16(payloadLen))
-		binary.BigEndian.PutUint16(header[2:4], 0)
-		copy(header[4:20], destIP[:])
-		binary.BigEndian.PutUint16(header[20:22], destination.Port)
+	if buffer.Start() >= headerLen {
+		h := buffer.ExtendHeader(headerLen)
+		binary.BigEndian.PutUint32(h[0:4], lengthField)
+		clear(h[4:20])                          // Src IP = 0
+		binary.BigEndian.PutUint16(h[20:22], 0) // Src Port = 0
+		copy(h[22:38], destIP[:])               // Dst IP
+		binary.BigEndian.PutUint16(h[38:40], destination.Port)
+		h[40] = uint8(appLen)
+		if appLen > 0 {
+			copy(h[41:41+appLen], appBytes)
+		}
 		return u.writeChunks(buffer.Bytes())
 	}
 
-	var header [udpHeaderLen]byte
-	binary.BigEndian.PutUint16(header[0:2], uint16(payloadLen))
-	binary.BigEndian.PutUint16(header[2:4], uint16(paddingLen))
-	copy(header[4:20], destIP[:])
-	binary.BigEndian.PutUint16(header[20:22], destination.Port)
+	var fixedHeader [41]byte
+	binary.BigEndian.PutUint32(fixedHeader[0:4], lengthField)
+	// fixedHeader[4:22] is zero
+	copy(fixedHeader[22:38], destIP[:])
+	binary.BigEndian.PutUint16(fixedHeader[38:40], destination.Port)
+	fixedHeader[40] = uint8(appLen)
 
-	if paddingLen > 0 {
-		padding := randomUDPPadding(paddingLen)
-		return u.writeChunks(header[:], buffer.Bytes(), padding)
+	if appLen > 0 {
+		return u.writeChunks(fixedHeader[:], appBytes, buffer.Bytes())
 	}
+	return u.writeChunks(fixedHeader[:], buffer.Bytes())
+}
+
+type serverPacketConn struct {
+	httpConn
+	readMtx sync.Mutex
+}
+
+func (u *serverPacketConn) FrontHeadroom() int {
+	return 40
+}
+
+func (u *serverPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
+	err = u.waitCreated()
+	if err != nil {
+		return M.Socksaddr{}, err
+	}
+	return u.readPacketFromClient(buffer)
+}
+
+func (u *serverPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	buffer := buf.With(p)
+	destination, err := u.ReadPacket(buffer)
+	if err != nil {
+		return 0, nil, err
+	}
+	if destination.Addr.IsValid() {
+		addr = destination.UDPAddr()
+	} else {
+		addr = destination
+	}
+	return buffer.Len(), addr, nil
+}
+
+func (u *serverPacketConn) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
+	return u.writePacketToClient(buffer, destination)
+}
+
+func (u *serverPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	err = u.WritePacket(buf.As(p), M.SocksaddrFromNet(addr))
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (u *serverPacketConn) readPacketFromClient(buffer *buf.Buffer) (destination M.Socksaddr, err error) {
+	u.readMtx.Lock()
+	defer u.readMtx.Unlock()
+
+	u.mtx.Lock()
+	if u.closed || u.body == nil {
+		u.mtx.Unlock()
+		return destination, net.ErrClosed
+	}
+	body := u.body
+	u.mtx.Unlock()
+
+	var header [41]byte
+	_, err = io.ReadFull(body, header[:])
+	if err != nil {
+		return
+	}
+	length := binary.BigEndian.Uint32(header[0:4])
+	appLen := int(header[40])
+	if length < uint32(37+appLen) {
+		return destination, E.New("invalid trusttunnel packet length: ", length)
+	}
+
+	var dstIP [16]byte
+	copy(dstIP[:], header[22:38])
+	destination.Addr = parse16BytesIP(dstIP)
+	destination.Port = binary.BigEndian.Uint16(header[38:40])
+
+	if appLen > 0 {
+		err = rw.SkipN(body, appLen)
+		if err != nil {
+			return destination, err
+		}
+	}
+
+	payloadLen := int(length) - 37 - appLen
+	if payloadLen < 0 || payloadLen > math.MaxUint16 {
+		return destination, E.New("invalid trusttunnel payload length: ", payloadLen)
+	}
+
+	if buffer.FreeLen() < payloadLen {
+		if skipErr := rw.SkipN(body, payloadLen); skipErr != nil {
+			return destination, skipErr
+		}
+		return destination, io.ErrShortBuffer
+	}
+
+	_, err = buffer.ReadFullFrom(body, payloadLen)
+	return
+}
+
+func (u *serverPacketConn) writePacketToClient(buffer *buf.Buffer, source M.Socksaddr) error {
+	defer buffer.Release()
+	if !source.IsIP() {
+		return E.New("only support IP")
+	}
+	payloadLen := buffer.Len()
+	if payloadLen > math.MaxUint16 {
+		return E.New("payload too large")
+	}
+
+	const headerLen = 40
+	lengthField := uint32(36 + payloadLen)
+	srcIP := buildPaddingIP(source.Addr)
+
+	if buffer.Start() >= headerLen {
+		h := buffer.ExtendHeader(headerLen)
+		binary.BigEndian.PutUint32(h[0:4], lengthField)
+		copy(h[4:20], srcIP[:])
+		binary.BigEndian.PutUint16(h[20:22], source.Port)
+		clear(h[22:38])                         // Dst IP = 0
+		binary.BigEndian.PutUint16(h[38:40], 0) // Dst Port = 0
+		return u.writeChunks(buffer.Bytes())
+	}
+
+	var header [headerLen]byte
+	binary.BigEndian.PutUint32(header[0:4], lengthField)
+	copy(header[4:20], srcIP[:])
+	binary.BigEndian.PutUint16(header[20:22], source.Port)
+	// header[22:40] is zero
 	return u.writeChunks(header[:], buffer.Bytes())
 }

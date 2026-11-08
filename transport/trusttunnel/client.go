@@ -172,7 +172,6 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			MaxIdleTimeout:          DefaultSessionTimeout * 2,
 			KeepAlivePeriod:         DefaultKeepAlivePeriod,
 			DisablePathMTUDiscovery: options.DisablePathMTUDiscovery,
-			EnableDatagrams:         true,
 		}
 		client.quicDialer = func(dialCtx context.Context) (*quic.Conn, io.Closer, error) {
 			udpConn, err := options.Dialer.DialContext(dialCtx, N.NetworkUDP, client.server)
@@ -195,8 +194,7 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			return conn, udpConn, nil
 		}
 		client.h3Transport = &http3.Transport{
-			EnableDatagrams: true,
-			QUICConfig:      quicConfig,
+			QUICConfig: quicConfig,
 		}
 		client.roundTripper = &quicRoundTripper{client: client}
 	} else {
@@ -208,6 +206,10 @@ func NewClient(ctx context.Context, options ClientOptions) (*Client, error) {
 			tlsDialer := tls.NewDialer(options.Dialer, options.TLSConfig)
 			dialTLSContext = func(ctx context.Context, network, addr string, _ *stdtls.Config) (net.Conn, error) {
 				return tlsDialer.DialContext(ctx, network, client.server)
+			}
+		} else if options.Dialer != nil {
+			dialTLSContext = func(ctx context.Context, network, addr string, _ *stdtls.Config) (net.Conn, error) {
+				return options.Dialer.DialContext(ctx, network, client.server)
 			}
 		}
 		client.roundTripper = &http2.Transport{
@@ -342,51 +344,7 @@ func (c *Client) Dial(ctx context.Context, host string) (net.Conn, error) {
 }
 
 func (c *Client) ListenPacket(ctx context.Context) (net.PacketConn, error) {
-	c.startOnce.Do(c.start)
-	if c.isQUIC {
-		h3, err := c.getQUICClientConn(ctx)
-		if err != nil {
-			return nil, err
-		}
-		str, err := h3.OpenRequestStream(ctx)
-		if err != nil {
-			return nil, err
-		}
-		pktCtx, pktCancel := context.WithCancel(c.ctx)
-		req := c.newConnectRequest(UDPMagicAddress).WithContext(pktCtx)
-		err = str.SendRequestHeader(req)
-		if err != nil {
-			pktCancel()
-			_ = str.Close()
-			return nil, err
-		}
-		rsp, err := str.ReadResponse()
-		if err != nil {
-			pktCancel()
-			_ = str.Close()
-			return nil, err
-		}
-		_ = rsp.Body.Close()
-		if rsp.StatusCode != http.StatusOK {
-			pktCancel()
-			_ = str.Close()
-			return nil, fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
-		}
-		c.resetHealthCheckTimer()
-		c.count.Add(1)
-		conn := &quicPacketConn{
-			stream:     str,
-			ctx:        pktCtx,
-			cancel:     pktCancel,
-			remoteAddr: c.server.UDPAddr(),
-			paddingMin: c.udpPaddingMin,
-			paddingMax: c.udpPaddingMax,
-			closeFn:    sync.OnceFunc(func() { c.count.Add(-1) }),
-		}
-		return conn, nil
-	}
-
-	conn := &packetConn{
+	conn := &clientPacketConn{
 		httpConn: httpConn{
 			remoteAddr: c.server.UDPAddr(),
 		},
