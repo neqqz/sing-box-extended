@@ -2,6 +2,8 @@ package trusttunnel
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 
 	"errors"
 	"io"
@@ -311,14 +313,20 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 const dummyPassword = "trusttunnel-dummy-password"
 
 func (s *Service) verify(authorization string) (username string, loaded bool) {
-	user, ok := parseAuth(authorization)
-	if !ok {
+	user, password, parsed := parseAuth(authorization)
+	s.mu.RLock()
+	recordedPassword, known := s.users[user]
+	s.mu.RUnlock()
+	if !known {
+		recordedPassword = dummyPassword
+	}
+	got := sha256.Sum256([]byte(password))
+	want := sha256.Sum256([]byte(recordedPassword))
+	match := subtle.ConstantTimeCompare(got[:], want[:]) == 1
+	if !parsed || !known || !match {
 		return "", false
 	}
-	s.mu.RLock()
-	_, known := s.users[user]
-	s.mu.RUnlock()
-	return user, known
+	return user, true
 }
 
 // badRequest logs at debug level: every scanner that reaches the HTTP layer

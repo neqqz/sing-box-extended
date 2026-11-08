@@ -312,7 +312,7 @@ func isFatalTransportError(err error) bool {
 
 func (c *Client) newConnectRequest(host string) *http.Request {
 	header := http.Header{
-		"Proxy-Authorization": {buildAuth(c.username)},
+		"Proxy-Authorization": {buildAuth(c.username, c.password)},
 	}
 	if c.userAgent != "" {
 		header.Set("User-Agent", c.userAgent)

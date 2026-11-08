@@ -26,22 +26,24 @@ const (
 	DefaultSessionTimeout     = 30 * time.Second
 	DefaultKeepAlivePeriod    = 10 * time.Second
 
-	AuthBearerPrefix = "Bearer "
+	AuthBasicPrefix = "Basic "
 )
 
-func buildAuth(username string) string {
-	return AuthBearerPrefix + base64.RawURLEncoding.EncodeToString([]byte(username))
+func buildAuth(username, password string) string {
+	credentials := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+	return AuthBasicPrefix + credentials
 }
 
-func parseAuth(auth string) (string, bool) {
-	if len(auth) < len(AuthBearerPrefix) || !strings.EqualFold(auth[:len(AuthBearerPrefix)], AuthBearerPrefix) {
-		return "", false
+func parseAuth(auth string) (username, password string, ok bool) {
+	if len(auth) < len(AuthBasicPrefix) || !strings.EqualFold(auth[:len(AuthBasicPrefix)], AuthBasicPrefix) {
+		return "", "", false
 	}
-	value, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(auth[len(AuthBearerPrefix):]))
-	if err != nil || len(value) == 0 {
-		return "", false
+	credentials, err := base64.StdEncoding.DecodeString(strings.TrimSpace(auth[len(AuthBasicPrefix):]))
+	if err != nil {
+		return "", "", false
 	}
-	return string(value), true
+	username, password, ok = strings.Cut(string(credentials), ":")
+	return
 }
 
 func parse16BytesIP(b [16]byte) netip.Addr {
