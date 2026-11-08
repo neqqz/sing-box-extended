@@ -65,7 +65,7 @@ type PrefixChecker struct {
 }
 
 // NewPrefixChecker returns nil when provider is nil (check disabled).
-func NewPrefixChecker(addr net.Addr, provider sboxtls.RandomPrefixProvider, prefixLen int, fallback string, fallbackSNIPort int, log logger.ContextLogger, replay ...*sboxtls.ReplayCache) *PrefixChecker {
+func NewPrefixChecker(addr net.Addr, provider sboxtls.RandomPrefixProvider, prefixLen int, fallback string, fallbackSNIPort int, log logger.ContextLogger) *PrefixChecker {
 	if provider == nil {
 		return nil
 	}
@@ -75,14 +75,10 @@ func NewPrefixChecker(addr net.Addr, provider sboxtls.RandomPrefixProvider, pref
 			ownPort = port
 		}
 	}
-	replayCache := sboxtls.NewReplayCache()
-	if len(replay) > 0 && replay[0] != nil {
-		replayCache = replay[0]
-	}
 	return &PrefixChecker{
 		provider:     provider,
 		prefixLen:    prefixLen,
-		replay:       replayCache,
+		replay:       sboxtls.NewReplayCache(),
 		fallback:     fallback,
 		fallbackPort: resolveFallbackPort(fallback, fallbackSNIPort),
 		ownPort:      ownPort,

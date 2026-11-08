@@ -99,47 +99,6 @@ func parseTokenAuth(auth string) (user string, timestamp int64, nonce [8]byte, s
 	return
 }
 
-type authReplayCache struct {
-	shards [16]authReplayCacheShard
-}
-
-type authReplayCacheShard struct {
-	mu        sync.Mutex
-	seen      map[[8]byte]int64
-	lastEvict int64
-}
-
-func newAuthReplayCache() *authReplayCache {
-	c := &authReplayCache{}
-	for i := range c.shards {
-		c.shards[i].seen = make(map[[8]byte]int64)
-	}
-	return c
-}
-
-func (c *authReplayCache) checkAndAdd(nonce [8]byte, now int64, ttl int64) bool {
-	shardIndex := binary.BigEndian.Uint64(nonce[:]) % uint64(len(c.shards))
-	shard := &c.shards[shardIndex]
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	if exp, ok := shard.seen[nonce]; ok && now < exp {
-		return false
-	}
-	if len(shard.seen) >= 1000 && now > shard.lastEvict {
-		shard.lastEvict = now + 10
-		for k, exp := range shard.seen {
-			if now >= exp {
-				delete(shard.seen, k)
-			}
-		}
-	}
-	if len(shard.seen) >= 2000 {
-		clear(shard.seen)
-	}
-	shard.seen[nonce] = now + ttl
-	return true
-}
-
 func parse16BytesIP(b [16]byte) netip.Addr {
 	addr := netip.AddrFrom16(b).Unmap()
 	if !addr.Is4() && binary.BigEndian.Uint64(b[0:8]) == 0 && binary.BigEndian.Uint32(b[8:12]) == 0 &&

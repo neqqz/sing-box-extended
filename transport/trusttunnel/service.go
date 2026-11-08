@@ -47,7 +47,6 @@ type Service struct {
 	users           map[string]string
 	handler         Handler
 	conns           map[string]map[io.Closer]struct{}
-	replayCache     *authReplayCache
 	fallbackHandler http.Handler
 	udpPaddingMin   int
 	udpPaddingMax   int
@@ -63,7 +62,6 @@ func NewService(options ServiceOptions) *Service {
 		logger:          options.Logger,
 		handler:         options.Handler,
 		conns:           make(map[string]map[io.Closer]struct{}),
-		replayCache:     newAuthReplayCache(),
 		fallbackHandler: options.FallbackHandler,
 		udpPaddingMin:   options.UDPPaddingMin,
 		udpPaddingMax:   options.UDPPaddingMax,
@@ -358,9 +356,6 @@ func (s *Service) verify(authorization, target string) (username string, loaded 
 
 	match := subtle.ConstantTimeCompare(gotSig, wantSig) == 1
 	if !known || !match {
-		return "", false
-	}
-	if !s.replayCache.checkAndAdd(nonce, now, AuthMaxSkewSec*2) {
 		return "", false
 	}
 	return user, true

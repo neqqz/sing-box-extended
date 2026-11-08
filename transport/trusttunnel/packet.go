@@ -96,10 +96,7 @@ func (u *quicPacketConn) ReadPacket(buffer *buf.Buffer) (destination M.Socksaddr
 		}
 		payloadLen := int(binary.BigEndian.Uint16(b[0:2]))
 		paddingLen := int(binary.BigEndian.Uint16(b[2:4]))
-		// A QUIC datagram contains exactly one TrustTunnel frame. Reject both
-		// truncation and trailing bytes; otherwise bytes from a malformed frame
-		// could be silently accepted as padding.
-		if len(b) != udpHeaderLen+payloadLen+paddingLen {
+		if len(b) < udpHeaderLen+payloadLen+paddingLen {
 			continue
 		}
 		var ip [16]byte
