@@ -136,8 +136,9 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			s.fallbackHandler.ServeHTTP(writer, request)
 			return
 		}
-		writer.Header().Set("Proxy-Authenticate", ProxyAuthenticateHeader)
-		writer.WriteHeader(http.StatusProxyAuthRequired)
+		// 404 неотличим от обычного веб-сервера и не выдаёт сигнатуру
+		// CONNECT-прокси (в отличие от 407 Proxy Authentication Required).
+		http.NotFound(writer, request)
 		s.badRequest(request.Context(), request, E.New("authorization failed"))
 		return
 	}

@@ -152,17 +152,14 @@ func TestServiceHTTP(t *testing.T) {
 		"alice": "secret123",
 	})
 
-	// 1. Unauthenticated request without fallback -> 407 Proxy Authentication Required with Proxy-Authenticate header
+	// 1. Unauthenticated request without fallback -> 404 Not Found (anti-probing)
 	{
 		req := httptest.NewRequest(http.MethodConnect, "http://example.com:443", nil)
 		req.Host = "example.com:443"
 		rec := httptest.NewRecorder()
 		service.ServeHTTP(rec, req)
-		if rec.Code != http.StatusProxyAuthRequired {
-			t.Fatalf("expected status 407, got %d", rec.Code)
-		}
-		if rec.Header().Get("Proxy-Authenticate") != ProxyAuthenticateHeader {
-			t.Fatalf("expected Proxy-Authenticate header %q, got %q", ProxyAuthenticateHeader, rec.Header().Get("Proxy-Authenticate"))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d", rec.Code)
 		}
 	}
 
@@ -379,7 +376,7 @@ func TestClientServerEndToEnd(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error for bad credentials, got nil")
 	}
-	if !bytes.Contains([]byte(err.Error()), []byte("407")) {
-		t.Fatalf("expected 407 error, got %v", err)
+	if !bytes.Contains([]byte(err.Error()), []byte("404")) {
+		t.Fatalf("expected 404 error, got %v", err)
 	}
 }
