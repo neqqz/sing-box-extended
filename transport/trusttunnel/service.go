@@ -2,10 +2,7 @@ package trusttunnel
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/binary"
+
 	"errors"
 	"io"
 	"net"
@@ -38,7 +35,6 @@ type ServiceOptions struct {
 	FallbackHandler http.Handler
 	UDPPaddingMin   int
 	UDPPaddingMax   int
-	TimeFunc        func() time.Time
 }
 
 type Service struct {
@@ -50,7 +46,6 @@ type Service struct {
 	fallbackHandler http.Handler
 	udpPaddingMin   int
 	udpPaddingMax   int
-	timeFunc        func() time.Time
 	closed          bool
 
 	mu sync.RWMutex
@@ -65,16 +60,8 @@ func NewService(options ServiceOptions) *Service {
 		fallbackHandler: options.FallbackHandler,
 		udpPaddingMin:   options.UDPPaddingMin,
 		udpPaddingMax:   options.UDPPaddingMax,
-		timeFunc:        options.TimeFunc,
 	}
 	return s
-}
-
-func (s *Service) now() time.Time {
-	if s.timeFunc != nil {
-		return s.timeFunc()
-	}
-	return time.Now()
 }
 
 func (s *Service) UpdateUsers(users map[string]string) {
@@ -140,7 +127,7 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if authorization == "" {
 		authorization = request.Header.Get("Authorization")
 	}
-	username, loaded := s.verify(authorization, request.Host)
+	username, loaded := s.verify(authorization)
 	if !loaded {
 		if s.fallbackHandler != nil {
 			s.fallbackHandler.ServeHTTP(writer, request)
@@ -324,41 +311,15 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 // не найден: время ответа не должно зависеть от того, существует ли имя.
 const dummyPassword = "trusttunnel-dummy-password"
 
-func (s *Service) verify(authorization, target string) (username string, loaded bool) {
-	user, ts, nonce, gotSig, ok := parseTokenAuth(authorization)
+func (s *Service) verify(authorization string) (username string, loaded bool) {
+	user, ok := parseAuth(authorization)
 	if !ok {
 		return "", false
 	}
-	now := s.now().Unix()
-	if ts < now-AuthMaxSkewSec || ts > now+AuthMaxSkewSec {
-		return "", false
-	}
 	s.mu.RLock()
-	recordedPassword, known := s.users[user]
+	_, known := s.users[user]
 	s.mu.RUnlock()
-	if !known {
-		recordedPassword = dummyPassword
-	}
-	userBytes := []byte(user)
-	userLen := len(userBytes)
-	var prefix [tokenHeaderLen]byte
-	prefix[0] = TokenVersion
-	binary.BigEndian.PutUint64(prefix[1:9], uint64(ts))
-	copy(prefix[9:17], nonce[:])
-	binary.BigEndian.PutUint16(prefix[17:19], uint16(userLen))
-
-	mac := hmac.New(sha256.New, []byte(recordedPassword))
-	mac.Write(prefix[:])
-	mac.Write(userBytes)
-	mac.Write([]byte(target))
-	var wantSigBuf [sha256.Size]byte
-	wantSig := mac.Sum(wantSigBuf[:0])
-
-	match := subtle.ConstantTimeCompare(gotSig, wantSig) == 1
-	if !known || !match {
-		return "", false
-	}
-	return user, true
+	return user, known
 }
 
 // badRequest logs at debug level: every scanner that reaches the HTTP layer

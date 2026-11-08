@@ -2,9 +2,7 @@ package trusttunnel
 
 import (
 	"context"
-	"crypto/hmac"
 	crand "crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
@@ -30,73 +28,21 @@ const (
 	DefaultKeepAlivePeriod    = 10 * time.Second
 
 	AuthBearerPrefix = "Bearer "
-	TokenVersion     = byte(1)
-	AuthMaxSkewSec   = 90
-	tokenHeaderLen   = 1 + 8 + 8 + 2
 )
 
-func buildTokenAuth(username, password, target string) string {
-	return buildTokenAuthAt(username, password, target, uint64(time.Now().Unix()))
+func buildAuth(username string) string {
+	return AuthBearerPrefix + base64.RawURLEncoding.EncodeToString([]byte(username))
 }
 
-func buildTokenAuthAt(username, password, target string, now uint64) string {
-	userBytes := []byte(username)
-	userLen := len(userBytes)
-	if userLen > math.MaxUint16 {
-		userBytes = userBytes[:math.MaxUint16]
-		userLen = math.MaxUint16
-	}
-	totalLen := tokenHeaderLen + userLen + sha256.Size
-	buf := make([]byte, totalLen)
-
-	buf[0] = TokenVersion
-	binary.BigEndian.PutUint64(buf[1:9], now)
-	_, _ = crand.Read(buf[9:17])
-	binary.BigEndian.PutUint16(buf[17:19], uint16(userLen))
-	copy(buf[19:19+userLen], userBytes)
-
-	mac := hmac.New(sha256.New, []byte(password))
-	mac.Write(buf[:19+userLen])
-	mac.Write([]byte(target))
-	buf = mac.Sum(buf[:19+userLen])
-
-	return AuthBearerPrefix + base64.RawURLEncoding.EncodeToString(buf)
-}
-
-func parseTokenAuth(auth string) (user string, timestamp int64, nonce [8]byte, sig []byte, ok bool) {
+func parseAuth(auth string) (string, bool) {
 	if len(auth) < len(AuthBearerPrefix) || !strings.EqualFold(auth[:len(AuthBearerPrefix)], AuthBearerPrefix) {
-		return "", 0, [8]byte{}, nil, false
+		return "", false
 	}
-	tokenStr := strings.TrimSpace(auth[len(AuthBearerPrefix):])
-	buf, err := base64.RawURLEncoding.DecodeString(tokenStr)
-	if err != nil {
-		buf, err = base64.URLEncoding.DecodeString(tokenStr)
-		if err != nil {
-			buf, err = base64.RawStdEncoding.DecodeString(tokenStr)
-			if err != nil {
-				buf, err = base64.StdEncoding.DecodeString(tokenStr)
-				if err != nil {
-					return "", 0, [8]byte{}, nil, false
-				}
-			}
-		}
+	value, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(auth[len(AuthBearerPrefix):]))
+	if err != nil || len(value) == 0 {
+		return "", false
 	}
-	if len(buf) < tokenHeaderLen+sha256.Size {
-		return "", 0, [8]byte{}, nil, false
-	}
-	if buf[0] != TokenVersion {
-		return "", 0, [8]byte{}, nil, false
-	}
-	timestamp = int64(binary.BigEndian.Uint64(buf[1:9]))
-	copy(nonce[:], buf[9:17])
-	userLen := int(binary.BigEndian.Uint16(buf[17:19]))
-	if len(buf) != tokenHeaderLen+userLen+sha256.Size {
-		return "", 0, [8]byte{}, nil, false
-	}
-	user = string(buf[19 : 19+userLen])
-	sig = buf[19+userLen:]
-	ok = true
-	return
+	return string(value), true
 }
 
 func parse16BytesIP(b [16]byte) netip.Addr {

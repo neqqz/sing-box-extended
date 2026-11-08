@@ -326,7 +326,7 @@ func (c *Client) now() time.Time {
 
 func (c *Client) newConnectRequest(host string) *http.Request {
 	header := http.Header{
-		"Proxy-Authorization": {buildTokenAuthAt(c.username, c.password, host, uint64(c.now().Unix()))},
+		"Proxy-Authorization": {buildAuth(c.username)},
 	}
 	if c.userAgent != "" {
 		header.Set("User-Agent", c.userAgent)
