@@ -2,8 +2,7 @@ package trusttunnel
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
+	"encoding/base64"
 
 	"errors"
 	"io"
@@ -42,6 +41,7 @@ type Service struct {
 	ctx             context.Context
 	logger          logger.ContextLogger
 	users           map[string]string
+	authUsers       map[string]string
 	handler         Handler
 	conns           map[string]map[io.Closer]struct{}
 	fallbackHandler http.Handler
@@ -57,6 +57,7 @@ func NewService(options ServiceOptions) *Service {
 		ctx:             options.Ctx,
 		logger:          options.Logger,
 		handler:         options.Handler,
+		authUsers:       make(map[string]string),
 		conns:           make(map[string]map[io.Closer]struct{}),
 		fallbackHandler: options.FallbackHandler,
 		udpPaddingMin:   options.UDPPaddingMin,
@@ -66,9 +67,14 @@ func NewService(options ServiceOptions) *Service {
 }
 
 func (s *Service) UpdateUsers(users map[string]string) {
+	authUsers := make(map[string]string, len(users))
+	for username, password := range users {
+		authUsers[base64.StdEncoding.EncodeToString([]byte(username+":"+password))] = username
+	}
 	s.mu.Lock()
 	oldUsers := s.users
 	s.users = users
+	s.authUsers = authUsers
 	var closedConns []io.Closer
 	for user, conns := range s.conns {
 		if pass, exists := users[user]; !exists || pass != oldUsers[user] {
@@ -124,11 +130,7 @@ func (s *Service) untrackConn(username string, conn io.Closer) {
 }
 
 func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	authorization := request.Header.Get("Proxy-Authorization")
-	if authorization == "" {
-		authorization = request.Header.Get("Authorization")
-	}
-	username, loaded := s.verify(authorization)
+	username, loaded := s.verify(request.Header.Get("Proxy-Authorization"))
 	if !loaded {
 		if s.fallbackHandler != nil {
 			s.fallbackHandler.ServeHTTP(writer, request)
@@ -308,25 +310,15 @@ func (s *Service) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 }
 
-// dummyPassword сравнивается вместо настоящего пароля, когда пользователь
-// не найден: время ответа не должно зависеть от того, существует ли имя.
-const dummyPassword = "trusttunnel-dummy-password"
-
 func (s *Service) verify(authorization string) (username string, loaded bool) {
-	user, password, parsed := parseAuth(authorization)
-	s.mu.RLock()
-	recordedPassword, known := s.users[user]
-	s.mu.RUnlock()
-	if !known {
-		recordedPassword = dummyPassword
-	}
-	got := sha256.Sum256([]byte(password))
-	want := sha256.Sum256([]byte(recordedPassword))
-	match := subtle.ConstantTimeCompare(got[:], want[:]) == 1
-	if !parsed || !known || !match {
+	credentials, parsed := parseAuth(authorization)
+	if !parsed {
 		return "", false
 	}
-	return user, true
+	s.mu.RLock()
+	username, known := s.authUsers[credentials]
+	s.mu.RUnlock()
+	return username, known
 }
 
 // badRequest logs at debug level: every scanner that reaches the HTTP layer

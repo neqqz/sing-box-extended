@@ -34,16 +34,9 @@ func buildAuth(username, password string) string {
 	return AuthBasicPrefix + credentials
 }
 
-func parseAuth(auth string) (username, password string, ok bool) {
-	if len(auth) < len(AuthBasicPrefix) || !strings.EqualFold(auth[:len(AuthBasicPrefix)], AuthBasicPrefix) {
-		return "", "", false
-	}
-	credentials, err := base64.StdEncoding.DecodeString(strings.TrimSpace(auth[len(AuthBasicPrefix):]))
-	if err != nil {
-		return "", "", false
-	}
-	username, password, ok = strings.Cut(string(credentials), ":")
-	return
+func parseAuth(auth string) (string, bool) {
+	credentials, ok := strings.CutPrefix(auth, AuthBasicPrefix)
+	return credentials, ok
 }
 
 func parse16BytesIP(b [16]byte) netip.Addr {
